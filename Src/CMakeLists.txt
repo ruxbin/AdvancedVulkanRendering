@@ -1,0 +1,29 @@
+
+
+#find_package(Vulkan REQUIRED)
+find_package(SDL2 REQUIRED)
+find_package(spdlog REQUIRED)
+
+set(OUTPUT_NAME AdvancedVulkanRendering)
+set(LIBRARIES spdlog::spdlog ${SDL2_LIBRARIES} vulkan-1)
+
+
+include_directories(${SDL2_INCLUDE_DIRS})
+#include_directories(${CMAKE_CURRENT_LIST_DIR}/../ThirdParty/spdlog/include)#TODO something like sdl2
+set(ROOT_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../../)
+
+set(SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/Camera.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/Window.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/Mesh.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VulkanSetup.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/GpuScene.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/ObjLoader.cpp
+)
+
+
+add_executable(${OUTPUT_NAME} ${SOURCES})
+
+target_link_libraries(${OUTPUT_NAME}
+    ${LIBRARIES})
+
