@@ -36,8 +36,11 @@ public:
   inline const VkExtent2D &getSwapChainExtent() const {
     return swapChainExtent;
   }
-  VkRenderPass getMainRenderPass() { return renderPass; }
-
+  VkRenderPass getMainRenderPass() const { return renderPass; }
+VkFramebuffer getSwapChainFrameBuffer(int i) const {return swapChainFramebuffers[i];}
+VkSwapchainKHR getSwapChain() const {return swapChain;}
+VkQueue getPresentQueue() const {return presentQueue;}
+VkQueue getGraphicsQueue() const {return graphicsQueue;}
 private:
   constexpr std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -62,12 +65,26 @@ private:
 
   VkRenderPass renderPass;
 
+
+
+VkDebugUtilsMessengerEXT debugMessenger;
+
   constexpr static const char *const instaceExtensionNames[] = {
-      "VK_KHR_surface", "VK_KHR_win32_surface"};
+      "VK_KHR_surface", 
+#ifdef _WIN32
+      "VK_KHR_win32_surface"
+#endif
+#ifdef __gnu_linux__
+	      "VK_KHR_xlib_surface"
+#endif
+  };
   constexpr static const char *const deviceExtensionNames[] = {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME};
   constexpr static const char *const validationLayers[] = {
-      "VK_LAYER_RENDERDOC_Capture", "VK_LAYER_KHRONOS_synchronization2",
+      "VK_LAYER_RENDERDOC_Capture",
+#ifdef _WIN32
+      "VK_LAYER_KHRONOS_synchronization2",
+#endif
       "VK_LAYER_KHRONOS_validation"};
 
   bool checkValidationLayerSupport();
@@ -196,7 +213,9 @@ private:
 
   void createSwapChain();
   void createImageViews();
+  void createFramebuffers();
   void createCommandPool();
+  void setupDebugMessager();
 
   VkSurfaceFormatKHR chooseSwapSurfaceFormat(
       const std::vector<VkSurfaceFormatKHR> &availableFormats);

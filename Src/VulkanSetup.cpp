@@ -4,6 +4,43 @@
 #include <stdexcept>
 static constexpr bool enableValidationLayers = true; // TODO: options
 
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
+	spdlog::error("validation layer: {}", pCallbackData->pMessage);
+        return VK_FALSE;
+    }
+
+
+void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
+        createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        createInfo.pfnUserCallback = debugCallback;
+    }
+
+
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+
+    void VulkanDevice::setupDebugMessager() {
+        if (!enableValidationLayers) return;
+
+        VkDebugUtilsMessengerCreateInfoEXT createInfo;
+        populateDebugMessengerCreateInfo(createInfo);
+
+        if (CreateDebugUtilsMessengerEXT(vkInstance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
+            throw std::runtime_error("failed to set up debug messenger!");
+        }
+    }
+
+
 VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   checkValidationLayerSupport();
   VkApplicationInfo appInfo{};
@@ -32,9 +69,8 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
         sizeof(validationLayers) / sizeof(validationLayers[0]));
     createInfo.ppEnabledLayerNames = validationLayers;
 
-    // populateDebugMessengerCreateInfo(debugCreateInfo);
-    // createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)
-    // &debugCreateInfo;
+    populateDebugMessengerCreateInfo(debugCreateInfo);
+    createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
   } else {
     createInfo.enabledLayerCount = 0;
 
@@ -44,6 +80,7 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   if (vkCreateInstance(&createInfo, nullptr, &vkInstance) != VK_SUCCESS) {
     throw std::runtime_error("failed to create instance!");
   }
+  setupDebugMessager();
 
   SDL_SysWMinfo wmInfo;
   SDL_VERSION(&wmInfo.version);
@@ -91,12 +128,17 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   // craate swapchain
   createSwapChain();
   createImageViews();
-
   // command pool
   createCommandPool();
 
   // createDepthRt
   CreateDepthResource();
+
+  // createMainRenderPass
+  createRenderPass();
+
+//createframebuffers -- after renderpass since framebuffers are bound to renderpass
+  createFramebuffers();
 }
 
 void VulkanDevice::createRenderPass() {
@@ -157,9 +199,15 @@ void VulkanDevice::createRenderPass() {
         }
     }
 constexpr std::vector<std::string_view> VulkanDevice::getRequiredExtensions() {
-
+//TODO: same as instanceExtensionNames
   std::vector<std::string_view> extensions = {"VK_KHR_surface",
-                                              "VK_KHR_win32_surface"};
+#ifdef __gnu_linux__
+                                              "VK_KHR_xlib_surface"
+#endif
+#ifdef _WIN32
+                                              "VK_KHR_win32_surface"
+#endif
+  };
 
   if (enableValidationLayers) {
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -359,6 +407,31 @@ void VulkanDevice::createImageViews() {
     }
   }
 }
+
+
+void VulkanDevice::createFramebuffers() {
+        swapChainFramebuffers.resize(swapChainImageViews.size());
+
+        for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+            std::array<VkImageView, 2> attachments = {
+                swapChainImageViews[i],
+                depthImageView
+            };
+
+            VkFramebufferCreateInfo framebufferInfo{};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferInfo.renderPass = renderPass;
+            framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());;
+            framebufferInfo.pAttachments = attachments.data();
+            framebufferInfo.width = swapChainExtent.width;
+            framebufferInfo.height = swapChainExtent.height;
+            framebufferInfo.layers = 1;
+
+            if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create framebuffer!");
+            }
+        }
+    }
 
 void VulkanDevice::createCommandPool() {
   QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);

@@ -20,7 +20,7 @@ int main(int nargs, char ** args) {
 
     VulkanDevice vk(window);
 
-    std::string_view scenePath = "test";
+    std::string_view scenePath = "/home/songjiang/SOURCE/GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
     GpuScene gpuScene(scenePath, vk);
     //GpuScene gpuScene(std::string_view("useless"), vk); //TODO: why error?
 
@@ -29,6 +29,8 @@ int main(int nargs, char ** args) {
     while (quit == false) { 
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true; 
+	    else
+		    gpuScene.Draw();
         } 
     }
 
