@@ -5,7 +5,7 @@ find_package(SDL2 REQUIRED)
 find_package(spdlog REQUIRED)
 
 set(OUTPUT_NAME AdvancedVulkanRendering)
-set(LIBRARIES spdlog::spdlog ${SDL2_LIBRARIES} vulkan-1)
+set(LIBRARIES spdlog::spdlog ${SDL2_LIBRARIES} vulkan)
 
 
 include_directories(${SDL2_INCLUDE_DIRS})
