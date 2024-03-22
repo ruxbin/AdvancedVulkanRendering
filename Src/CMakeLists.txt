@@ -5,8 +5,15 @@ find_package(SDL2 REQUIRED)
 find_package(spdlog REQUIRED)
 
 set(OUTPUT_NAME AdvancedVulkanRendering)
-set(LIBRARIES spdlog::spdlog ${SDL2_LIBRARIES} vulkan)
+set(LIBRARIES spdlog::spdlog lzfse ${SDL2_LIBRARIES})
 
+if (WIN32)
+list(APPEND LIBRARIES vulkan-1)
+endif ()
+
+if(UNIX)
+list(APPEND LIBRARIES vulkan)
+endif ()
 
 include_directories(${SDL2_INCLUDE_DIRS})
 #include_directories(${CMAKE_CURRENT_LIST_DIR}/../ThirdParty/spdlog/include)#TODO something like sdl2

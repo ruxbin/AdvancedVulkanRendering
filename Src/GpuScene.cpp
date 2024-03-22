@@ -2,9 +2,13 @@
 #include "GpuScene.h"
 #include "ObjLoader.h"
 #include "VulkanSetup.h"
+#include "ThirdParty/lzfse.h"
+#include "spdlog/spdlog.h"
 #include <fstream>
 #include <vector>
 #include <array>
+
+#include <cstdlib>
 static std::vector<char> readFile(const std::string &filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
@@ -228,15 +232,15 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   VkVertexInputAttributeDescription edwardInputAttributes[] = {
       {.location = 0,
        .binding = 0,
-       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .format = VK_FORMAT_R16G16B16_SFLOAT,
        .offset = 0},
       {.location = 1,
        .binding = 0,
-       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .format = VK_FORMAT_R16G16B16_SFLOAT,
        .offset = sizeof(float) * 3},
       {.location = 2,
        .binding = 0,
-       .format = VK_FORMAT_R32G32_SFLOAT,
+       .format = VK_FORMAT_R16G16_SFLOAT,
        .offset = sizeof(float) * 3 * 2}};
 
   VkPipelineVertexInputStateCreateInfo edwardVertexInputInfo{};
@@ -574,5 +578,160 @@ void GpuScene::createSyncObjects() {
     throw std::runtime_error(
         "failed to create synchronization objects for a frame!");
   }
+}
+
+AAPLTextureData::AAPLTextureData(AAPLTextureData&& rhs)
+{
+  _path = std::move(rhs._path);
+  _width = rhs._width;
+  _height = rhs._height;
+  _mipmapLevelCount = rhs._mipmapLevelCount;
+  _pixelFormat = rhs._pixelFormat;
+  _pixelDataOffset = rhs._pixelDataOffset;
+  _pixelDataLength = rhs._pixelDataLength;
+  _mipOffsets = std::move(rhs._mipOffsets);
+  _mipLengths = std::move(rhs._mipLengths);
+}
+
+
+AAPLTextureData::AAPLTextureData(FILE * f)
+{
+    int path_length = 0;
+    fread(&path_length,sizeof(int),1,f);
+    char * cstring = (char*)malloc(path_length+1);
+    fread(cstring,1,path_length,f);
+    cstring[path_length]=0;
+    _path = std::string(cstring);
+    free(cstring);
+    fread(&_width, sizeof(unsigned long long), 1, f);
+    fread(&_height, sizeof(unsigned long long), 1, f);
+    fread(&_mipmapLevelCount, sizeof(unsigned long long), 1, f);
+    fread(&_pixelFormat, sizeof(unsigned long), 1, f);
+    fread(&_pixelDataOffset, sizeof(unsigned long long), 1, f);
+    fread(&_pixelDataLength, sizeof(unsigned long long), 1, f);
+    
+    for(int i=0;i<_mipmapLevelCount;i++)
+    {
+        unsigned long offset_c;
+        fread(&offset_c,sizeof(unsigned long),1,f);
+        _mipOffsets.push_back(offset_c);
+    }
+
+    for(int i=0;i<_mipmapLevelCount;i++)
+    {
+        unsigned long length_c;
+        fread(&length_c,sizeof(unsigned long),1,f);
+        _mipLengths.push_back(length_c);
+    }
+
+}
+
+
+AAPLMeshData::~AAPLMeshData()
+{
+  if(_vertexData)
+    free(_vertexData);
+  if(_normalData)
+    free(_normalData);
+  if(_tangentData)
+    free(_tangentData);
+  if(_uvData)
+    free(_uvData);
+  if(_indexData)
+    free(_indexData);
+  if(_chunkData)
+    free(_chunkData);
+  if(_meshData)
+    free(_meshData);
+  if(_materialData)
+    free(_materialData);
+  if(_textureData)
+    free(_textureData);
+}
+
+AAPLMeshData::AAPLMeshData(const char* filepath)
+{
+  FILE * rawFile = fopen(filepath,"rb");
+        if(rawFile)
+        {
+          //unsigned long _vertexCount,_indexCount,_indexType,_chunkCount,_meshCount,_opaqueChunkCount,_opaqueMeshCount,_alphaMaskedChunkCount,_alphaMaskedMeshCount,_transparentChunkCount,_transparentMeshCount,_materialCount;
+            fread(&_vertexCount,sizeof(_vertexCount),1,rawFile);
+            fread(&_indexCount,sizeof(_indexCount),1,rawFile);
+            fread(&_indexType,sizeof(_indexType),1,rawFile);
+            fread(&_chunkCount,sizeof(_chunkCount),1,rawFile);
+            fread(&_meshCount,sizeof(_meshCount),1,rawFile);
+            fread(&_opaqueChunkCount,sizeof(_opaqueChunkCount),1,rawFile);
+            fread(&_opaqueMeshCount,sizeof(_opaqueMeshCount),1,rawFile);
+            fread(&_alphaMaskedChunkCount,sizeof(_alphaMaskedChunkCount),1,rawFile);
+            fread(&_alphaMaskedMeshCount,sizeof(_alphaMaskedMeshCount),1,rawFile);
+            fread(&_transparentChunkCount,sizeof(_transparentChunkCount),1,rawFile);
+            fread(&_transparentMeshCount,sizeof(_transparentMeshCount),1,rawFile);
+            fread(&_materialCount,sizeof(_materialCount),1,rawFile);
+            
+            unsigned long bytes_length = 0;
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _vertexData = malloc(bytes_length);
+            fread(_vertexData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _normalData = malloc(bytes_length);
+            fread(_normalData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _tangentData = malloc(bytes_length);
+            fread(_tangentData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _uvData = malloc(bytes_length);
+            fread(_uvData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _indexData = malloc(bytes_length);
+            fread(_indexData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _chunkData = malloc(bytes_length);
+            fread(_chunkData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _meshData = malloc(bytes_length);
+            fread(_meshData, 1, bytes_length, rawFile);
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _materialData = malloc(bytes_length);
+            fread(_materialData, 1, bytes_length, rawFile);
+            
+            
+            unsigned long texture_count = 0;
+            fread(&texture_count,sizeof(unsigned long),1,rawFile);
+            
+            //[[NSArray alloc] initWithObjects:[[AAPLTextureData alloc] init] count:texture_count];
+            
+            for(int i=0;i<texture_count;++i)
+            {
+                _textures.push_back(AAPLTextureData(rawFile));
+            }
+            
+            
+            
+            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            _textureData = malloc(bytes_length);
+            fread(_textureData,1,bytes_length,rawFile);
+            
+            
+            fclose(rawFile);
+        }
+
+        else
+        {
+          spdlog::error("file not found {}",filepath);
+        }
 }
 

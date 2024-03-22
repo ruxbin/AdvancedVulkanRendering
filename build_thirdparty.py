@@ -4,6 +4,7 @@ import os
 import threading
 from distutils.dir_util import copy_tree
 import argparse
+import shutil
 
 os.environ["CMAKE_BUILD_PARALLEL_LEVEL"] = str(os.cpu_count())
 
@@ -38,8 +39,14 @@ def build_dependencies(build_assimp):
     # spdlog
     print("Building spdlog")
     cmd = "cd ThirdParty/spdlog && " + "cmake -Bbuild -S. -DBUILD_SHARED_LIBS=OFF -DSPDLOG_INSTALL=ON -DCMAKE_BUILD_TYPE=Debug" + " && " + "cmake --build build/ -j 8 --config Debug" #TODO: Debug / Release
-    sdl = threading.Thread(target=lambda: os.system(cmd), args=())
-    sdl.start()
+    spdlog = threading.Thread(target=lambda: os.system(cmd), args=())
+    spdlog.start()
+
+
+    print("Building lzfse")
+    cmd = "cd ThirdParty/lzfse && " + "cmake -Bbuild -S. -DCMAKE_BUILD_TYPE=Debug" + " && " + "cmake --build build/ -j 8 --config Debug" #TODO: Debug / Release
+    lzfse = threading.Thread(target=lambda: os.system(cmd), args=())
+    lzfse.start()
 
     # Assimp
     #assimp = threading.Thread(target=lambda: [], args=())
@@ -60,10 +67,12 @@ def build_dependencies(build_assimp):
 
     #catch2.join()
     sdl.join()
+    spdlog.join()
+    lzfse.join()
     #assimp.join()
     #meshopt.join()
     #gl3w.join()
-
+    shutil.copyfile('ThirdParty/lzfse/src/lzfse.h','Src/Include/ThirdParty/lzfse.h')
     #if build_assimp:
     #    copy_tree("./assimp/contrib", "./ThirdParty/contrib")
 

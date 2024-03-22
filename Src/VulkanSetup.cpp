@@ -2,6 +2,7 @@
 #include "SDL_syswm.h"
 #include "spdlog/spdlog.h"
 #include <stdexcept>
+#include <array>
 static constexpr bool enableValidationLayers = true; // TODO: options
 
 

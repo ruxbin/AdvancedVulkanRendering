@@ -6,6 +6,43 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include <stdio.h>
+
+struct AAPLTextureData
+{
+  std::string _path;
+  unsigned long long _width;
+  unsigned long long _height;
+  unsigned long long _mipmapLevelCount;
+  unsigned long _pixelFormat;
+  unsigned long long _pixelDataOffset;
+  unsigned long long _pixelDataLength;
+  std::vector<unsigned long>  _mipOffsets;
+  std::vector<unsigned long> _mipLengths;
+  AAPLTextureData()=delete;
+  AAPLTextureData(FILE* f);
+  AAPLTextureData(const AAPLTextureData&)=delete;
+  AAPLTextureData(AAPLTextureData&& rhs);
+};
+
+struct AAPLMeshData
+{
+  unsigned long _vertexCount,_indexCount,_indexType,_chunkCount,_meshCount,_opaqueChunkCount,_opaqueMeshCount,_alphaMaskedChunkCount,_alphaMaskedMeshCount,_transparentChunkCount,_transparentMeshCount,_materialCount;
+  void * _vertexData;
+  void * _normalData;
+  void * _tangentData;
+  void * _uvData;
+  void * _indexData;
+  void * _chunkData;
+  void * _meshData;
+  void * _materialData;
+  std::vector<AAPLTextureData> _textures;
+  void * _textureData;
+  AAPLMeshData(const char * filepath);
+  AAPLMeshData()=delete;
+  AAPLMeshData(const AAPLMeshData&)=delete;
+  ~AAPLMeshData();
+};
 
 class GpuScene {
 private:
