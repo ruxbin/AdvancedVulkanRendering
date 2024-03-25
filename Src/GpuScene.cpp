@@ -612,15 +612,15 @@ AAPLTextureData::AAPLTextureData(FILE * f)
     
     for(int i=0;i<_mipmapLevelCount;i++)
     {
-        unsigned long offset_c;
-        fread(&offset_c,sizeof(unsigned long),1,f);
+        unsigned long long offset_c;
+        fread(&offset_c,sizeof(offset_c),1,f);
         _mipOffsets.push_back(offset_c);
     }
 
     for(int i=0;i<_mipmapLevelCount;i++)
     {
-        unsigned long length_c;
-        fread(&length_c,sizeof(unsigned long),1,f);
+        unsigned long long length_c;
+        fread(&length_c,sizeof(length_c),1,f);
         _mipLengths.push_back(length_c);
     }
 
@@ -668,49 +668,49 @@ AAPLMeshData::AAPLMeshData(const char* filepath)
             fread(&_transparentMeshCount,sizeof(_transparentMeshCount),1,rawFile);
             fread(&_materialCount,sizeof(_materialCount),1,rawFile);
             
-            unsigned long bytes_length = 0;
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            unsigned long long bytes_length = 0;
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _vertexData = malloc(bytes_length);
             fread(_vertexData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _normalData = malloc(bytes_length);
             fread(_normalData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _tangentData = malloc(bytes_length);
             fread(_tangentData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _uvData = malloc(bytes_length);
             fread(_uvData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _indexData = malloc(bytes_length);
             fread(_indexData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _chunkData = malloc(bytes_length);
             fread(_chunkData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _meshData = malloc(bytes_length);
             fread(_meshData, 1, bytes_length, rawFile);
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _materialData = malloc(bytes_length);
             fread(_materialData, 1, bytes_length, rawFile);
             
             
-            unsigned long texture_count = 0;
-            fread(&texture_count,sizeof(unsigned long),1,rawFile);
+            unsigned long long texture_count = 0;
+            fread(&texture_count,sizeof(bytes_length),1,rawFile);
             
             //[[NSArray alloc] initWithObjects:[[AAPLTextureData alloc] init] count:texture_count];
             
@@ -721,7 +721,7 @@ AAPLMeshData::AAPLMeshData(const char* filepath)
             
             
             
-            fread(&bytes_length,sizeof(unsigned long),1,rawFile);
+            fread(&bytes_length,sizeof(bytes_length),1,rawFile);
             _textureData = malloc(bytes_length);
             fread(_textureData,1,bytes_length,rawFile);
             
