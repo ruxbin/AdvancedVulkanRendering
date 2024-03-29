@@ -3,7 +3,7 @@
 #include "spdlog/spdlog.h"
 #include <stdexcept>
 #include <array>
-static constexpr bool enableValidationLayers = true; // TODO: options
+static constexpr bool enableValidationLayers = false; // TODO: options
 
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
@@ -448,7 +448,7 @@ void VulkanDevice::createCommandPool() {
   }
 }
 
-VkCommandBuffer VulkanDevice::beginSingleTimeCommands() {
+VkCommandBuffer VulkanDevice::beginSingleTimeCommands()const {
   VkCommandBufferAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -467,7 +467,7 @@ VkCommandBuffer VulkanDevice::beginSingleTimeCommands() {
   return commandBuffer;
 }
 
-void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) const{
   vkEndCommandBuffer(commandBuffer);
 
   VkSubmitInfo submitInfo{};
@@ -488,7 +488,7 @@ bool hasStencilComponent(VkFormat format) {
 
 void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
                                          VkImageLayout oldLayout,
-                                         VkImageLayout newLayout) {
+                                         VkImageLayout newLayout) const {
   VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
   VkImageMemoryBarrier barrier{};

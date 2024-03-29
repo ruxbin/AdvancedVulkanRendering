@@ -364,10 +364,36 @@ VkDebugUtilsMessengerEXT debugMessenger;
     throw std::runtime_error("failed to find suitable memory type!");
   }
 
-  void transitionImageLayout(VkImage image, VkFormat format,
-                             VkImageLayout oldLayout, VkImageLayout newLayout);
-
-  VkCommandBuffer beginSingleTimeCommands();
-  void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+  VkCommandBuffer beginSingleTimeCommands()const;
+  void endSingleTimeCommands(VkCommandBuffer commandBuffer)const;
   void createRenderPass();
+
+  public:
+
+      void transitionImageLayout(VkImage image, VkFormat format,
+          VkImageLayout oldLayout, VkImageLayout newLayout) const;
+
+      void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)const {
+          VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+          VkBufferImageCopy region{};
+          region.bufferOffset = 0;
+          region.bufferRowLength = 0;
+          region.bufferImageHeight = 0;
+          region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.imageSubresource.mipLevel = 0;
+          region.imageSubresource.baseArrayLayer = 0;
+          region.imageSubresource.layerCount = 1;
+          region.imageOffset = { 0, 0, 0 };
+          region.imageExtent = {
+              width,
+              height,
+              1
+          };
+
+          vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+          endSingleTimeCommands(commandBuffer);
+      }
+
 };

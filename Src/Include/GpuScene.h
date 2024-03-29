@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include <utility>
 #include <stdio.h>
 
 struct AAPLTextureData
@@ -81,6 +82,17 @@ private:
   VkSemaphore renderFinishedSemaphore;
   VkFence inFlightFence;
 
+  AAPLMeshData* applMesh;
+
+  VkBuffer applVertexBuffer;
+  VkBuffer applIndexBuffer;
+  VkBuffer applNormalBuffer;
+
+
+  VkImageView currentImage;
+  VkSampler textureSampler;
+
+
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
 
@@ -106,6 +118,8 @@ private:
     void Draw();
     void init_descriptors();
 
+    void updateSamplerInDescriptors();
+
     struct uniformBufferData {
       mat4 projectionMatrix;
     };
@@ -125,6 +139,8 @@ private:
 
       throw std::runtime_error("failed to find suitable memory type!");
     }
+
+    void* loadMipTexture(const AAPLTextureData& texturedata,int,unsigned int&);
 
     void createUniformBuffer() {
       VkBufferCreateInfo bufferInfo{};
@@ -157,7 +173,60 @@ private:
                          uniformBufferMemory, 0);
     }
 
+    void createTextureSampler()
+    {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device.getPhysicalDevice(), &properties);
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+        if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create texture sampler!");
+        }
+    }
+
     void createVertexBuffer();
     void createIndexBuffer();
     void recordCommandBuffer(int frameindex);
+    std::pair<VkImageView,VkDeviceMemory> createTexture(const AAPLTextureData&);
+
+    void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create buffer!");
+        }
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device.getLogicalDevice(), buffer, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+        if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate buffer memory!");
+        }
+
+        vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
+    }
+
+
 };
