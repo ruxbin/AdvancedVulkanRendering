@@ -4,6 +4,8 @@
 #include "VulkanSetup.h"
 #include "ThirdParty/lzfse.h"
 #include "spdlog/spdlog.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include <fstream>
 #include <vector>
 #include <array>
@@ -366,6 +368,237 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   vkDestroyShaderModule(device.getLogicalDevice(), efragShaderModule, nullptr);
 }
 
+enum MTLPixelFormat
+{
+    MTLPixelFormatInvalid = 0,
+
+    /* Normal 8 bit formats */
+
+    MTLPixelFormatA8Unorm = 1,
+
+    MTLPixelFormatR8Unorm = 10,
+    MTLPixelFormatR8Unorm_sRGB = 11,
+    MTLPixelFormatR8Snorm = 12,
+    MTLPixelFormatR8Uint = 13,
+    MTLPixelFormatR8Sint = 14,
+
+    /* Normal 16 bit formats */
+
+    MTLPixelFormatR16Unorm = 20,
+    MTLPixelFormatR16Snorm = 22,
+    MTLPixelFormatR16Uint = 23,
+    MTLPixelFormatR16Sint = 24,
+    MTLPixelFormatR16Float = 25,
+
+    MTLPixelFormatRG8Unorm = 30,
+    MTLPixelFormatRG8Unorm_sRGB = 31,
+    MTLPixelFormatRG8Snorm = 32,
+    MTLPixelFormatRG8Uint = 33,
+    MTLPixelFormatRG8Sint = 34,
+
+    /* Packed 16 bit formats */
+
+    MTLPixelFormatB5G6R5Unorm = 40,
+    MTLPixelFormatA1BGR5Unorm = 41,
+    MTLPixelFormatABGR4Unorm = 42,
+    MTLPixelFormatBGR5A1Unorm = 43,
+
+    /* Normal 32 bit formats */
+
+    MTLPixelFormatR32Uint = 53,
+    MTLPixelFormatR32Sint = 54,
+    MTLPixelFormatR32Float = 55,
+
+    MTLPixelFormatRG16Unorm = 60,
+    MTLPixelFormatRG16Snorm = 62,
+    MTLPixelFormatRG16Uint = 63,
+    MTLPixelFormatRG16Sint = 64,
+    MTLPixelFormatRG16Float = 65,
+
+    MTLPixelFormatRGBA8Unorm = 70,
+    MTLPixelFormatRGBA8Unorm_sRGB = 71,
+    MTLPixelFormatRGBA8Snorm = 72,
+    MTLPixelFormatRGBA8Uint = 73,
+    MTLPixelFormatRGBA8Sint = 74,
+
+    MTLPixelFormatBGRA8Unorm = 80,
+    MTLPixelFormatBGRA8Unorm_sRGB = 81,
+
+    /* Packed 32 bit formats */
+
+    MTLPixelFormatRGB10A2Unorm = 90,
+    MTLPixelFormatRGB10A2Uint = 91,
+
+    MTLPixelFormatRG11B10Float = 92,
+    MTLPixelFormatRGB9E5Float = 93,
+
+    MTLPixelFormatBGR10A2Unorm = 94,
+
+    MTLPixelFormatBGR10_XR = 554,
+    MTLPixelFormatBGR10_XR_sRGB = 555,
+
+    /* Normal 64 bit formats */
+
+    MTLPixelFormatRG32Uint = 103,
+    MTLPixelFormatRG32Sint = 104,
+    MTLPixelFormatRG32Float = 105,
+
+    MTLPixelFormatRGBA16Unorm = 110,
+    MTLPixelFormatRGBA16Snorm = 112,
+    MTLPixelFormatRGBA16Uint = 113,
+    MTLPixelFormatRGBA16Sint = 114,
+    MTLPixelFormatRGBA16Float = 115,
+
+    MTLPixelFormatBGRA10_XR = 552,
+    MTLPixelFormatBGRA10_XR_sRGB = 553,
+
+    /* Normal 128 bit formats */
+
+    MTLPixelFormatRGBA32Uint = 123,
+    MTLPixelFormatRGBA32Sint = 124,
+    MTLPixelFormatRGBA32Float = 125,
+
+    /* Compressed formats. */
+
+    /* S3TC/DXT */
+    MTLPixelFormatBC1_RGBA = 130,
+    MTLPixelFormatBC1_RGBA_sRGB = 131,
+    MTLPixelFormatBC2_RGBA = 132,
+    MTLPixelFormatBC2_RGBA_sRGB = 133,
+    MTLPixelFormatBC3_RGBA = 134,
+    MTLPixelFormatBC3_RGBA_sRGB = 135,
+
+    /* RGTC */
+    MTLPixelFormatBC4_RUnorm = 140,
+    MTLPixelFormatBC4_RSnorm = 141,
+    MTLPixelFormatBC5_RGUnorm = 142,
+    MTLPixelFormatBC5_RGSnorm = 143,
+
+    /* BPTC */
+    MTLPixelFormatBC6H_RGBFloat = 150,
+    MTLPixelFormatBC6H_RGBUfloat = 151,
+    MTLPixelFormatBC7_RGBAUnorm = 152,
+    MTLPixelFormatBC7_RGBAUnorm_sRGB = 153,
+
+    /* PVRTC */
+    MTLPixelFormatPVRTC_RGB_2BPP = 160,
+    MTLPixelFormatPVRTC_RGB_2BPP_sRGB = 161,
+    MTLPixelFormatPVRTC_RGB_4BPP = 162,
+    MTLPixelFormatPVRTC_RGB_4BPP_sRGB = 163,
+    MTLPixelFormatPVRTC_RGBA_2BPP = 164,
+    MTLPixelFormatPVRTC_RGBA_2BPP_sRGB = 165,
+    MTLPixelFormatPVRTC_RGBA_4BPP = 166,
+    MTLPixelFormatPVRTC_RGBA_4BPP_sRGB = 167,
+
+    /* ETC2 */
+    MTLPixelFormatEAC_R11Unorm = 170,
+    MTLPixelFormatEAC_R11Snorm = 172,
+    MTLPixelFormatEAC_RG11Unorm = 174,
+    MTLPixelFormatEAC_RG11Snorm = 176,
+    MTLPixelFormatEAC_RGBA8 = 178,
+    MTLPixelFormatEAC_RGBA8_sRGB = 179,
+
+    MTLPixelFormatETC2_RGB8 = 180,
+    MTLPixelFormatETC2_RGB8_sRGB = 181,
+    MTLPixelFormatETC2_RGB8A1 = 182,
+    MTLPixelFormatETC2_RGB8A1_sRGB = 183,
+
+    /* ASTC */
+    MTLPixelFormatASTC_4x4_sRGB = 186,
+    MTLPixelFormatASTC_5x4_sRGB = 187,
+    MTLPixelFormatASTC_5x5_sRGB = 188,
+    MTLPixelFormatASTC_6x5_sRGB = 189,
+    MTLPixelFormatASTC_6x6_sRGB = 190,
+    MTLPixelFormatASTC_8x5_sRGB = 192,
+    MTLPixelFormatASTC_8x6_sRGB = 193,
+    MTLPixelFormatASTC_8x8_sRGB = 194,
+    MTLPixelFormatASTC_10x5_sRGB = 195,
+    MTLPixelFormatASTC_10x6_sRGB = 196,
+    MTLPixelFormatASTC_10x8_sRGB = 197,
+    MTLPixelFormatASTC_10x10_sRGB = 198,
+    MTLPixelFormatASTC_12x10_sRGB = 199,
+    MTLPixelFormatASTC_12x12_sRGB = 200,
+
+    MTLPixelFormatASTC_4x4_LDR = 204,
+    MTLPixelFormatASTC_5x4_LDR = 205,
+    MTLPixelFormatASTC_5x5_LDR = 206,
+    MTLPixelFormatASTC_6x5_LDR = 207,
+    MTLPixelFormatASTC_6x6_LDR = 208,
+    MTLPixelFormatASTC_8x5_LDR = 210,
+    MTLPixelFormatASTC_8x6_LDR = 211,
+    MTLPixelFormatASTC_8x8_LDR = 212,
+    MTLPixelFormatASTC_10x5_LDR = 213,
+    MTLPixelFormatASTC_10x6_LDR = 214,
+    MTLPixelFormatASTC_10x8_LDR = 215,
+    MTLPixelFormatASTC_10x10_LDR = 216,
+    MTLPixelFormatASTC_12x10_LDR = 217,
+    MTLPixelFormatASTC_12x12_LDR = 218,
+
+
+    // ASTC HDR (High Dynamic Range) Formats
+    MTLPixelFormatASTC_4x4_HDR = 222,
+    MTLPixelFormatASTC_5x4_HDR = 223,
+    MTLPixelFormatASTC_5x5_HDR = 224,
+    MTLPixelFormatASTC_6x5_HDR = 225,
+    MTLPixelFormatASTC_6x6_HDR = 226,
+    MTLPixelFormatASTC_8x5_HDR = 228,
+    MTLPixelFormatASTC_8x6_HDR = 229,
+    MTLPixelFormatASTC_8x8_HDR = 230,
+    MTLPixelFormatASTC_10x5_HDR = 231,
+    MTLPixelFormatASTC_10x6_HDR = 232,
+    MTLPixelFormatASTC_10x8_HDR = 233,
+    MTLPixelFormatASTC_10x10_HDR = 234,
+    MTLPixelFormatASTC_12x10_HDR = 235,
+    MTLPixelFormatASTC_12x12_HDR = 236,
+    /*!
+     @constant MTLPixelFormatGBGR422
+     @abstract A pixel format where the red and green channels are subsampled horizontally.  Two pixels are stored in 32 bits, with shared red and blue values, and unique green values.
+     @discussion This format is equivalent to YUY2, YUYV, yuvs, or GL_RGB_422_APPLE/GL_UNSIGNED_SHORT_8_8_REV_APPLE.   The component order, from lowest addressed byte to highest, is Y0, Cb, Y1, Cr.  There is no implicit colorspace conversion from YUV to RGB, the shader will receive (Cr, Y, Cb, 1).  422 textures must have a width that is a multiple of 2, and can only be used for 2D non-mipmap textures.  When sampling, ClampToEdge is the only usable wrap mode.
+     */
+    MTLPixelFormatGBGR422 = 240,
+
+    /*!
+     @constant MTLPixelFormatBGRG422
+     @abstract A pixel format where the red and green channels are subsampled horizontally.  Two pixels are stored in 32 bits, with shared red and blue values, and unique green values.
+     @discussion This format is equivalent to UYVY, 2vuy, or GL_RGB_422_APPLE/GL_UNSIGNED_SHORT_8_8_APPLE. The component order, from lowest addressed byte to highest, is Cb, Y0, Cr, Y1.  There is no implicit colorspace conversion from YUV to RGB, the shader will receive (Cr, Y, Cb, 1).  422 textures must have a width that is a multiple of 2, and can only be used for 2D non-mipmap textures.  When sampling, ClampToEdge is the only usable wrap mode.
+     */
+    MTLPixelFormatBGRG422 = 241,
+
+    /* Depth */
+
+    MTLPixelFormatDepth16Unorm = 250,
+    MTLPixelFormatDepth32Float = 252,
+
+    /* Stencil */
+
+    MTLPixelFormatStencil8 = 253,
+
+    /* Depth Stencil */
+
+    MTLPixelFormatDepth24Unorm_Stencil8 = 255,
+    MTLPixelFormatDepth32Float_Stencil8 = 260,
+
+    MTLPixelFormatX32_Stencil8 = 261,
+    MTLPixelFormatX24_Stencil8 = 262,
+
+};
+
+VkFormat mapFromApple(MTLPixelFormat appleformat)
+{
+    switch (appleformat)
+    {
+    case MTLPixelFormatBC3_RGBA_sRGB:
+        return VK_FORMAT_BC3_SRGB_BLOCK;
+    case MTLPixelFormatBC5_RGUnorm:
+        return VK_FORMAT_BC5_UNORM_BLOCK;
+    case MTLPixelFormatBC1_RGBA_sRGB:
+        return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+    default:
+        spdlog::error("unsupported appleformat {}", appleformat);
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
 void GpuScene::init_descriptors() {
 
   // information about the binding.
@@ -404,7 +637,8 @@ void GpuScene::init_descriptors() {
   // other code ....
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10}};
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,10} };
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -448,11 +682,12 @@ void GpuScene::init_descriptors() {
   setWrite.dstSet = globalDescriptor;
 
   setWrite.descriptorCount = 1;
+  setWrite.dstArrayElement = 0;
   // and the type is uniform buffer
   setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   setWrite.pBufferInfo = &binfo;
 
-  vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+  //vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
 
 
   VkDescriptorImageInfo imageinfo;
@@ -469,13 +704,15 @@ void GpuScene::init_descriptors() {
   setWriteTexture.dstBinding = 1;
   // of the global descriptor
   setWriteTexture.dstSet = globalDescriptor;
+  setWriteTexture.dstArrayElement = 0;
 
   setWriteTexture.descriptorCount = 1;
-  setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;//TODO: 换成VK_DESCRIPTOR_TYPE_SAMPLER会无效
   setWriteTexture.pImageInfo = &imageinfo;
  
+  std::array< VkWriteDescriptorSet, 2> writes = { setWrite , setWriteTexture};
 
-  vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWriteTexture, 0, nullptr);
+  vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 }
 
 GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
@@ -497,8 +734,14 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
 
   createTextureSampler();
 
-  auto textureRes = createTexture(applMesh->_textures[0]);
-  currentImage = textureRes.first;
+  for (auto& texture : applMesh->_textures)
+  {
+      mapFromApple((MTLPixelFormat)texture._pixelFormat);
+  }
+
+  auto textureRes = createTexture(applMesh->_textures[13]);
+  //auto textureRes = createTexture("G:\\AdvancedVulkanRendering\\textures\\texture.jpg");
+  //currentImage = textureRes.first;
   init_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
 }
@@ -528,7 +771,7 @@ void GpuScene::recordCommandBuffer(int imageIndex){
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
             vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
             //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
@@ -856,232 +1099,9 @@ AAPLMeshData::AAPLMeshData(const char* filepath)
         }
 }
 
-enum MTLPixelFormat
-{
-    MTLPixelFormatInvalid = 0,
-
-        /* Normal 8 bit formats */
-
-        MTLPixelFormatA8Unorm = 1,
-
-        MTLPixelFormatR8Unorm = 10,
-        MTLPixelFormatR8Unorm_sRGB  = 11,
-        MTLPixelFormatR8Snorm = 12,
-        MTLPixelFormatR8Uint = 13,
-        MTLPixelFormatR8Sint = 14,
-
-        /* Normal 16 bit formats */
-
-        MTLPixelFormatR16Unorm = 20,
-        MTLPixelFormatR16Snorm = 22,
-        MTLPixelFormatR16Uint = 23,
-        MTLPixelFormatR16Sint = 24,
-        MTLPixelFormatR16Float = 25,
-
-        MTLPixelFormatRG8Unorm = 30,
-        MTLPixelFormatRG8Unorm_sRGB  = 31,
-        MTLPixelFormatRG8Snorm = 32,
-        MTLPixelFormatRG8Uint = 33,
-        MTLPixelFormatRG8Sint = 34,
-
-        /* Packed 16 bit formats */
-
-        MTLPixelFormatB5G6R5Unorm  = 40,
-        MTLPixelFormatA1BGR5Unorm  = 41,
-        MTLPixelFormatABGR4Unorm  = 42,
-        MTLPixelFormatBGR5A1Unorm  = 43,
-
-        /* Normal 32 bit formats */
-
-        MTLPixelFormatR32Uint = 53,
-        MTLPixelFormatR32Sint = 54,
-        MTLPixelFormatR32Float = 55,
-
-        MTLPixelFormatRG16Unorm = 60,
-        MTLPixelFormatRG16Snorm = 62,
-        MTLPixelFormatRG16Uint = 63,
-        MTLPixelFormatRG16Sint = 64,
-        MTLPixelFormatRG16Float = 65,
-
-        MTLPixelFormatRGBA8Unorm = 70,
-        MTLPixelFormatRGBA8Unorm_sRGB = 71,
-        MTLPixelFormatRGBA8Snorm = 72,
-        MTLPixelFormatRGBA8Uint = 73,
-        MTLPixelFormatRGBA8Sint = 74,
-
-        MTLPixelFormatBGRA8Unorm = 80,
-        MTLPixelFormatBGRA8Unorm_sRGB = 81,
-
-        /* Packed 32 bit formats */
-
-        MTLPixelFormatRGB10A2Unorm = 90,
-        MTLPixelFormatRGB10A2Uint = 91,
-
-        MTLPixelFormatRG11B10Float = 92,
-        MTLPixelFormatRGB9E5Float = 93,
-
-        MTLPixelFormatBGR10A2Unorm   = 94,
-
-        MTLPixelFormatBGR10_XR       = 554,
-        MTLPixelFormatBGR10_XR_sRGB  = 555,
-
-        /* Normal 64 bit formats */
-
-        MTLPixelFormatRG32Uint = 103,
-        MTLPixelFormatRG32Sint = 104,
-        MTLPixelFormatRG32Float = 105,
-
-        MTLPixelFormatRGBA16Unorm = 110,
-        MTLPixelFormatRGBA16Snorm = 112,
-        MTLPixelFormatRGBA16Uint = 113,
-        MTLPixelFormatRGBA16Sint = 114,
-        MTLPixelFormatRGBA16Float = 115,
-
-        MTLPixelFormatBGRA10_XR       = 552,
-        MTLPixelFormatBGRA10_XR_sRGB  = 553,
-
-        /* Normal 128 bit formats */
-
-        MTLPixelFormatRGBA32Uint = 123,
-        MTLPixelFormatRGBA32Sint = 124,
-        MTLPixelFormatRGBA32Float = 125,
-
-        /* Compressed formats. */
-
-        /* S3TC/DXT */
-        MTLPixelFormatBC1_RGBA               = 130,
-        MTLPixelFormatBC1_RGBA_sRGB          = 131,
-        MTLPixelFormatBC2_RGBA               = 132,
-        MTLPixelFormatBC2_RGBA_sRGB          = 133,
-        MTLPixelFormatBC3_RGBA              = 134,
-        MTLPixelFormatBC3_RGBA_sRGB          = 135,
-
-        /* RGTC */
-        MTLPixelFormatBC4_RUnorm             = 140,
-        MTLPixelFormatBC4_RSnorm            = 141,
-        MTLPixelFormatBC5_RGUnorm            = 142,
-        MTLPixelFormatBC5_RGSnorm            = 143,
-
-        /* BPTC */
-        MTLPixelFormatBC6H_RGBFloat          = 150,
-        MTLPixelFormatBC6H_RGBUfloat         = 151,
-        MTLPixelFormatBC7_RGBAUnorm          = 152,
-        MTLPixelFormatBC7_RGBAUnorm_sRGB     = 153,
-
-        /* PVRTC */
-        MTLPixelFormatPVRTC_RGB_2BPP         = 160,
-        MTLPixelFormatPVRTC_RGB_2BPP_sRGB   = 161,
-        MTLPixelFormatPVRTC_RGB_4BPP        = 162,
-        MTLPixelFormatPVRTC_RGB_4BPP_sRGB   = 163,
-        MTLPixelFormatPVRTC_RGBA_2BPP        = 164,
-        MTLPixelFormatPVRTC_RGBA_2BPP_sRGB   = 165,
-        MTLPixelFormatPVRTC_RGBA_4BPP        = 166,
-        MTLPixelFormatPVRTC_RGBA_4BPP_sRGB   = 167,
-
-        /* ETC2 */
-        MTLPixelFormatEAC_R11Unorm          = 170,
-        MTLPixelFormatEAC_R11Snorm           = 172,
-        MTLPixelFormatEAC_RG11Unorm         = 174,
-        MTLPixelFormatEAC_RG11Snorm          = 176,
-        MTLPixelFormatEAC_RGBA8              = 178,
-        MTLPixelFormatEAC_RGBA8_sRGB         = 179,
-
-        MTLPixelFormatETC2_RGB8              = 180,
-        MTLPixelFormatETC2_RGB8_sRGB         = 181,
-        MTLPixelFormatETC2_RGB8A1           = 182,
-        MTLPixelFormatETC2_RGB8A1_sRGB       = 183,
-
-        /* ASTC */
-        MTLPixelFormatASTC_4x4_sRGB          = 186,
-        MTLPixelFormatASTC_5x4_sRGB          = 187,
-        MTLPixelFormatASTC_5x5_sRGB          = 188,
-        MTLPixelFormatASTC_6x5_sRGB         = 189,
-        MTLPixelFormatASTC_6x6_sRGB          = 190,
-        MTLPixelFormatASTC_8x5_sRGB          = 192,
-        MTLPixelFormatASTC_8x6_sRGB          = 193,
-        MTLPixelFormatASTC_8x8_sRGB          = 194,
-        MTLPixelFormatASTC_10x5_sRGB         = 195,
-        MTLPixelFormatASTC_10x6_sRGB        = 196,
-        MTLPixelFormatASTC_10x8_sRGB       = 197,
-        MTLPixelFormatASTC_10x10_sRGB        = 198,
-        MTLPixelFormatASTC_12x10_sRGB        = 199,
-        MTLPixelFormatASTC_12x12_sRGB       = 200,
-
-        MTLPixelFormatASTC_4x4_LDR           = 204,
-        MTLPixelFormatASTC_5x4_LDR           = 205,
-        MTLPixelFormatASTC_5x5_LDR           = 206,
-        MTLPixelFormatASTC_6x5_LDR           = 207,
-        MTLPixelFormatASTC_6x6_LDR           = 208,
-        MTLPixelFormatASTC_8x5_LDR          = 210,
-        MTLPixelFormatASTC_8x6_LDR           = 211,
-        MTLPixelFormatASTC_8x8_LDR           = 212,
-        MTLPixelFormatASTC_10x5_LDR          = 213,
-        MTLPixelFormatASTC_10x6_LDR          = 214,
-        MTLPixelFormatASTC_10x8_LDR          = 215,
-        MTLPixelFormatASTC_10x10_LDR         = 216,
-        MTLPixelFormatASTC_12x10_LDR         = 217,
-        MTLPixelFormatASTC_12x12_LDR         = 218,
 
 
-        // ASTC HDR (High Dynamic Range) Formats
-        MTLPixelFormatASTC_4x4_HDR           = 222,
-        MTLPixelFormatASTC_5x4_HDR           = 223,
-        MTLPixelFormatASTC_5x5_HDR           = 224,
-        MTLPixelFormatASTC_6x5_HDR           = 225,
-        MTLPixelFormatASTC_6x6_HDR          = 226,
-        MTLPixelFormatASTC_8x5_HDR           = 228,
-        MTLPixelFormatASTC_8x6_HDR          = 229,
-        MTLPixelFormatASTC_8x8_HDR          = 230,
-        MTLPixelFormatASTC_10x5_HDR          = 231,
-        MTLPixelFormatASTC_10x6_HDR          = 232,
-        MTLPixelFormatASTC_10x8_HDR          = 233,
-        MTLPixelFormatASTC_10x10_HDR         = 234,
-        MTLPixelFormatASTC_12x10_HDR         = 235,
-        MTLPixelFormatASTC_12x12_HDR         = 236,
-        /*!
-         @constant MTLPixelFormatGBGR422
-         @abstract A pixel format where the red and green channels are subsampled horizontally.  Two pixels are stored in 32 bits, with shared red and blue values, and unique green values.
-         @discussion This format is equivalent to YUY2, YUYV, yuvs, or GL_RGB_422_APPLE/GL_UNSIGNED_SHORT_8_8_REV_APPLE.   The component order, from lowest addressed byte to highest, is Y0, Cb, Y1, Cr.  There is no implicit colorspace conversion from YUV to RGB, the shader will receive (Cr, Y, Cb, 1).  422 textures must have a width that is a multiple of 2, and can only be used for 2D non-mipmap textures.  When sampling, ClampToEdge is the only usable wrap mode.
-         */
-        MTLPixelFormatGBGR422 = 240,
 
-        /*!
-         @constant MTLPixelFormatBGRG422
-         @abstract A pixel format where the red and green channels are subsampled horizontally.  Two pixels are stored in 32 bits, with shared red and blue values, and unique green values.
-         @discussion This format is equivalent to UYVY, 2vuy, or GL_RGB_422_APPLE/GL_UNSIGNED_SHORT_8_8_APPLE. The component order, from lowest addressed byte to highest, is Cb, Y0, Cr, Y1.  There is no implicit colorspace conversion from YUV to RGB, the shader will receive (Cr, Y, Cb, 1).  422 textures must have a width that is a multiple of 2, and can only be used for 2D non-mipmap textures.  When sampling, ClampToEdge is the only usable wrap mode.
-         */
-        MTLPixelFormatBGRG422 = 241,
-
-        /* Depth */
-
-        MTLPixelFormatDepth16Unorm          = 250,
-        MTLPixelFormatDepth32Float = 252,
-
-        /* Stencil */
-
-        MTLPixelFormatStencil8 = 253,
-
-        /* Depth Stencil */
-
-        MTLPixelFormatDepth24Unorm_Stencil8  = 255,
-        MTLPixelFormatDepth32Float_Stencil8  = 260,
-
-        MTLPixelFormatX32_Stencil8  = 261,
-        MTLPixelFormatX24_Stencil8   = 262,
-
-};
-
-VkFormat mapFromApple(MTLPixelFormat appleformat)
-{
-    switch (appleformat)
-    {
-    case MTLPixelFormatBC3_RGBA_sRGB:
-        return VK_FORMAT_BC3_SRGB_BLOCK;
-    default:
-        spdlog::error("unsupported appleformat {}", appleformat);
-    }
-    return VK_FORMAT_UNDEFINED;
-}
 
 
 
@@ -1164,6 +1184,86 @@ void* GpuScene::loadMipTexture(const AAPLTextureData& texturedata, int mip, unsi
 }
 
 
+std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const std::string& path)
+{
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    VkDeviceSize imageSize = texWidth * texHeight * 4;
+
+    if (!pixels) {
+        throw std::runtime_error("failed to load texture image!");
+    }
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+    void* data;
+    vkMapMemory(device.getLogicalDevice(), stagingBufferMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels, static_cast<size_t>(imageSize));
+    vkUnmapMemory(device.getLogicalDevice(), stagingBufferMemory);
+
+    stbi_image_free(pixels);
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = texWidth;
+    imageInfo.extent.height = texHeight;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &textureImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create image!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), textureImage, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate image memory!");
+    }
+
+    vkBindImageMemory(device.getLogicalDevice(), textureImage, textureImageMemory, 0);
+
+    device.transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    device.copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+    device.transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
+    vkFreeMemory(device.getLogicalDevice(), stagingBufferMemory, nullptr);
+
+    VkImageViewCreateInfo imageviewInfo{};
+    imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    imageviewInfo.image = textureImage;
+    imageviewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+
+    imageviewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageviewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageviewInfo.subresourceRange.baseMipLevel = 0;
+    imageviewInfo.subresourceRange.levelCount = 1;// texturedata._mipmapLevelCount;
+    imageviewInfo.subresourceRange.baseArrayLayer = 0;
+    imageviewInfo.subresourceRange.layerCount = 1;
+
+    //VkImageView imageView;
+    if (vkCreateImageView(device.getLogicalDevice(), &imageviewInfo, nullptr, &currentImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create texture image view!");
+    }
+    return std::make_pair(currentImage, textureImageMemory);
+}
+
 std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTextureData& texturedata)
 {
     VkImageCreateInfo imageInfo{};
@@ -1181,7 +1281,7 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.flags = 0; // Optional
 
-    VkImage textureImage;
+    
     if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &textureImage) != VK_SUCCESS) {
         throw std::runtime_error("failed to create image!");
     }
@@ -1194,7 +1294,7 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    VkDeviceMemory textureImageMemory;
+   
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate image memory!");
     }
@@ -1203,6 +1303,9 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
    
     unsigned int rawDataLength = 0;
     void* pixelDataRaw = loadMipTexture(texturedata, 0, rawDataLength);
+
+    //dds_image_t ddsimage = dds_load_from_memory((const char*)pixelDataRaw, rawDataLength);
+    //spdlog::info("ddsimage info {}, {}", ddsimage->header.width, ddsimage->header.height);
 
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
@@ -1229,12 +1332,12 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
     imageviewInfo.subresourceRange.baseArrayLayer = 0;
     imageviewInfo.subresourceRange.layerCount = 1;
 
-    VkImageView imageView;
-    if (vkCreateImageView(device.getLogicalDevice(), &imageviewInfo, nullptr, &imageView) != VK_SUCCESS) {
+    //VkImageView imageView;
+    if (vkCreateImageView(device.getLogicalDevice(), &imageviewInfo, nullptr, &currentImage) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view!");
     }
 
-    return std::make_pair(imageView,textureImageMemory);
+    return std::make_pair(currentImage,textureImageMemory);
 }
 
 bool updated = false;

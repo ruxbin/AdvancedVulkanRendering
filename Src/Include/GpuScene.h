@@ -91,6 +91,8 @@ private:
 
   VkImageView currentImage;
   VkSampler textureSampler;
+  VkImage textureImage;
+  VkDeviceMemory textureImageMemory;
 
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
@@ -201,6 +203,8 @@ private:
     void createIndexBuffer();
     void recordCommandBuffer(int frameindex);
     std::pair<VkImageView,VkDeviceMemory> createTexture(const AAPLTextureData&);
+
+    std::pair<VkImageView, VkDeviceMemory> createTexture(const std::string& path);
 
     void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
         VkBufferCreateInfo bufferInfo{};

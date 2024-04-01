@@ -79,7 +79,8 @@ VkDebugUtilsMessengerEXT debugMessenger;
 #endif
   };
   constexpr static const char *const deviceExtensionNames[] = {
-      VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+  VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME };
   constexpr static const char *const validationLayers[] = {
       "VK_LAYER_RENDERDOC_Capture",
 #ifdef _WIN32
