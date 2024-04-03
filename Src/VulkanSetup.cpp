@@ -3,7 +3,7 @@
 #include "spdlog/spdlog.h"
 #include <stdexcept>
 #include <array>
-static constexpr bool enableValidationLayers = false; // TODO: options
+static constexpr bool enableValidationLayers = true; // TODO: options
 
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
@@ -50,7 +50,7 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
   appInfo.pEngineName = "YouHe";
   appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-  appInfo.apiVersion = VK_API_VERSION_1_0;
+  appInfo.apiVersion = VK_API_VERSION_1_2;//need bindless & vkGetPhysicalDeviceFeatures2
 
   VkInstanceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -92,6 +92,8 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
       VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
   win32surfaceCreateInfo.hinstance = wmInfo.info.win.hinstance;
   win32surfaceCreateInfo.hwnd = wmInfo.info.win.window;
+  win32surfaceCreateInfo.pNext = nullptr;
+  win32surfaceCreateInfo.flags = 0;
   // create surface
   if (vkCreateWin32SurfaceKHR(vkInstance, &win32surfaceCreateInfo, nullptr,
                               &wsiSurface) != VK_SUCCESS) {
@@ -279,7 +281,16 @@ void VulkanDevice::createLogicalDevice() {
     queueCreateInfos.push_back(queueCreateInfo);
   }
 
-  VkPhysicalDeviceFeatures deviceFeatures{};
+
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT, nullptr };
+  VkPhysicalDeviceFeatures2 device_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &indexing_features };
+  vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features);
+
+  bool bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
+
+  // Enable all features: just pass the physical features 2 struct.
+  VkPhysicalDeviceFeatures2 physical_features2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+  vkGetPhysicalDeviceFeatures2(physicalDevice, &physical_features2);
 
   VkDeviceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -288,7 +299,6 @@ void VulkanDevice::createLogicalDevice() {
       static_cast<uint32_t>(queueCreateInfos.size());
   createInfo.pQueueCreateInfos = queueCreateInfos.data();
 
-  createInfo.pEnabledFeatures = &deviceFeatures;
 
   createInfo.enabledExtensionCount = static_cast<uint32_t>(
       sizeof(deviceExtensionNames) / sizeof(deviceExtensionNames[0]));
@@ -300,6 +310,14 @@ void VulkanDevice::createLogicalDevice() {
     createInfo.ppEnabledLayerNames = validationLayers;
   } else {
     createInfo.enabledLayerCount = 0;
+  }
+  createInfo.pNext = &physical_features2;
+  if (bindless_supported) {
+      // This should be already set to VK_TRUE, as we queried before.
+      indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
+      indexing_features.runtimeDescriptorArray = VK_TRUE;
+
+      physical_features2.pNext = &indexing_features;
   }
 
   if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=

@@ -3,7 +3,7 @@
 #include "ObjLoader.h"
 #include "VulkanSetup.h"
 #include "ThirdParty/lzfse.h"
-#include "spdlog/spdlog.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <fstream>
@@ -81,7 +81,7 @@ void uncompressData(const AAPLCompressionHeader& header, const void* data, void*
 
 }
 
-void* uncompressData(unsigned char* data, size_t dataLength, unsigned long long expectedsize)
+void* uncompressData(unsigned char* data, size_t dataLength, uint64_t expectedsize)
 {
         
     AAPLCompressionHeader* header = getCompressionHeader(data,dataLength);
@@ -97,13 +97,14 @@ void* uncompressData(unsigned char* data, size_t dataLength, unsigned long long 
 
 //typedef void* (*AllocatorCallback)(size_t);
 
-void uncompressData(void* data, size_t dataLength,std::function<void*(size_t)> allocatorCallback)
+void* uncompressData(void* data, size_t dataLength,std::function<void*(uint64_t)> allocatorCallback)
 {
     AAPLCompressionHeader* header = getCompressionHeader(data,dataLength);
 
     void* dstBuffer = allocatorCallback(header->uncompressedSize);
 
     uncompressData(*header, (header + 1), dstBuffer);
+    return dstBuffer;
 }
 
 VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
@@ -129,11 +130,17 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   auto evertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.vs.spv");
   auto efragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.ps.spv");
 
+  auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.vs.spv");
+  auto drawClusterPSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.ps.spv");
+
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
   VkShaderModule evertShaderModule = createShaderModule(evertShaderCode);
   VkShaderModule efragShaderModule = createShaderModule(efragShaderCode);
+
+  VkShaderModule drawclusterVSShaderModule = createShaderModule(drawClusterVSShaderCode);
+  VkShaderModule drawclusterPSShaderModule = createShaderModule(drawClusterPSShaderCode);
 
   VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
   vertShaderStageInfo.sType =
@@ -163,10 +170,26 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   efragShaderStageInfo.module = efragShaderModule;
   efragShaderStageInfo.pName = "RenderScenePS";
 
+  VkPipelineShaderStageCreateInfo drawclusterVSShaderStageInfo{};
+  drawclusterVSShaderStageInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  drawclusterVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+  drawclusterVSShaderStageInfo.module = drawclusterVSShaderModule;
+  drawclusterVSShaderStageInfo.pName = "RenderSceneVS";
+
+  VkPipelineShaderStageCreateInfo drawclusterPSShaderStageInfo{};
+  drawclusterPSShaderStageInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  drawclusterPSShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  drawclusterPSShaderStageInfo.module = drawclusterPSShaderModule;
+  drawclusterPSShaderStageInfo.pName = "RenderScenePS";
+
   VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo,
                                                     fragShaderStageInfo};
   VkPipelineShaderStageCreateInfo eshaderStages[] = {evertShaderStageInfo,
                                                      efragShaderStageInfo};
+  VkPipelineShaderStageCreateInfo drawclusterShaderStages[] = { drawclusterVSShaderStageInfo,
+                                                    drawclusterPSShaderStageInfo };
 
   VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
   vertexInputInfo.sType =
@@ -272,6 +295,23 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     throw std::runtime_error("failed to create pipeline layout!");
   }
 
+
+  VkPushConstantRange drawclusterpushconstantRange = { .stageFlags =
+                                                VK_SHADER_STAGE_FRAGMENT_BIT,
+                                            .offset = 0,
+                                            .size = sizeof(uint32_t) };
+  VkPipelineLayoutCreateInfo drawclusterpipelineLayoutInfo{};
+  drawclusterpipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  drawclusterpipelineLayoutInfo.setLayoutCount = 1;
+  drawclusterpipelineLayoutInfo.pSetLayouts = &applSetLayout;
+  drawclusterpipelineLayoutInfo.pushConstantRangeCount = 1;
+  drawclusterpipelineLayoutInfo.pPushConstantRanges = &drawclusterpushconstantRange;
+
+  if (vkCreatePipelineLayout(device.getLogicalDevice(), &drawclusterpipelineLayoutInfo,
+      nullptr, &drawclusterPipelineLayout) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create drawcluster pipeline layout!");
+  }
+
   VkPipelineDepthStencilStateCreateInfo depthStencilState1{};
   depthStencilState1.sType =
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -361,11 +401,83 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     throw std::runtime_error("failed to create edward graphics pipeline!");
   }
 
+
+  constexpr VkVertexInputBindingDescription drawClusterInputBindingPosition = {
+    .binding = 0,
+    .stride = sizeof(float) * 3,
+    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+  constexpr VkVertexInputBindingDescription drawClusterInputBindingNormal = {
+  .binding = 1,
+  .stride = sizeof(float) * 3,
+  .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+  constexpr VkVertexInputBindingDescription drawClusterInputBindingTangent = {
+  .binding = 2,
+  .stride = sizeof(float) * 3,
+  .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+  constexpr VkVertexInputBindingDescription drawClusterInputBindingUV = {
+  .binding = 3,
+  .stride = sizeof(float) * 2,
+  .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+
+  VkVertexInputAttributeDescription drawclusterInputAttributes[] = {
+      {.location = 0,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .offset = 0},
+      {.location = 1,
+       .binding = 1,
+       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .offset = 0},
+      {.location = 2,
+       .binding = 2,
+       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .offset = 0},
+      {.location = 3,
+       .binding = 3,
+       .format = VK_FORMAT_R32G32_SFLOAT,
+       .offset = 0}
+   };
+
+  constexpr std::array<VkVertexInputBindingDescription, 4> drawculsterinputs = { drawClusterInputBindingPosition ,drawClusterInputBindingNormal ,drawClusterInputBindingTangent ,drawClusterInputBindingUV };
+
+  VkPipelineVertexInputStateCreateInfo drawclusterVertexInputInfo{};
+  drawclusterVertexInputInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  drawclusterVertexInputInfo.vertexBindingDescriptionCount = drawculsterinputs.size();
+  drawclusterVertexInputInfo.pVertexBindingDescriptions = drawculsterinputs.data();
+  drawclusterVertexInputInfo.vertexAttributeDescriptionCount = 4;
+  drawclusterVertexInputInfo.pVertexAttributeDescriptions = drawclusterInputAttributes;
+
+  VkGraphicsPipelineCreateInfo drawclusterpipelineInfo{};
+  drawclusterpipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  drawclusterpipelineInfo.stageCount = 2;
+  drawclusterpipelineInfo.pStages = drawclusterShaderStages;
+  drawclusterpipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
+  drawclusterpipelineInfo.pInputAssemblyState = &inputAssembly;
+  drawclusterpipelineInfo.pViewportState = &viewportState;
+  drawclusterpipelineInfo.pRasterizationState = &rasterizer_wireframe;
+  drawclusterpipelineInfo.pMultisampleState = &multisampling;
+  drawclusterpipelineInfo.pColorBlendState = &colorBlending;
+  drawclusterpipelineInfo.layout = drawclusterPipelineLayout;
+  drawclusterpipelineInfo.renderPass = renderPass;
+  drawclusterpipelineInfo.subpass = 0;
+  drawclusterpipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+  drawclusterpipelineInfo.pDepthStencilState = &depthStencilState;
+
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterpipelineInfo,
+      nullptr, &drawclusterPipeline) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create drawcluster graphics pipeline!");
+  }
+
   vkDestroyShaderModule(device.getLogicalDevice(), fragShaderModule, nullptr);
   vkDestroyShaderModule(device.getLogicalDevice(), vertShaderModule, nullptr);
 
   vkDestroyShaderModule(device.getLogicalDevice(), evertShaderModule, nullptr);
   vkDestroyShaderModule(device.getLogicalDevice(), efragShaderModule, nullptr);
+
+
+  vkDestroyShaderModule(device.getLogicalDevice(), drawclusterVSShaderModule, nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), drawclusterPSShaderModule, nullptr);
 }
 
 enum MTLPixelFormat
@@ -599,7 +711,321 @@ VkFormat mapFromApple(MTLPixelFormat appleformat)
     return VK_FORMAT_UNDEFINED;
 }
 
-void GpuScene::init_descriptors() {
+void GpuScene::init_appl_descriptors()
+{
+    // information about the binding.
+    VkDescriptorSetLayoutBinding uniformBufferBinding = {};
+    uniformBufferBinding.binding = 0;
+    uniformBufferBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    uniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+    // we use it from the vertex shader
+    uniformBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutBinding matBinding = {};
+    matBinding.binding = 1;
+    matBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    matBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    // we use it from the vertex shader
+    matBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding samplerBinding = {};
+    samplerBinding.binding = 2;
+    samplerBinding.descriptorCount = 1;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding textureBinding = {};
+    textureBinding.binding = 3;
+    textureBinding.descriptorCount = 4096;
+    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+    VkDescriptorSetLayoutBinding bindings[] = { uniformBufferBinding, matBinding, samplerBinding ,textureBinding };
+
+    constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
+
+    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0,VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT };
+
+    //VkDescriptorBindingFlags flag = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT;
+    
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flag_info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO };
+    flag_info.bindingCount = bindingcount;
+    flag_info.pBindingFlags = bindingFlags.data();
+
+    VkDescriptorSetLayoutCreateInfo setinfo = {};
+    setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setinfo.pNext = &flag_info;
+
+    setinfo.bindingCount = bindingcount;
+    setinfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    // point to the camera buffer binding
+    setinfo.pBindings = bindings;
+
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
+        &applSetLayout);
+
+    std::vector<VkDescriptorPoolSize> sizes = {
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 10},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,4096} };
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
+    pool_info.maxSets = 10;
+    pool_info.poolSizeCount = (uint32_t)sizes.size();
+    pool_info.pPoolSizes = sizes.data();
+
+    vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
+        &descriptorPool);
+
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.pNext = nullptr;
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    // using the pool we just set
+    allocInfo.descriptorPool = descriptorPool;
+    // only 1 descriptor
+    allocInfo.descriptorSetCount = 1;
+    // using the global data layout
+    allocInfo.pSetLayouts = &applSetLayout;
+
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
+        &applDescriptorSet);
+
+
+
+    // information about the buffer we want to point at in the descriptor
+
+    VkDescriptorBufferInfo unibinfo;
+    // it will be the camera buffer
+    unibinfo.buffer = uniformBuffer;
+    // at 0 offset
+    unibinfo.offset = 0;
+    // of the size of a camera data struct
+    unibinfo.range = sizeof(uniformBufferData);
+
+    VkWriteDescriptorSet uniformWrite = {};
+    uniformWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    uniformWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    uniformWrite.dstBinding = 0;
+    // of the global descriptor
+    uniformWrite.dstSet = applDescriptorSet;
+
+    uniformWrite.descriptorCount = 1;
+    uniformWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    uniformWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniformWrite.pBufferInfo = &unibinfo;
+
+
+    VkDescriptorBufferInfo binfo;
+    binfo.buffer = applMaterialBuffer;
+    // at 0 offset
+    binfo.offset = 0;
+    binfo.range = sizeof(AAPLShaderMaterial)*materials.size();
+
+    VkWriteDescriptorSet setWrite = {};
+    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite.dstBinding = 1;
+    // of the global descriptor
+    setWrite.dstSet = applDescriptorSet;
+
+    setWrite.descriptorCount = 1;
+    setWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWrite.pBufferInfo = &binfo;
+
+    VkDescriptorImageInfo samplerinfo;
+    samplerinfo.sampler = textureSampler;
+    VkWriteDescriptorSet setSampler = {};
+    setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setSampler.dstBinding = 2;
+    setSampler.pNext = nullptr;
+    setSampler.dstSet = applDescriptorSet;
+    setSampler.dstArrayElement = 0;
+    setSampler.descriptorCount = 1;
+    setSampler.pImageInfo = &samplerinfo;
+    setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+
+    std::vector<VkDescriptorImageInfo> imageinfo;
+    imageinfo.resize(textures.size());
+    for (int texturei = 0; texturei < textures.size(); ++texturei)
+    {
+        imageinfo[texturei].imageView = textures[texturei].second;
+        imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        //imageinfo[texturei].sampler = textureSampler;
+    }
+
+
+    VkWriteDescriptorSet setWriteTexture = {};
+    setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteTexture.pNext = nullptr;
+
+    
+    setWriteTexture.dstBinding = 3;
+    // of the global descriptor
+    setWriteTexture.dstSet = applDescriptorSet;
+    setWriteTexture.dstArrayElement = 0;
+
+    setWriteTexture.descriptorCount = textures.size();
+    setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setWriteTexture.pImageInfo = imageinfo.data();
+
+   // std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture };
+    std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+
+}
+
+void GpuScene::init_descriptorsV2()
+{
+    // information about the binding.
+    VkDescriptorSetLayoutBinding camBufferBinding = {};
+    camBufferBinding.binding = 0;
+    camBufferBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+    // we use it from the vertex shader
+    camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutBinding textureBinding = {};
+    textureBinding.binding = 1;
+    textureBinding.descriptorCount = 1;
+    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding samplerBinding = {};
+    samplerBinding.binding = 2;
+    samplerBinding.descriptorCount = 1;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+    VkDescriptorSetLayoutBinding bindings[] = { camBufferBinding,textureBinding,samplerBinding };
+
+    VkDescriptorSetLayoutCreateInfo setinfo = {};
+    setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setinfo.pNext = nullptr;
+
+    // we are going to have 1 binding
+    setinfo.bindingCount = 3;
+    // no flags
+    setinfo.flags = 0;
+    // point to the camera buffer binding
+    setinfo.pBindings = bindings;
+
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
+        &globalSetLayout);
+
+    // other code ....
+    // create a descriptor pool that will hold 10 uniform buffers
+    std::vector<VkDescriptorPoolSize> sizes = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,10},
+        {VK_DESCRIPTOR_TYPE_SAMPLER,10} };
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = 0;
+    pool_info.maxSets = 10;
+    pool_info.poolSizeCount = (uint32_t)sizes.size();
+    pool_info.pPoolSizes = sizes.data();
+
+    vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
+        &descriptorPool);
+
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.pNext = nullptr;
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    // using the pool we just set
+    allocInfo.descriptorPool = descriptorPool;
+    // only 1 descriptor
+    allocInfo.descriptorSetCount = 1;
+    // using the global data layout
+    allocInfo.pSetLayouts = &globalSetLayout;
+
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
+        &globalDescriptor);
+
+    // information about the buffer we want to point at in the descriptor
+    VkDescriptorBufferInfo binfo;
+    // it will be the camera buffer
+    binfo.buffer = uniformBuffer;
+    // at 0 offset
+    binfo.offset = 0;
+    // of the size of a camera data struct
+    binfo.range = sizeof(uniformBufferData);
+
+    VkWriteDescriptorSet setWrite = {};
+    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite.dstBinding = 0;
+    // of the global descriptor
+    setWrite.dstSet = globalDescriptor;
+
+    setWrite.descriptorCount = 1;
+    setWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite.pBufferInfo = &binfo;
+
+    //vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+
+    VkImageView currentImage;//TODO:
+    VkDescriptorImageInfo imageinfo;
+    imageinfo.imageView = currentImage;
+    imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    //imageinfo.sampler = textureSampler;
+
+
+    VkWriteDescriptorSet setWriteTexture = {};
+    setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteTexture.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWriteTexture.dstBinding = 1;
+    // of the global descriptor
+    setWriteTexture.dstSet = globalDescriptor;
+    setWriteTexture.dstArrayElement = 0;
+
+    setWriteTexture.descriptorCount = 1;
+    setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setWriteTexture.pImageInfo = &imageinfo;
+
+
+    VkDescriptorImageInfo samplerinfo;
+    samplerinfo.sampler = textureSampler;
+    VkWriteDescriptorSet setSampler = {};
+    setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setSampler.dstBinding = 2;
+    setSampler.pNext = nullptr;
+    setSampler.dstSet = globalDescriptor;
+    setSampler.dstArrayElement = 0;
+    setSampler.descriptorCount = 1;
+    setSampler.pImageInfo = &samplerinfo;
+
+
+    std::array< VkWriteDescriptorSet, 3> writes = { setWrite , setWriteTexture, setSampler };
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+}
+
+void GpuScene::init_descriptors(VkImageView currentImage) {
 
   // information about the binding.
   VkDescriptorSetLayoutBinding camBufferBinding = {};
@@ -614,7 +1040,7 @@ void GpuScene::init_descriptors() {
   VkDescriptorSetLayoutBinding samplerBinding = {};
   samplerBinding.binding = 1;
   samplerBinding.descriptorCount = 1;
-  samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 
@@ -689,7 +1115,6 @@ void GpuScene::init_descriptors() {
 
   //vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
 
-
   VkDescriptorImageInfo imageinfo;
   imageinfo.imageView = currentImage;
   imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -713,6 +1138,47 @@ void GpuScene::init_descriptors() {
   std::array< VkWriteDescriptorSet, 2> writes = { setWrite , setWriteTexture};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+
+
+  //AAPLDescriptorSets
+}
+
+void GpuScene::CreateTextures()
+{
+    for (auto& texture : applMesh->_textures)
+    {
+        textureHashMap[texture._pathHash]=textures.size();
+        textures.push_back(createTexture(texture));
+    }
+}
+
+void GpuScene::ConfigureMaterial(const AAPLMaterial& input, AAPLShaderMaterial& output)
+{
+    if (input.hasBaseColorTexture && !textureHashMap.contains(input.baseColorTextureHash))
+    {
+        spdlog::error("texture hash {} is invalid", input.baseColorTextureHash);
+    }
+    if (input.hasNormalMap && !textureHashMap.contains(input.normalMapHash))
+    {
+        spdlog::error("texture hash {} is invalid", input.normalMapHash);
+    }
+    if (input.hasEmissiveTexture && !textureHashMap.contains(input.emissiveTextureHash))
+    {
+        spdlog::error("texture hash {} is invalid", input.emissiveTextureHash);
+    }
+    if (input.hasMetallicRoughnessTexture && !textureHashMap.contains(input.metallicRoughnessHash))
+    {
+        spdlog::error("texture hash {} is invalid", input.metallicRoughnessHash);
+    }
+
+    const uint32_t INVALID_TEXTURE_INDEX = 0xffffffff;
+    output.albedo_texture_index = input.hasBaseColorTexture ? textureHashMap[input.baseColorTextureHash] : INVALID_TEXTURE_INDEX;
+    output.normal_texture_index = input.hasNormalMap ? textureHashMap[input.normalMapHash] : INVALID_TEXTURE_INDEX;
+    output.emissive_texture_index = input.hasEmissiveTexture ? textureHashMap[input.emissiveTextureHash] : INVALID_TEXTURE_INDEX;
+    output.roughness_texture_index = input.hasMetallicRoughnessTexture ? textureHashMap[input.metallicRoughnessHash] : INVALID_TEXTURE_INDEX;
+    output.hasEmissive = input.hasEmissiveTexture;
+    output.hasMetallicRoughness = input.hasMetallicRoughnessTexture;
+    output.alpha = input.opacity;
 }
 
 GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
@@ -732,17 +1198,255 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
 
   applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
 
-  createTextureSampler();
 
-  for (auto& texture : applMesh->_textures)
+ 
+
+  CreateTextures();
+
+  if (sizeof(AAPLMaterial) != 96)
   {
-      mapFromApple((MTLPixelFormat)texture._pixelFormat);
+      spdlog::error("layout mismatch with apple sizeof(AAPLMaterial) is {}, while apple is 96", sizeof(AAPLMaterial));
   }
 
-  auto textureRes = createTexture(applMesh->_textures[13]);
+  AAPLMaterial* decompressedMaterial = (AAPLMaterial*)uncompressData((unsigned char*)applMesh->_materialData, applMesh->compressedMaterialDataLength, 
+      applMesh->_materialCount * sizeof(AAPLMaterial));
+  materials.resize(applMesh->_materialCount);
+  for (int i = 0; i < applMesh->_materialCount; i++)
+  {
+      ConfigureMaterial(decompressedMaterial[i], materials[i]); 
+  };
+
+  //create material buffer
+  {
+      VkBufferCreateInfo bufferInfo{};
+      bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bufferInfo.size = applMesh->_materialCount * sizeof(AAPLShaderMaterial);
+      bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      bufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+          &applMaterialBuffer) != VK_SUCCESS) {
+          throw std::runtime_error("failed to create vertex buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), applMaterialBuffer,
+          &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex = findMemoryType(
+          memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+          &applMaterialBufferMemory) != VK_SUCCESS) {
+          throw std::runtime_error("failed to allocate vertex buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), applMaterialBuffer,
+          applMaterialBufferMemory, 0);
+      void* data;
+      vkMapMemory(device.getLogicalDevice(), applMaterialBufferMemory, 0, bufferInfo.size,
+          0, &data);
+      memcpy(data, materials.data(), bufferInfo.size);
+      vkUnmapMemory(device.getLogicalDevice(), applMaterialBufferMemory);
+  }
+
+  vec3* vertexs = (vec3*)uncompressData((unsigned char*)applMesh->_vertexData, applMesh->compressedVertexDataLength, 
+      [this](uint64_t buffersize) {
+          VkBufferCreateInfo bufferInfo{};
+          bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+          bufferInfo.size = buffersize;
+          bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+          bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          bufferInfo.flags = 0;
+          if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+              &applVertexBuffer) != VK_SUCCESS) {
+              throw std::runtime_error("failed to create vertex buffer!");
+          }
+          VkMemoryRequirements memRequirements;
+          vkGetBufferMemoryRequirements(device.getLogicalDevice(), applVertexBuffer,
+              &memRequirements);
+
+          VkMemoryAllocateInfo allocInfo{};
+          allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+          allocInfo.allocationSize = memRequirements.size;
+          allocInfo.memoryTypeIndex = findMemoryType(
+              memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+          if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+              &applVertexBufferMemory) != VK_SUCCESS) {
+              throw std::runtime_error("failed to allocate vertex buffer memory!");
+          }
+          vkBindBufferMemory(device.getLogicalDevice(), applVertexBuffer,
+              applVertexBufferMemory, 0);
+          void* data;
+          vkMapMemory(device.getLogicalDevice(), applVertexBufferMemory, 0, bufferInfo.size,
+              0, &data);
+          return data;
+        }
+      );//applMesh->_vertexCount * sizeof(vec3));
+  //TODO: ugly
+  vkUnmapMemory(device.getLogicalDevice(), applVertexBufferMemory);
+
+  vec3* normals = (vec3*)uncompressData((unsigned char*)applMesh->_normalData, applMesh->compressedNormalDataLength,       [this](uint64_t buffersize) {
+          VkBufferCreateInfo bufferInfo{};
+          bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+          bufferInfo.size = buffersize;
+          bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+          bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          bufferInfo.flags = 0;
+          if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+              &applNormalBuffer) != VK_SUCCESS) {
+              throw std::runtime_error("failed to create vertex buffer!");
+          }
+          VkMemoryRequirements memRequirements;
+          vkGetBufferMemoryRequirements(device.getLogicalDevice(), applNormalBuffer,
+              &memRequirements);
+
+          VkMemoryAllocateInfo allocInfo{};
+          allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+          allocInfo.allocationSize = memRequirements.size;
+          allocInfo.memoryTypeIndex = findMemoryType(
+              memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+          if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+              &applNormalBufferMemory) != VK_SUCCESS) {
+              throw std::runtime_error("failed to allocate vertex buffer memory!");
+          }
+          vkBindBufferMemory(device.getLogicalDevice(), applNormalBuffer,
+              applNormalBufferMemory, 0);
+          void* data;
+          vkMapMemory(device.getLogicalDevice(), applNormalBufferMemory, 0, bufferInfo.size,
+              0, &data);
+          return data;
+        });
+  vkUnmapMemory(device.getLogicalDevice(), applNormalBufferMemory);
+
+
+  vec3* tangents = (vec3*)uncompressData((unsigned char*)applMesh->_tangentData, applMesh->compressedTangentDataLength, [this](uint64_t buffersize) {
+      VkBufferCreateInfo bufferInfo{};
+      bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bufferInfo.size = buffersize;
+      bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+      bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      bufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+          &applTangentBuffer) != VK_SUCCESS) {
+          throw std::runtime_error("failed to create vertex buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), applTangentBuffer,
+          &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex = findMemoryType(
+          memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+          &applTangentBufferMemory) != VK_SUCCESS) {
+          throw std::runtime_error("failed to allocate vertex buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), applTangentBuffer,
+          applTangentBufferMemory, 0);
+      void* data;
+      vkMapMemory(device.getLogicalDevice(), applTangentBufferMemory, 0, bufferInfo.size,
+          0, &data);
+      return data;
+      });
+  vkUnmapMemory(device.getLogicalDevice(), applTangentBufferMemory);
+
+  vec2* uvs = (vec2*)uncompressData((unsigned char*)applMesh->_uvData, applMesh->compressedUvDataLength, [this](uint64_t buffersize) {
+      VkBufferCreateInfo bufferInfo{};
+      bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bufferInfo.size = buffersize;
+      bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+      bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      bufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+          &applUVBuffer) != VK_SUCCESS) {
+          throw std::runtime_error("failed to create vertex buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), applUVBuffer,
+          &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex = findMemoryType(
+          memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+          &applUVBufferMemory) != VK_SUCCESS) {
+          throw std::runtime_error("failed to allocate vertex buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), applUVBuffer,
+          applUVBufferMemory, 0);
+      void* data;
+      vkMapMemory(device.getLogicalDevice(), applUVBufferMemory, 0, bufferInfo.size,
+          0, &data);
+      return data;
+      });
+   vkUnmapMemory(device.getLogicalDevice(), applUVBufferMemory);
+
+
+
+   uint32_t* indices = (uint32_t*)uncompressData((unsigned char*)applMesh->_indexData, applMesh->compressedIndexDataLength, [this](uint64_t buffersize) {
+       VkBufferCreateInfo bufferInfo{};
+       bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+       bufferInfo.size = buffersize;
+       bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+       bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+       bufferInfo.flags = 0;
+       if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr, &applIndexBuffer) !=
+           VK_SUCCESS) {
+           throw std::runtime_error("failed to create index buffer!");
+       }
+       VkMemoryRequirements memRequirements;
+       vkGetBufferMemoryRequirements(device.getLogicalDevice(), applIndexBuffer, &memRequirements);
+
+       VkMemoryAllocateInfo allocInfo{};
+       allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+       allocInfo.allocationSize = memRequirements.size;
+       allocInfo.memoryTypeIndex = findMemoryType(
+           memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+       if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &applIndexMemory) !=
+           VK_SUCCESS) {
+           throw std::runtime_error("failed to allocate vertex buffer memory!");
+       }
+       vkBindBufferMemory(device.getLogicalDevice(), applIndexBuffer, applIndexMemory, 0);
+       void* data;
+       vkMapMemory(device.getLogicalDevice(), applIndexMemory, 0, bufferInfo.size, 0, &data);
+       
+       return data;
+        });
+   vkUnmapMemory(device.getLogicalDevice(), applIndexMemory);
+
+
+
+   m_Chunks = (AAPLMeshChunk*)uncompressData((unsigned char*)applMesh->_chunkData, applMesh->compressedChunkDataLength, applMesh->_chunkCount * sizeof(AAPLMeshChunk));
+
+  AAPLSubMesh * submeshes = (AAPLSubMesh*)uncompressData((unsigned char*)applMesh->_meshData, applMesh->compressedMeshDataLength, applMesh->_meshCount * sizeof(AAPLSubMesh));
+
+
+  createTextureSampler();
+
+  //auto textureRes = createTexture(applMesh->_textures[13]);
   //auto textureRes = createTexture("G:\\AdvancedVulkanRendering\\textures\\texture.jpg");
   //currentImage = textureRes.first;
-  init_descriptors();
+  //init_descriptorsV2();
+  //init_descriptors(textureRes.second);
+  init_descriptors(textures[13].second);
+  init_appl_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
 }
 
@@ -773,6 +1477,8 @@ void GpuScene::recordCommandBuffer(int imageIndex){
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
             vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+
+        //DrawChunks();
 
             //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
             //VkBuffer vertexBuffers[] = {vertexBuffer};
@@ -863,6 +1569,50 @@ void GpuScene::createIndexBuffer() {
   vkUnmapMemory(device.getLogicalDevice(), indexBufferMemory);
 }
 
+
+struct PerObjPush
+{
+    uint32_t matindex;
+};
+
+void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
+{
+   vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
+   VkBuffer vertexBuffers[] = { applVertexBuffer , applNormalBuffer, applTangentBuffer, applUVBuffer};
+   VkDeviceSize offsets[] = {0,0,0,0};
+
+    vkCmdBindVertexBuffers(commandBuffer, 0, sizeof(vertexBuffers)/sizeof(vertexBuffers[0]), vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer,0, VK_INDEX_TYPE_UINT32);
+    
+            //if the descriptor set data isn't change we can omit this?
+    vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout,0,1,&applDescriptorSet,0,nullptr);
+            //if the constant isn't changed we can omit this?
+            //mat4 scaleM = scale(modelScale);
+            //mat4 withScale = transpose(maincamera->getObjectToCamera()) * scaleM;
+    PerObjPush perobj = { .matindex = chunk.materialIndex };
+    vkCmdPushConstants(commandBuffer,epipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(perobj),&perobj);
+    vkCmdDrawIndexed(commandBuffer,chunk.indexCount,1,chunk.indexBegin,0,0);
+}
+
+void GpuScene::DrawChunks()
+{
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
+    VkBuffer vertexBuffers[] = { applVertexBuffer , applNormalBuffer, applTangentBuffer, applUVBuffer };
+    VkDeviceSize offsets[] = { 0,0,0,0 };
+
+    vkCmdBindVertexBuffers(commandBuffer, 0, sizeof(vertexBuffers) / sizeof(vertexBuffers[0]), vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+    //if the descriptor set data isn't change we can omit this?
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+    for (int i = 0; i < applMesh->_chunkCount; ++i)
+    {
+        PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
+        vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
+        vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
+    }
+}
+
 void GpuScene::Draw() {
   // begin command buffer record
   // bind graphics pipeline
@@ -883,7 +1633,8 @@ void GpuScene::Draw() {
   vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(uniformBufferData), 0,
               &data);
   memcpy(data, transpose(maincamera->getProjectMatrix()).value_ptr(),
-         (size_t)sizeof(uniformBufferData));
+         (size_t)sizeof(mat4));
+  memcpy(((mat4*)data)+1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
   vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
   vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
   recordCommandBuffer( imageIndex);
@@ -947,6 +1698,7 @@ void GpuScene::createSyncObjects() {
 AAPLTextureData::AAPLTextureData(AAPLTextureData&& rhs)
 {
   _path = std::move(rhs._path);
+  _pathHash = rhs._pathHash;
   _width = rhs._width;
   _height = rhs._height;
   _mipmapLevelCount = rhs._mipmapLevelCount;
@@ -967,10 +1719,11 @@ AAPLTextureData::AAPLTextureData(FILE * f)
     cstring[path_length]=0;
     _path = std::string(cstring);
     free(cstring);
+    fread(&_pathHash, sizeof(uint32_t), 1, f);
     fread(&_width, sizeof(unsigned long long), 1, f);
     fread(&_height, sizeof(unsigned long long), 1, f);
     fread(&_mipmapLevelCount, sizeof(unsigned long long), 1, f);
-    fread(&_pixelFormat, sizeof(unsigned long), 1, f);
+    fread(&_pixelFormat, sizeof(uint32_t), 1, f);
     fread(&_pixelDataOffset, sizeof(unsigned long long), 1, f);
     fread(&_pixelDataLength, sizeof(unsigned long long), 1, f);
     
@@ -1013,6 +1766,12 @@ AAPLMeshData::~AAPLMeshData()
     free(_textureData);
 }
 
+enum MTLIndexType
+{
+    MTLIndexTypeUInt16 = 0,
+    MTLIndexTypeUInt32 = 1
+};
+
 AAPLMeshData::AAPLMeshData(const char* filepath)
 {
   FILE * rawFile = fopen(filepath,"rb");
@@ -1022,6 +1781,8 @@ AAPLMeshData::AAPLMeshData(const char* filepath)
             fread(&_vertexCount,sizeof(_vertexCount),1,rawFile);
             fread(&_indexCount,sizeof(_indexCount),1,rawFile);
             fread(&_indexType,sizeof(_indexType),1,rawFile);
+            if (_indexType != MTLIndexTypeUInt32)
+                spdlog::error("index type error!!!");
             fread(&_chunkCount,sizeof(_chunkCount),1,rawFile);
             fread(&_meshCount,sizeof(_meshCount),1,rawFile);
             fread(&_opaqueChunkCount,sizeof(_opaqueChunkCount),1,rawFile);
@@ -1034,41 +1795,49 @@ AAPLMeshData::AAPLMeshData(const char* filepath)
             
             unsigned long long bytes_length = 0;
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedVertexDataLength = bytes_length;
             _vertexData = malloc(bytes_length);
             fread(_vertexData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedNormalDataLength = bytes_length;
             _normalData = malloc(bytes_length);
             fread(_normalData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedTangentDataLength = bytes_length;
             _tangentData = malloc(bytes_length);
             fread(_tangentData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedUvDataLength = bytes_length;
             _uvData = malloc(bytes_length);
             fread(_uvData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedIndexDataLength = bytes_length;
             _indexData = malloc(bytes_length);
             fread(_indexData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedChunkDataLength = bytes_length;
             _chunkData = malloc(bytes_length);
             fread(_chunkData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedMeshDataLength = bytes_length;
             _meshData = malloc(bytes_length);
             fread(_meshData, 1, bytes_length, rawFile);
             
             
             fread(&bytes_length,sizeof(bytes_length),1,rawFile);
+            compressedMaterialDataLength = bytes_length;
             _materialData = malloc(bytes_length);
             fread(_materialData, 1, bytes_length, rawFile);
             
@@ -1186,6 +1955,8 @@ void* GpuScene::loadMipTexture(const AAPLTextureData& texturedata, int mip, unsi
 
 std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const std::string& path)
 {
+    VkImage textureImage;
+    VkImageView currentImage;
     int texWidth, texHeight, texChannels;
     stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
     VkDeviceSize imageSize = texWidth * texHeight * 4;
@@ -1232,6 +2003,7 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const std::string
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
+    VkDeviceMemory textureImageMemory;
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate image memory!");
     }
@@ -1264,8 +2036,11 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const std::string
     return std::make_pair(currentImage, textureImageMemory);
 }
 
-std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTextureData& texturedata)
+std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& texturedata)
 {
+    VkImageView currentImage;
+    VkImage textureImage;
+
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -1294,7 +2069,7 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-   
+    VkDeviceMemory textureImageMemory;
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate image memory!");
     }
@@ -1316,9 +2091,14 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
     memcpy(mappedData, pixelDataRaw, static_cast<size_t>(rawDataLength));
     vkUnmapMemory(device.getLogicalDevice(), stagingBufferMemory);
 
+    free(pixelDataRaw);
+
     device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     device.copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texturedata._width), static_cast<uint32_t>(texturedata._height));
     device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
+    vkFreeMemory(device.getLogicalDevice(), stagingBufferMemory, nullptr);
 
     VkImageViewCreateInfo imageviewInfo{};
     imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1337,11 +2117,11 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const AAPLTexture
         throw std::runtime_error("failed to create texture image view!");
     }
 
-    return std::make_pair(currentImage,textureImageMemory);
+    return std::make_pair(textureImage,currentImage);
 }
 
 bool updated = false;
-void GpuScene::updateSamplerInDescriptors()
+void GpuScene::updateSamplerInDescriptors(VkImageView currentImage)
 {
     if (updated)
         return;
@@ -1369,4 +2149,9 @@ void GpuScene::updateSamplerInDescriptors()
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
 }
+
+
+
+
+
 

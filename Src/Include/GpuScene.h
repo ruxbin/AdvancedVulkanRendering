@@ -3,6 +3,7 @@
 #include "VulkanSetup.h"
 #include "vulkan/vulkan.h"
 #include "Camera.h"
+#include "spdlog/spdlog.h"
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -12,10 +13,11 @@
 struct AAPLTextureData
 {
   std::string _path;
+  uint32_t _pathHash;
   unsigned long long _width;
   unsigned long long _height;
   unsigned long long _mipmapLevelCount;
-  unsigned long _pixelFormat;
+  uint32_t _pixelFormat;
   unsigned long long _pixelDataOffset;
   unsigned long long _pixelDataLength;
   std::vector<unsigned long>  _mipOffsets;
@@ -37,6 +39,14 @@ struct AAPLMeshData
   void * _chunkData;
   void * _meshData;
   void * _materialData;
+  uint64_t compressedVertexDataLength;
+  uint64_t compressedNormalDataLength;
+  uint64_t compressedTangentDataLength;
+  uint64_t compressedUvDataLength;
+  uint64_t compressedIndexDataLength;
+  uint64_t compressedChunkDataLength;
+  uint64_t compressedMeshDataLength;
+  uint64_t compressedMaterialDataLength;
   std::vector<AAPLTextureData> _textures;
   void * _textureData;
   AAPLMeshData(const char * filepath);
@@ -44,6 +54,85 @@ struct AAPLMeshData
   AAPLMeshData(const AAPLMeshData&)=delete;
   ~AAPLMeshData();
 };
+
+struct AAPLBoundingBox3
+{
+    alignas(16) vec3 min;
+    alignas(16) vec3 max;
+};
+
+struct AAPLSphere
+{
+    vec4 data;//xyz center, w radius
+};
+
+struct AAPLMeshChunk
+{
+    AAPLBoundingBox3 boundingBox;
+    vec4 normalDistribution;
+    vec4 cluterMean;
+
+    AAPLSphere boundingSphere;
+
+    unsigned int materialIndex;
+    unsigned int indexBegin;
+    unsigned int indexCount;
+};
+
+struct AAPLShaderMaterial
+{
+    uint32_t albedo_texture_index;
+    uint32_t roughness_texture_index;
+    uint32_t normal_texture_index;
+    uint32_t emissive_texture_index;
+    float alpha;
+    bool hasMetallicRoughness;
+    bool hasEmissive;
+#if SUPPORT_SPARSE_TEXTURES //TODO:
+    uint baseColorMip;
+    uint metallicRoughnessMip;
+    uint normalMip;
+    uint emissiveMip;
+#endif
+};
+
+// A SubMesh represents a group of chunks that share a material.
+//  The indices for the chunks in this submesh are contiguous in the index
+//  buffer.
+struct AAPLSubMesh
+{
+    uint32_t            materialIndex;          // Material index for this submesh.
+
+    AAPLBoundingBox3    boundingBox;            // Combined bounding box for the chunks in this submesh.
+    AAPLSphere          boundingSphere;         // Combined bounding sphere for the chunks in this. submesh.
+
+    unsigned int        indexBegin;             // Offset in mesh index buffer to the indices for this. submesh.
+    unsigned int        indexCount;             // Number of indices for this submesh in mesh index. buffer.
+
+    unsigned int        chunkStart;             // Offset in mesh index buffer to the chunks for this. submesh.
+    unsigned int        chunkCount;             // Number of chunks for this submesh in mesh index buffer.
+};
+
+// Data only structure storing encoded material information.
+//TODO: vec4换成vec3后,虽然size还是96，但是uncompress之后的数据全乱了
+struct AAPLMaterial
+{
+    alignas(16) vec4 baseColor;                    // Fallback diffuse color.
+    unsigned int  baseColorTextureHash;         // Hash of diffuse texture.
+    bool          hasBaseColorTexture;          // Flag indicating a valid diffuse texture index.
+    bool          hasDiffuseMask;               // Flag indicating an alpha mask in the diffuse texture.
+    alignas(16) vec4 metallicRoughness;            // Fallback metallic roughness.
+    unsigned int  metallicRoughnessHash;        // Hash of specular texture.
+    bool          hasMetallicRoughnessTexture;  // Flag indicating a valid metallic roughness texture index.
+    unsigned int  normalMapHash;                // Hash of normal map texture.
+    bool          hasNormalMap;                 // Flag indicating a valid normal map texture index.
+    alignas(16) vec4 emissiveColor;                // Fallback emissive color.
+    unsigned int  emissiveTextureHash;          // Hash of emissive texture.
+    bool          hasEmissiveTexture;           // Flag indicating a valid emissive texture index.
+    float         opacity;
+};
+
+
 
 class GpuScene {
 private:
@@ -57,6 +146,11 @@ private:
   VkDescriptorSetLayout globalSetLayout;
   VkDescriptorPool descriptorPool;
   VkDescriptorSet globalDescriptor;
+
+
+  VkDescriptorSetLayout applSetLayout;
+  VkDescriptorPool applEescriptorPool;
+  VkDescriptorSet applDescriptorSet;
 
   VkBuffer uniformBuffer;
   VkDeviceMemory uniformBufferMemory;
@@ -85,14 +179,36 @@ private:
   AAPLMeshData* applMesh;
 
   VkBuffer applVertexBuffer;
-  VkBuffer applIndexBuffer;
+  VkDeviceMemory applVertexBufferMemory;
   VkBuffer applNormalBuffer;
+  VkDeviceMemory applNormalBufferMemory;
+  VkBuffer applTangentBuffer;
+  VkDeviceMemory applTangentBufferMemory;
+  VkBuffer applUVBuffer;
+  VkDeviceMemory applUVBufferMemory;
+
+  VkBuffer applIndexBuffer;
+  VkDeviceMemory applIndexMemory;
+
+  VkBuffer applMaterialBuffer;
+  VkDeviceMemory applMaterialBufferMemory;
+
+  VkPipelineLayout drawclusterPipelineLayout;
+  VkPipeline drawclusterPipeline;
 
 
-  VkImageView currentImage;
+  AAPLMeshChunk* m_Chunks;
+
+  //VkImageView currentImage;
   VkSampler textureSampler;
-  VkImage textureImage;
-  VkDeviceMemory textureImageMemory;
+  //VkImage textureImage;
+  //VkDeviceMemory textureImageMemory;
+
+
+  std::vector<std::pair<VkImage, VkImageView>> textures;
+  std::unordered_map<uint32_t, size_t> textureHashMap;
+
+  std::vector<AAPLShaderMaterial> materials;
 
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
@@ -118,12 +234,24 @@ private:
     GpuScene() = delete;
     GpuScene(const GpuScene &) = delete;
     void Draw();
-    void init_descriptors();
 
-    void updateSamplerInDescriptors();
+    void init_descriptors(VkImageView);
+
+    void init_descriptorsV2();
+
+    void init_appl_descriptors();
+    void DrawChunk(const AAPLMeshChunk&);
+    void DrawChunks();
+
+    void CreateTextures();
+
+    void updateSamplerInDescriptors(VkImageView currentImage);
+
+    void ConfigureMaterial(const AAPLMaterial&, AAPLShaderMaterial&);
 
     struct uniformBufferData {
       mat4 projectionMatrix;
+      mat4 viewMatrix;
     };
 
     uint32_t findMemoryType(uint32_t typeFilter,
@@ -202,7 +330,7 @@ private:
     void createVertexBuffer();
     void createIndexBuffer();
     void recordCommandBuffer(int frameindex);
-    std::pair<VkImageView,VkDeviceMemory> createTexture(const AAPLTextureData&);
+    std::pair<VkImage, VkImageView> createTexture(const AAPLTextureData&);
 
     std::pair<VkImageView, VkDeviceMemory> createTexture(const std::string& path);
 
@@ -233,4 +361,31 @@ private:
     }
 
 
+};
+
+template<>
+struct fmt::formatter<vec4> : fmt::formatter<std::string>
+{
+    auto format(vec4 my, format_context& ctx) const -> decltype(ctx.out())
+    {
+        return format_to(ctx.out(), "[vec4 ={} {} {} {}]", my.x, my.y, my.z,my.w);
+    }
+};
+
+template<>
+struct fmt::formatter<vec3> : fmt::formatter<std::string>
+{
+    auto format(vec3 my, format_context& ctx) const -> decltype(ctx.out())
+    {
+        return format_to(ctx.out(), "[vec3 ={} {} {}]", my.x, my.y, my.z);
+    }
+};
+
+template<>
+struct fmt::formatter<vec2> : fmt::formatter<std::string>
+{
+    auto format(vec2 my, format_context& ctx) const -> decltype(ctx.out())
+    {
+        return format_to(ctx.out(), "[vec2 ={} {}]", my.x, my.y);
+    }
 };
