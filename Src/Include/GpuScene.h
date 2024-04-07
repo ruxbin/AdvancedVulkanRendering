@@ -79,21 +79,22 @@ struct AAPLMeshChunk
     unsigned int indexCount;
 };
 
-struct AAPLShaderMaterial
+
+struct alignas(16) AAPLShaderMaterial
 {
     uint32_t albedo_texture_index;
     uint32_t roughness_texture_index;
     uint32_t normal_texture_index;
     uint32_t emissive_texture_index;
     float alpha;
-    bool hasMetallicRoughness;
-    bool hasEmissive;
-#if SUPPORT_SPARSE_TEXTURES //TODO:
-    uint baseColorMip;
-    uint metallicRoughnessMip;
-    uint normalMip;
-    uint emissiveMip;
-#endif
+    uint32_t hasMetallicRoughness;
+    uint32_t hasEmissive;
+//#if SUPPORT_SPARSE_TEXTURES //TODO:
+//    uint baseColorMip;
+//    uint metallicRoughnessMip;
+//    uint normalMip;
+//    uint emissiveMip;
+//#endif
 };
 
 // A SubMesh represents a group of chunks that share a material.
@@ -235,6 +236,8 @@ private:
     GpuScene(const GpuScene &) = delete;
     void Draw();
 
+
+    Camera* GetMainCamera() { return maincamera; }
     void init_descriptors(VkImageView);
 
     void init_descriptorsV2();

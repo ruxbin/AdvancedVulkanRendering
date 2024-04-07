@@ -739,7 +739,7 @@ void GpuScene::init_appl_descriptors()
 
     VkDescriptorSetLayoutBinding textureBinding = {};
     textureBinding.binding = 3;
-    textureBinding.descriptorCount = 4096;
+    textureBinding.descriptorCount = textures.size();
     textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -748,7 +748,7 @@ void GpuScene::init_appl_descriptors()
 
     constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
-    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0,VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT };
+    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0,VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT };
 
     //VkDescriptorBindingFlags flag = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT;
     
@@ -758,7 +758,8 @@ void GpuScene::init_appl_descriptors()
 
     VkDescriptorSetLayoutCreateInfo setinfo = {};
     setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setinfo.pNext = &flag_info;
+    //setinfo.pNext = &flag_info;
+    setinfo.pNext = nullptr;
 
     setinfo.bindingCount = bindingcount;
     setinfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
@@ -882,8 +883,8 @@ void GpuScene::init_appl_descriptors()
     setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     setWriteTexture.pImageInfo = imageinfo.data();
 
-   // std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture };
-    std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
+    std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture };
+   // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 
@@ -1474,11 +1475,11 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
-            vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+            //vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            //vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
+            //vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
-        //DrawChunks();
+        DrawChunks();
 
             //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
             //VkBuffer vertexBuffers[] = {vertexBuffer};
@@ -1605,7 +1606,9 @@ void GpuScene::DrawChunks()
 
     //if the descriptor set data isn't change we can omit this?
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
-    for (int i = 0; i < applMesh->_chunkCount; ++i)
+    constexpr int beginindex = 0;
+    constexpr int indexClamp = 1000;
+    for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
         vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
@@ -1655,9 +1658,10 @@ void GpuScene::Draw() {
   VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
-
-  if (vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFence) !=
+  VkResult submitResult = vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFence);
+  if (submitResult !=
       VK_SUCCESS) {
+      spdlog::error("failed to submit draw command buffer! {}",submitResult);
     throw std::runtime_error("failed to submit draw command buffer!");
   }
 

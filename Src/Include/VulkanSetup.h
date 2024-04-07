@@ -86,6 +86,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
 #ifdef _WIN32
       "VK_LAYER_KHRONOS_synchronization2",
 #endif
+      //VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME ,
       "VK_LAYER_KHRONOS_validation"};
 
   bool checkValidationLayerSupport();
