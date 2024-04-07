@@ -124,14 +124,14 @@ VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
-  auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
-  auto fragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\frag.spv");
+  auto vertShaderCode = readFile("shaders/vert.spv");
+  auto fragShaderCode = readFile("shaders/frag.spv");
 
-  auto evertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.vs.spv");
-  auto efragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.ps.spv");
+  auto evertShaderCode = readFile("shaders/edward.vert.spv");
+  auto efragShaderCode = readFile("shaders/edward.frag.spv");
 
-  auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.vs.spv");
-  auto drawClusterPSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.ps.spv");
+  auto drawClusterVSShaderCode = readFile("shaders/drawcluster.vs.spv");
+  auto drawClusterPSShaderCode = readFile("shaders/drawcluster.ps.spv");
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -161,14 +161,14 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   evertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
   evertShaderStageInfo.module = evertShaderModule;
-  evertShaderStageInfo.pName = "RenderSceneVS";
+  evertShaderStageInfo.pName = "main";
 
   VkPipelineShaderStageCreateInfo efragShaderStageInfo{};
   efragShaderStageInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   efragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   efragShaderStageInfo.module = efragShaderModule;
-  efragShaderStageInfo.pName = "RenderScenePS";
+  efragShaderStageInfo.pName = "main";
 
   VkPipelineShaderStageCreateInfo drawclusterVSShaderStageInfo{};
   drawclusterVSShaderStageInfo.sType =
@@ -739,7 +739,7 @@ void GpuScene::init_appl_descriptors()
 
     VkDescriptorSetLayoutBinding textureBinding = {};
     textureBinding.binding = 3;
-    textureBinding.descriptorCount = 4096;
+    textureBinding.descriptorCount = textures.size();
     textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -748,7 +748,7 @@ void GpuScene::init_appl_descriptors()
 
     constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
-    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0,VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT };
+    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT };
 
     //VkDescriptorBindingFlags flag = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT;
     
@@ -859,12 +859,14 @@ void GpuScene::init_appl_descriptors()
     setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
     std::vector<VkDescriptorImageInfo> imageinfo;
-    imageinfo.resize(textures.size());
+    //imageinfo.resize(textures.size());
     for (int texturei = 0; texturei < textures.size(); ++texturei)
     {
-        imageinfo[texturei].imageView = textures[texturei].second;
-        imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        //imageinfo[texturei].imageView = textures[texturei].second;
+        //imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         //imageinfo[texturei].sampler = textureSampler;
+	VkDescriptorImageInfo dii = {.imageView=textures[texturei].second,.imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+	imageinfo.push_back(dii);
     }
 
 
@@ -882,8 +884,8 @@ void GpuScene::init_appl_descriptors()
     setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     setWriteTexture.pImageInfo = imageinfo.data();
 
-   // std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture };
-    std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
+    std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture };
+    //std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 
@@ -1196,7 +1198,7 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
                           deviceref.getSwapChainExtent().width /
                               float(deviceref.getSwapChainExtent().height));
 
-  applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
+  applMesh = new AAPLMeshData("/home/songjiang/SOURCE/AdvancedVulkanRendering/debug1.bin");
 
 
  
@@ -1445,8 +1447,9 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
   //currentImage = textureRes.first;
   //init_descriptorsV2();
   //init_descriptors(textureRes.second);
-  init_descriptors(textures[13].second);
+
   init_appl_descriptors();
+  init_descriptors(textures[13].second);
   createGraphicsPipeline(deviceref.getMainRenderPass());
 }
 
@@ -1474,11 +1477,11 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
-            vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+            //vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            //vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
+            //vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
-        //DrawChunks();
+        DrawChunks();
 
             //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
             //VkBuffer vertexBuffers[] = {vertexBuffer};
@@ -1605,7 +1608,9 @@ void GpuScene::DrawChunks()
 
     //if the descriptor set data isn't change we can omit this?
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
-    for (int i = 0; i < applMesh->_chunkCount; ++i)
+    constexpr int clamp = 500;
+    constexpr int starti = 0;
+    for (int i = starti; i < applMesh->_chunkCount&&i<clamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
         vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
