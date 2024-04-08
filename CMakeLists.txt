@@ -61,6 +61,7 @@ link_directories($ENV{VULKAN_SDK}/Lib)
 link_directories(ThirdParty/lzfse/build/Debug)
 link_directories(ThirdParty/lzfse/build/)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/Src/Include)
+include_directories(${CMAKE_CURRENT_LIST_DIR}/ThirdParty/json/single_include)
 add_subdirectory(Src/)
 #add_subdirectory(Examples/)
 

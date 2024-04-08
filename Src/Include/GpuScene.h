@@ -4,6 +4,7 @@
 #include "vulkan/vulkan.h"
 #include "Camera.h"
 #include "spdlog/spdlog.h"
+#include "nlohmann/json.hpp"
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -79,21 +80,22 @@ struct AAPLMeshChunk
     unsigned int indexCount;
 };
 
-struct AAPLShaderMaterial
+
+struct alignas(16) AAPLShaderMaterial
 {
     uint32_t albedo_texture_index;
     uint32_t roughness_texture_index;
     uint32_t normal_texture_index;
     uint32_t emissive_texture_index;
     float alpha;
-    bool hasMetallicRoughness;
-    bool hasEmissive;
-#if SUPPORT_SPARSE_TEXTURES //TODO:
-    uint baseColorMip;
-    uint metallicRoughnessMip;
-    uint normalMip;
-    uint emissiveMip;
-#endif
+    uint32_t hasMetallicRoughness;
+    uint32_t hasEmissive;
+//#if SUPPORT_SPARSE_TEXTURES //TODO:
+//    uint baseColorMip;
+//    uint metallicRoughnessMip;
+//    uint normalMip;
+//    uint emissiveMip;
+//#endif
 };
 
 // A SubMesh represents a group of chunks that share a material.
@@ -197,6 +199,13 @@ private:
   VkPipeline drawclusterPipeline;
 
 
+  VkBuffer occluderVertexBuffer;
+  VkDeviceMemory occluderVertexBufferMemory;
+  VkBuffer occluderIndexBuffer;
+  VkDeviceMemory occluderIndexMemory;
+
+
+
   AAPLMeshChunk* m_Chunks;
 
   //VkImageView currentImage;
@@ -210,6 +219,7 @@ private:
 
   std::vector<AAPLShaderMaterial> materials;
 
+  nlohmann::json sceneFile;
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
@@ -230,11 +240,13 @@ private:
     void createSyncObjects();
 
   public:
-    GpuScene(std::string_view &filepath, const VulkanDevice &deviceref);
+    GpuScene(std::string_view& scenefile, std::string_view &filepath, const VulkanDevice &deviceref);
     GpuScene() = delete;
     GpuScene(const GpuScene &) = delete;
     void Draw();
 
+
+    Camera* GetMainCamera() { return maincamera; }
     void init_descriptors(VkImageView);
 
     void init_descriptorsV2();

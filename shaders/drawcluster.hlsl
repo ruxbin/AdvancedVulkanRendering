@@ -52,14 +52,15 @@ struct AAPLShaderMaterial
     uint normal_texture_index;
     uint emissive_texture_index;
     float alpha;
-    bool hasMetallicRoughness;
-    bool hasEmissive;
-#if SUPPORT_SPARSE_TEXTURES //TODO:
-    uint baseColorMip;
-    uint metallicRoughnessMip;
-    uint normalMip;
-    uint emissiveMip;
-#endif
+    uint hasMetallicRoughness;
+    uint hasEmissive;
+    uint padding;
+// #if SUPPORT_SPARSE_TEXTURES //TODO:
+//     uint baseColorMip;
+//     uint metallicRoughnessMip;
+//     uint normalMip;
+//     uint emissiveMip;
+// #endif
 };
 
 [[vk::binding(0,0)]] cbuffer cam {UniformBuffer ub;}
@@ -110,6 +111,14 @@ VSOutput RenderSceneVS( VSInput input)
 
 float4 RenderScenePS(VSOutput input) : SV_Target
 {
-    half4 col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
-    return float4(col.xyz,1);
+    //half4 col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+    //return float4(0.5,0.5,0.5,1);
+    float4 col = float4(input.TextureUV,0,1);
+    if(materials[pushConstants.materialIndex].albedo_texture_index!=0xffffffff){
+        col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+        col.a = 1;
+    }
+    return col;
+
+    //return float4(col.xyz,1);
 }

@@ -455,7 +455,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   drawclusterpipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
   drawclusterpipelineInfo.pInputAssemblyState = &inputAssembly;
   drawclusterpipelineInfo.pViewportState = &viewportState;
-  drawclusterpipelineInfo.pRasterizationState = &rasterizer_wireframe;
+  drawclusterpipelineInfo.pRasterizationState = &rasterizer;
   drawclusterpipelineInfo.pMultisampleState = &multisampling;
   drawclusterpipelineInfo.pColorBlendState = &colorBlending;
   drawclusterpipelineInfo.layout = drawclusterPipelineLayout;
@@ -758,7 +758,8 @@ void GpuScene::init_appl_descriptors()
 
     VkDescriptorSetLayoutCreateInfo setinfo = {};
     setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setinfo.pNext = &flag_info;
+    //setinfo.pNext = &flag_info;
+    setinfo.pNext = nullptr;
 
     setinfo.bindingCount = bindingcount;
     setinfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
@@ -1183,7 +1184,7 @@ void GpuScene::ConfigureMaterial(const AAPLMaterial& input, AAPLShaderMaterial& 
     output.alpha = input.opacity;
 }
 
-GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
+GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const VulkanDevice &deviceref)
     : device(deviceref), modelScale(1.f) {
   LoadObj(filepath.data());
   createSyncObjects();
@@ -1194,14 +1195,18 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
   createCommandBuffer(deviceref.getCommandPool());
 
 
-  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
-                          deviceref.getSwapChainExtent().width /
-                              float(deviceref.getSwapChainExtent().height));
+  //maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
+  //                        deviceref.getSwapChainExtent().width /
+  //                            float(deviceref.getSwapChainExtent().height));
+
+  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(-19.3780651f, 5.88073206f, -5.17611504f),
+                              deviceref.getSwapChainExtent().width /
+                                 float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
 
   applMesh = new AAPLMeshData("/home/songjiang/SOURCE/AdvancedVulkanRendering/debug1.bin");
 
-
- 
+  std::ifstream f("G:\\AdvancedVulkanRendering\\scene.scene");
+  sceneFile = nlohmann::json::parse(f);
 
   CreateTextures();
 
@@ -1608,9 +1613,9 @@ void GpuScene::DrawChunks()
 
     //if the descriptor set data isn't change we can omit this?
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
-    constexpr int clamp = 500;
-    constexpr int starti = 0;
-    for (int i = starti; i < applMesh->_chunkCount&&i<clamp; ++i)
+    constexpr int beginindex = 0;
+    constexpr int indexClamp = 0xffffff;
+    for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
         vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
@@ -1660,9 +1665,10 @@ void GpuScene::Draw() {
   VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
-
-  if (vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFence) !=
+  VkResult submitResult = vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFence);
+  if (submitResult !=
       VK_SUCCESS) {
+      spdlog::error("failed to submit draw command buffer! {}",submitResult);
     throw std::runtime_error("failed to submit draw command buffer!");
   }
 
