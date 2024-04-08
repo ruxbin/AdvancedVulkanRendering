@@ -7,3 +7,6 @@
 [submodule "ThirdParty/lzfse"]
 	path = ThirdParty/lzfse
 	url = https://github.com/lzfse/lzfse.git
+[submodule "ThirdParty/json"]
+	path = ThirdParty/json
+	url = https://github.com/nlohmann/json.git

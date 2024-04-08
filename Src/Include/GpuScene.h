@@ -4,6 +4,7 @@
 #include "vulkan/vulkan.h"
 #include "Camera.h"
 #include "spdlog/spdlog.h"
+#include "nlohmann/json.hpp"
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -198,6 +199,13 @@ private:
   VkPipeline drawclusterPipeline;
 
 
+  VkBuffer occluderVertexBuffer;
+  VkDeviceMemory occluderVertexBufferMemory;
+  VkBuffer occluderIndexBuffer;
+  VkDeviceMemory occluderIndexMemory;
+
+
+
   AAPLMeshChunk* m_Chunks;
 
   //VkImageView currentImage;
@@ -211,6 +219,7 @@ private:
 
   std::vector<AAPLShaderMaterial> materials;
 
+  nlohmann::json sceneFile;
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
@@ -231,7 +240,7 @@ private:
     void createSyncObjects();
 
   public:
-    GpuScene(std::string_view &filepath, const VulkanDevice &deviceref);
+    GpuScene(std::string_view& scenefile, std::string_view &filepath, const VulkanDevice &deviceref);
     GpuScene() = delete;
     GpuScene(const GpuScene &) = delete;
     void Draw();

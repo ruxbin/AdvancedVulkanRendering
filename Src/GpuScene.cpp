@@ -1182,7 +1182,7 @@ void GpuScene::ConfigureMaterial(const AAPLMaterial& input, AAPLShaderMaterial& 
     output.alpha = input.opacity;
 }
 
-GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
+GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const VulkanDevice &deviceref)
     : device(deviceref), modelScale(1.f) {
   LoadObj(filepath.data());
   createSyncObjects();
@@ -1203,8 +1203,8 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
 
   applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
 
-
- 
+  std::ifstream f("G:\\AdvancedVulkanRendering\\scene.scene");
+  sceneFile = nlohmann::json::parse(f);
 
   CreateTextures();
 
@@ -1611,7 +1611,7 @@ void GpuScene::DrawChunks()
     //if the descriptor set data isn't change we can omit this?
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
     constexpr int beginindex = 0;
-    constexpr int indexClamp = 3000;
+    constexpr int indexClamp = 0xffffff;
     for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
