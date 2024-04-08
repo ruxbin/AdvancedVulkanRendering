@@ -29,6 +29,11 @@ int main(int nargs, char ** args) {
     bool quit = false; 
     std::chrono::time_point<std::chrono::system_clock> lastTime =
         std::chrono::system_clock::now();
+    bool mouseDown = false;
+    float currentZDegree = 0;
+    float currentYDegree = 0;
+    constexpr float rotateSpeed = 0.1f;
+    constexpr float moveSpeed = 3.f;
     while (quit == false) { 
         while (SDL_PollEvent(&e)) {
             
@@ -40,28 +45,58 @@ int main(int nargs, char ** args) {
                 {
                     
                    
-                case SDL_SCANCODE_1://a
-                    gpuScene.GetMainCamera()->MoveLeft(10);
+                case SDL_SCANCODE_A://a
+                    gpuScene.GetMainCamera()->MoveLeft(moveSpeed);
                     break;
-                case SDL_SCANCODE_2://s
-                    gpuScene.GetMainCamera()->MoveDown(10);
+                case SDL_SCANCODE_E://e
+                    gpuScene.GetMainCamera()->MoveDown(moveSpeed);
                     break;
-                case SDL_SCANCODE_3://d
-                    gpuScene.GetMainCamera()->MoveRight(10);
+                case SDL_SCANCODE_D://d
+                    gpuScene.GetMainCamera()->MoveRight(moveSpeed);
                     break;
-                case SDL_SCANCODE_4://q
-                    gpuScene.GetMainCamera()->MoveForward(10);
+                case SDL_SCANCODE_Q://q
+                    gpuScene.GetMainCamera()->MoveUp(moveSpeed);
+                    
                     break;
-                case SDL_SCANCODE_5://w
-                    gpuScene.GetMainCamera()->MoveUp(10);
+                case SDL_SCANCODE_W://w
+                    gpuScene.GetMainCamera()->MoveForward(moveSpeed);
                     break;
-                case SDL_SCANCODE_6://e
-                    gpuScene.GetMainCamera()->MoveBackward(10);
+                case SDL_SCANCODE_S://s
+                    gpuScene.GetMainCamera()->MoveBackward(moveSpeed);
                     break;
                 default:
                     spdlog::info("keypressed {}\n", e.key.keysym.scancode);
                     break;
                 }
+            }
+            else if (e.type == SDL_MOUSEMOTION)
+            {
+                if (mouseDown)
+                {
+                    spdlog::info("xrel:{} yrel:{} zdegree{}", e.motion.xrel, e.motion.yrel, currentZDegree);
+                    if (abs(e.motion.xrel) > abs(e.motion.yrel))
+                    {
+                        currentYDegree += e.motion.xrel * rotateSpeed;
+                        gpuScene.GetMainCamera()->RotateY(currentYDegree);
+                    }
+                    else
+                    {
+                        currentZDegree += e.motion.yrel * rotateSpeed;
+                        gpuScene.GetMainCamera()->RotateZ(currentZDegree);
+                    }
+                    
+                    
+                }
+            }
+            else if (e.type == SDL_MOUSEBUTTONDOWN)
+            {
+                mouseDown = true;
+            }
+            else  if (e.type == SDL_MOUSEBUTTONUP)
+            {
+                mouseDown = false;
+                currentZDegree = 0;
+                currentYDegree = 0;
             }
             //else
             {

@@ -62,7 +62,7 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   // todo:constexpr static const char* const*
   createInfo.ppEnabledExtensionNames =
       instaceExtensionNames; //(const char* const *)extensions.data();
-  createInfo.enabledExtensionCount = 2;
+  createInfo.enabledExtensionCount = sizeof(instaceExtensionNames)/sizeof(instaceExtensionNames[0]);
 
   VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
   if (enableValidationLayers) {

@@ -455,7 +455,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   drawclusterpipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
   drawclusterpipelineInfo.pInputAssemblyState = &inputAssembly;
   drawclusterpipelineInfo.pViewportState = &viewportState;
-  drawclusterpipelineInfo.pRasterizationState = &rasterizer_wireframe;
+  drawclusterpipelineInfo.pRasterizationState = &rasterizer;
   drawclusterpipelineInfo.pMultisampleState = &multisampling;
   drawclusterpipelineInfo.pColorBlendState = &colorBlending;
   drawclusterpipelineInfo.layout = drawclusterPipelineLayout;
@@ -1193,9 +1193,13 @@ GpuScene::GpuScene(std::string_view &filepath, const VulkanDevice &deviceref)
   createCommandBuffer(deviceref.getCommandPool());
 
 
-  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
-                          deviceref.getSwapChainExtent().width /
-                              float(deviceref.getSwapChainExtent().height));
+  //maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
+  //                        deviceref.getSwapChainExtent().width /
+  //                            float(deviceref.getSwapChainExtent().height));
+
+  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(-19.3780651f, 5.88073206f, -5.17611504f),
+                              deviceref.getSwapChainExtent().width /
+                                 float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
 
   applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
 
@@ -1607,7 +1611,7 @@ void GpuScene::DrawChunks()
     //if the descriptor set data isn't change we can omit this?
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
     constexpr int beginindex = 0;
-    constexpr int indexClamp = 1000;
+    constexpr int indexClamp = 3000;
     for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};

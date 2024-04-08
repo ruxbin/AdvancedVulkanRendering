@@ -1,4 +1,9 @@
 #include "Camera.h"
+#include <math.h>
+
+#ifndef PI
+#define PI 3.141592653f
+#endif
 
 void* Camera::getProjectionMatrixData()
 {
@@ -32,43 +37,85 @@ Camera::Camera(float fov,float n ,float f, vec3 origin,float aspect)
 	_y = vec3(0,1,0);
 }
 
+Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 right)
+{
+	
+	mat4 proj = perspective(fov, aspect, n, f);
+	_projectionMatrix = proj;
+	vec3 up = right.cross(lookat);
+	_x = right;
+	_y = up;
+	_z = lookat;
+	_origin = origin;
+
+	_objectToCameraMatrix.x = vec4(_x, -_origin.x);
+	
+	_objectToCameraMatrix.y = vec4(_y,-_origin.y);
+	_objectToCameraMatrix.z = vec4(_z, -_origin.z);
+	_objectToCameraMatrix.w = vec4(0, 0, 0, 1);
+}
+
+void Camera::updateCameraMatrix()
+{
+	_objectToCameraMatrix.x = vec4(_x, -_origin.x);
+
+	_objectToCameraMatrix.y = vec4(_y, -_origin.y);
+	_objectToCameraMatrix.z = vec4(_z, -_origin.z);
+	_objectToCameraMatrix.w = vec4(0, 0, 0, 1);
+}
+
 void Camera::MoveLeft(float dist)
 {
-	mat4 trans = translate(_x*-dist);
-	_objectToCameraMatrix = trans * _objectToCameraMatrix;
+	_origin -= _x*dist;
+	updateCameraMatrix();
 
 }
 
 void Camera::MoveRight(float dist)
 {
-	mat4 trans = translate(_x*dist);
-	_objectToCameraMatrix = trans * _objectToCameraMatrix;
-
+	
+	_origin += _x * dist;
+	updateCameraMatrix();
 }
 
 void Camera::MoveUp(float dist)
 {
-	mat4 trans = translate(_y*-dist);
-	_objectToCameraMatrix = trans * _objectToCameraMatrix;
-
+	_origin -= _y * dist;
+	updateCameraMatrix();
 }
 
 void Camera::MoveDown(float dist)
 {
-	mat4 trans = translate(_y*dist);
-	_objectToCameraMatrix = trans * _objectToCameraMatrix;
-
+	
+	_origin += _y * dist;
+	updateCameraMatrix();
 }
 
 void Camera::MoveForward(float dist)
 {
-	mat4 trans = translate(_z * -dist);
-	_objectToCameraMatrix = trans * _objectToCameraMatrix;
-
+	_origin += _z * dist;
+	updateCameraMatrix();
 }
 
 void Camera::MoveBackward(float dist)
 {
-	mat4 trans = translate(_z * dist);
-	_objectToCameraMatrix = trans * _objectToCameraMatrix;
+	_origin -= _z * dist;
+	updateCameraMatrix();
+}
+
+void Camera::RotateZ(float angle)
+{
+	//rotate _x
+	angle = PI * angle / 180.f;
+	_x = _x*cosf(angle)+_y*sinf(angle);
+	_y = _x.cross(_z);
+	updateCameraMatrix();
+}
+void Camera::RotateY(float angle)
+{
+	//rotate _z
+	angle = PI * angle / 180.f;
+	_x = _x * cosf(angle) + _z * sinf(angle);
+	_z = _y.cross(_x);
+	updateCameraMatrix();
 }

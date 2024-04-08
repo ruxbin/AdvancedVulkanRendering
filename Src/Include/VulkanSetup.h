@@ -71,6 +71,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
 
   constexpr static const char *const instaceExtensionNames[] = {
       "VK_KHR_surface", 
+      VK_EXT_DEBUG_UTILS_EXTENSION_NAME,//TODO:only use this when validation layer is enabled?
 #ifdef _WIN32
       "VK_KHR_win32_surface"
 #endif
@@ -82,7 +83,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
   VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME };
   constexpr static const char *const validationLayers[] = {
-      "VK_LAYER_RENDERDOC_Capture",
+      
 #ifdef _WIN32
       "VK_LAYER_KHRONOS_synchronization2",
 #endif
