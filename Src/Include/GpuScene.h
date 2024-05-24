@@ -221,8 +221,22 @@ private:
 
   nlohmann::json sceneFile;
 
+  VkRenderPass occluderZPass;
+
+  VkImage            _depthTexture;
+  VkImage            _depthPyramidTexture;
+  VkImageView           _depthTextureView;
+  VkFramebuffer         _depghFrameBuffer;
+
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
+
+  void CreateOccludeRenderPipeline();
+
+  //VkPipelineLayout drawOccluderPipelineLayout;
+  VkPipeline drawOccluderPipeline;
+
+  void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffer(VkCommandPool commandPool) {
     VkCommandBufferAllocateInfo allocInfo{};
@@ -255,11 +269,18 @@ private:
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
 
+    void CreateDepthTexture();
+    void DrawOccluders(VkImage _dst);
+
     void CreateTextures();
 
     void updateSamplerInDescriptors(VkImageView currentImage);
 
     void ConfigureMaterial(const AAPLMaterial&, AAPLShaderMaterial&);
+
+    void CreateOccluderZPass();
+    void CreateOccluderZPassFrameBuffer();
+    void CreateZdepthView();
 
     struct uniformBufferData {
       mat4 projectionMatrix;

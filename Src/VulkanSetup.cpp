@@ -144,6 +144,7 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   createFramebuffers();
 }
 
+
 void VulkanDevice::createRenderPass() {
         VkAttachmentDescription colorAttachment{};
         colorAttachment.format = swapChainImageFormat;

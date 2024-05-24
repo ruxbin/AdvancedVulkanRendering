@@ -22,7 +22,8 @@ int main(int nargs, char ** args) {
     VulkanDevice vk(window);
 
     std::string_view scenePath = "D:\\SOURCE\\GraphicsAPI\\UsingMetalToDrawAViewContentsents\\Resources\\edward.obj";
-    GpuScene gpuScene(scenePath, vk);
+    std::string_view scene1 = "G:\\AdvancedVulkanRendering\\scene.scene";
+    GpuScene gpuScene(scene1,scenePath, vk);
     //GpuScene gpuScene(std::string_view("useless"), vk); //TODO: why error?
 
     SDL_Event e; 

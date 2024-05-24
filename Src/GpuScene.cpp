@@ -122,6 +122,286 @@ VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
   return shaderModule;
 }
 
+void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
+{
+    auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawoccluders.vs.spv");
+    VkShaderModule drawclusterVSShaderModule = createShaderModule(drawClusterVSShaderCode);
+    VkPipelineShaderStageCreateInfo drawclusterVSShaderStageInfo{};
+    drawclusterVSShaderStageInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    drawclusterVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    drawclusterVSShaderStageInfo.module = drawclusterVSShaderModule;
+    drawclusterVSShaderStageInfo.pName = "RenderSceneVS";
+
+    //we don't need fragment stage 
+    VkPipelineShaderStageCreateInfo shaderStages[] = { drawclusterVSShaderStageInfo };
+
+
+    VkVertexInputBindingDescription occluderInputBinding = {
+    .binding = 0,
+    .stride = sizeof(float) * 3,
+    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+
+    VkVertexInputAttributeDescription occluderInputAttributes[] = {
+        {.location = 0,
+         .binding = 0,
+         .format = VK_FORMAT_R32G32B32_SFLOAT,
+         .offset = 0},
+         };
+
+    VkPipelineVertexInputStateCreateInfo occluderVertexInputInfo{};
+    occluderVertexInputInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    occluderVertexInputInfo.vertexBindingDescriptionCount = 1;
+    occluderVertexInputInfo.pVertexBindingDescriptions = &occluderInputBinding;
+    occluderVertexInputInfo.vertexAttributeDescriptionCount = sizeof(occluderInputAttributes)/sizeof(occluderInputAttributes[0]);
+    occluderVertexInputInfo.pVertexAttributeDescriptions = occluderInputAttributes;
+
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;//change to strip
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    const VkExtent2D& swapChainExtentRef = device.getSwapChainExtent();
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)swapChainExtentRef.width;
+    viewport.height = (float)swapChainExtentRef.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = { 0, 0 };
+    scissor.extent = swapChainExtentRef;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.logicOp = VK_LOGIC_OP_COPY;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.blendConstants[0] = 0.0f;
+    colorBlending.blendConstants[1] = 0.0f;
+    colorBlending.blendConstants[2] = 0.0f;
+    colorBlending.blendConstants[3] = 0.0f;
+
+    // VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    // pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    // pipelineLayoutInfo.setLayoutCount = 1;
+    // pipelineLayoutInfo.pSetLayouts = &globalSetLayout;//TODO: use seperate layout??
+    // pipelineLayoutInfo.pushConstantRangeCount = 0;
+
+    // if (vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo,
+    //     nullptr, &pipelineLayout) != VK_SUCCESS) {
+    //     throw std::runtime_error("failed to create pipeline layout!");
+    // }
+   
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 1;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &occluderVertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = pipelineLayout;//TODO: seperate layout? currently just reuse
+    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencilState1{};
+    depthStencilState1.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencilState1.depthWriteEnable = VK_TRUE;
+    depthStencilState1.depthTestEnable = VK_TRUE;
+    depthStencilState1.stencilTestEnable = VK_FALSE;
+    depthStencilState1.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencilState1.depthBoundsTestEnable = VK_FALSE;
+    // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
+    // is being created with fragment shader state, and subpass uses a
+    // depth/stencil attachment, pDepthStencilState must be a valid pointer to a
+    // valid VkPipelineDepthStencilStateCreateInfo structure
+    pipelineInfo.pDepthStencilState = &depthStencilState1;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo,
+        nullptr, &drawOccluderPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create graphics pipeline!");
+    }
+}
+
+//TODO: cache the pso
+void GpuScene::CreateOccludeRenderPipeline()
+{
+    auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+    VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo};
+
+
+    VkVertexInputBindingDescription edwardInputBinding = {
+        .binding = 0,
+        .stride = sizeof(float) * 3 * 2 + sizeof(float) * 2,
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+
+    VkVertexInputAttributeDescription edwardInputAttributes[] = {
+        {.location = 0,
+         .binding = 0,
+         .format = VK_FORMAT_R32G32B32_SFLOAT,
+         .offset = 0},
+        {.location = 1,
+         .binding = 0,
+         .format = VK_FORMAT_R32G32B32_SFLOAT,
+         .offset = sizeof(float) * 3},
+        {.location = 2,
+         .binding = 0,
+         .format = VK_FORMAT_R32G32_SFLOAT,
+         .offset = sizeof(float) * 3 * 2} };
+
+    VkPipelineVertexInputStateCreateInfo edwardVertexInputInfo{};
+    edwardVertexInputInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    edwardVertexInputInfo.vertexBindingDescriptionCount = 1;
+    edwardVertexInputInfo.pVertexBindingDescriptions = &edwardInputBinding;
+    edwardVertexInputInfo.vertexAttributeDescriptionCount = 3;
+    edwardVertexInputInfo.pVertexAttributeDescriptions = edwardInputAttributes;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencilState{};
+    depthStencilState.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencilState.depthWriteEnable = VK_TRUE;
+    depthStencilState.depthTestEnable = VK_TRUE;
+    depthStencilState.stencilTestEnable = VK_FALSE;
+    depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencilState.depthBoundsTestEnable = VK_FALSE;
+
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    /*VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.blendEnable = VK_FALSE;*/
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.logicOp = VK_LOGIC_OP_COPY;
+    colorBlending.attachmentCount = 0;
+    /*colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.blendConstants[0] = 0.0f;
+    colorBlending.blendConstants[1] = 0.0f;
+    colorBlending.blendConstants[2] = 0.0f;
+    colorBlending.blendConstants[3] = 0.0f;*/
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;//change to strip
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    const VkExtent2D& swapChainExtentRef = device.getSwapChainExtent();
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)swapChainExtentRef.width;
+    viewport.height = (float)swapChainExtentRef.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = { 0, 0 };
+    scissor.extent = swapChainExtentRef;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = sizeof(shaderStages)/sizeof(shaderStages[0]);
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &edwardVertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.renderPass = occluderZPass;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+    // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
+    // is being created with fragment shader state, and subpass uses a
+    // depth/stencil attachment, pDepthStencilState must be a valid pointer to a
+    // valid VkPipelineDepthStencilStateCreateInfo structure
+    pipelineInfo.pDepthStencilState = &depthStencilState;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo,
+        nullptr, &graphicsPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create graphics pipeline!");
+    }
+
+
+    
+
+}
+
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
   auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
@@ -1153,6 +1433,53 @@ void GpuScene::CreateTextures()
     }
 }
 
+void GpuScene::CreateDepthTexture()
+{
+    int width = device.getSwapChainExtent().width;
+    int height = device.getSwapChainExtent().height;
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;// texturedata._mipmapLevelCount;
+    imageInfo.arrayLayers = 1;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;//TODO: switch to linear with initiallayout=preinitialized?
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    imageInfo.format = VK_FORMAT_D32_SFLOAT;//TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't need stencil currently anyway
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.flags = 0; // Optional
+
+
+    if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_depthTexture) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create depth rt!");
+    }
+
+    //TODO: must be power of 2
+    int bigger = width > height ? width : height;
+    int log_bigger = floor(log2f(bigger));
+    int mip_level = -1;
+    if (1 << log_bigger == bigger)
+    {
+        mip_level = log_bigger;
+    }
+    else
+    {
+        mip_level = log_bigger + 1;
+    }
+
+    imageInfo.mipLevels = mip_level;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+
+        if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_depthPyramidTexture) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create depth rt!");
+        }
+
+}
+
 void GpuScene::ConfigureMaterial(const AAPLMaterial& input, AAPLShaderMaterial& output)
 {
     if (input.hasBaseColorTexture && !textureHashMap.contains(input.baseColorTextureHash))
@@ -1203,7 +1530,7 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
 
   applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
 
-  std::ifstream f("G:\\AdvancedVulkanRendering\\scene.scene");
+  std::ifstream f(scenefile.data());
   sceneFile = nlohmann::json::parse(f);
 
   CreateTextures();
@@ -1442,6 +1769,10 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
 
   AAPLSubMesh * submeshes = (AAPLSubMesh*)uncompressData((unsigned char*)applMesh->_meshData, applMesh->compressedMeshDataLength, applMesh->_meshCount * sizeof(AAPLSubMesh));
 
+  CreateDepthTexture();
+  CreateZdepthView();
+  CreateOccluderZPassFrameBuffer();
+  CreateOccluderZPass();
 
   createTextureSampler();
 
@@ -1450,9 +1781,120 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
   //currentImage = textureRes.first;
   //init_descriptorsV2();
   //init_descriptors(textureRes.second);
-  init_descriptors(textures[13].second);
+  //init_descriptors(textures[13].second);
   init_appl_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
+}
+
+void GpuScene::CreateOccluderZPass()
+{
+    //no color attachment only depth attachment
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = VK_FORMAT_D32_SFLOAT;//TODO: should use the rt format?
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentRef{};
+    depthAttachmentRef.attachment = 1;
+    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 0;
+    subpass.pColorAttachments = nullptr;
+    subpass.pDepthStencilAttachment = &depthAttachmentRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcAccessMask = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;//TODO: is dependency mask right?
+    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 1> attachments = { depthAttachment };
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr, &occluderZPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create render pass!");
+    }
+
+}
+
+void GpuScene::CreateOccluderZPassFrameBuffer()
+{
+    std::array<VkImageView, 1> attachments = {
+               _depthTextureView
+    };
+
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = occluderZPass;
+    framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());;
+    framebufferInfo.pAttachments = attachments.data();
+    framebufferInfo.width = device.getSwapChainExtent().width;
+    framebufferInfo.height = device.getSwapChainExtent().height;
+    framebufferInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo, nullptr, &_depghFrameBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create z framebuffer!");
+    }
+}
+
+void GpuScene::CreateZdepthView()
+{
+    VkImageViewCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    createInfo.image = _depthTexture;
+    createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    createInfo.format = VK_FORMAT_D32_SFLOAT;
+    createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    createInfo.subresourceRange.baseMipLevel = 0;
+    createInfo.subresourceRange.levelCount = 1;
+    createInfo.subresourceRange.baseArrayLayer = 0;
+    createInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device.getLogicalDevice(), &createInfo, nullptr,
+        &_depthTextureView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create z image views!");
+    }
+}
+
+
+void GpuScene::DrawOccluders(VkImage _dst)
+{
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = occluderZPass;
+    renderPassInfo.framebuffer = _depghFrameBuffer;
+    renderPassInfo.renderArea.offset = { 0, 0 };
+    renderPassInfo.renderArea.extent = device.getSwapChainExtent();
+
+    std::array<VkClearValue, 1> clearValues{};
+   
+    clearValues[0].depthStencil = { 1.0f, 0 };
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);//TODO: seperate commandbuffer?
+
+    vkCmdEndRenderPass(commandBuffer);
 }
 
 void GpuScene::recordCommandBuffer(int imageIndex){
