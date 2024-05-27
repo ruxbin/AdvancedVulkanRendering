@@ -124,17 +124,17 @@ VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
 
 void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
 {
-    auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawoccluders.vs.spv");
-    VkShaderModule drawclusterVSShaderModule = createShaderModule(drawClusterVSShaderCode);
-    VkPipelineShaderStageCreateInfo drawclusterVSShaderStageInfo{};
-    drawclusterVSShaderStageInfo.sType =
+    auto occludersVSShaderCode = readFile("shaders/occluders.vs.spv");
+    VkShaderModule occludersVSShaderModule = createShaderModule(occludersVSShaderCode);
+    VkPipelineShaderStageCreateInfo drawOccludersVSShaderStageInfo{};
+    drawOccludersVSShaderStageInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    drawclusterVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    drawclusterVSShaderStageInfo.module = drawclusterVSShaderModule;
-    drawclusterVSShaderStageInfo.pName = "RenderSceneVS";
+    drawOccludersVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    drawOccludersVSShaderStageInfo.module = occludersVSShaderModule;
+    drawOccludersVSShaderStageInfo.pName = "main";
 
     //we don't need fragment stage 
-    VkPipelineShaderStageCreateInfo shaderStages[] = { drawclusterVSShaderStageInfo };
+    VkPipelineShaderStageCreateInfo shaderStages[] = { drawOccludersVSShaderStageInfo };
 
 
     VkVertexInputBindingDescription occluderInputBinding = {
@@ -404,14 +404,14 @@ void GpuScene::CreateOccludeRenderPipeline()
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
-  auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
-  auto fragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\frag.spv");
+  auto vertShaderCode = readFile("shaders/vert.spv");
+  auto fragShaderCode = readFile("shaders/frag.spv");
 
-  auto evertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.vs.spv");
-  auto efragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.ps.spv");
+  auto evertShaderCode = readFile("shaders/edward.vs.spv");
+  auto efragShaderCode = readFile("shaders/edward.ps.spv");
 
-  auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.vs.spv");
-  auto drawClusterPSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.ps.spv");
+  auto drawClusterVSShaderCode = readFile("shaders/drawcluster.vs.spv");
+  auto drawClusterPSShaderCode = readFile("shaders/drawcluster.ps.spv");
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -548,32 +548,12 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   colorBlending.blendConstants[2] = 0.0f;
   colorBlending.blendConstants[3] = 0.0f;
 
-  VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-  pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pipelineLayoutInfo.setLayoutCount = 1;
-  pipelineLayoutInfo.pSetLayouts = &globalSetLayout;
-  pipelineLayoutInfo.pushConstantRangeCount = 0;
-
-  if (vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo,
-                             nullptr, &pipelineLayout) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create pipeline layout!");
-  }
 
   VkPushConstantRange epushconstantRange = {.stageFlags =
                                                 VK_SHADER_STAGE_VERTEX_BIT,
                                             .offset = 0,
                                             .size = sizeof(mat4)};
-  VkPipelineLayoutCreateInfo epipelineLayoutInfo{};
-  epipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  epipelineLayoutInfo.setLayoutCount = 1;
-  epipelineLayoutInfo.pSetLayouts = &globalSetLayout;
-  epipelineLayoutInfo.pushConstantRangeCount = 1;
-  epipelineLayoutInfo.pPushConstantRanges = &epushconstantRange;
-
-  if (vkCreatePipelineLayout(device.getLogicalDevice(), &epipelineLayoutInfo,
-                             nullptr, &epipelineLayout) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create pipeline layout!");
-  }
+  
 
 
   VkPushConstantRange drawclusterpushconstantRange = { .stageFlags =
@@ -599,32 +579,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   depthStencilState1.depthTestEnable = VK_FALSE;
   depthStencilState1.stencilTestEnable = VK_FALSE;
 
-  VkGraphicsPipelineCreateInfo pipelineInfo{};
-  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  pipelineInfo.stageCount = 2;
-  pipelineInfo.pStages = shaderStages;
-  pipelineInfo.pVertexInputState = &vertexInputInfo;
-  pipelineInfo.pInputAssemblyState = &inputAssembly;
-  pipelineInfo.pViewportState = &viewportState;
-  pipelineInfo.pRasterizationState = &rasterizer;
-  pipelineInfo.pMultisampleState = &multisampling;
-  pipelineInfo.pColorBlendState = &colorBlending;
-  pipelineInfo.layout = pipelineLayout;
-  pipelineInfo.renderPass = renderPass;
-  pipelineInfo.subpass = 0;
-  pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
-  // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
-  // is being created with fragment shader state, and subpass uses a
-  // depth/stencil attachment, pDepthStencilState must be a valid pointer to a
-  // valid VkPipelineDepthStencilStateCreateInfo structure
-  pipelineInfo.pDepthStencilState = &depthStencilState1;
-
-  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo,
-                                nullptr, &graphicsPipeline) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create graphics pipeline!");
-  }
-
-  VkVertexInputBindingDescription edwardInputBinding = {
+   VkVertexInputBindingDescription edwardInputBinding = {
       .binding = 0,
       .stride = sizeof(float) * 3 * 2 + sizeof(float) * 2,
       .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
@@ -660,7 +615,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
   depthStencilState.depthBoundsTestEnable = VK_FALSE;
 
-  VkGraphicsPipelineCreateInfo edwardpipelineInfo{};
+ /* VkGraphicsPipelineCreateInfo edwardpipelineInfo{};
   edwardpipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
   edwardpipelineInfo.stageCount = 2;
   edwardpipelineInfo.pStages = eshaderStages;
@@ -679,7 +634,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &edwardpipelineInfo,
                                 nullptr, &egraphicsPipeline) != VK_SUCCESS) {
     throw std::runtime_error("failed to create edward graphics pipeline!");
-  }
+  }*/
 
 
   constexpr VkVertexInputBindingDescription drawClusterInputBindingPosition = {
@@ -1446,8 +1401,8 @@ void GpuScene::CreateDepthTexture()
     imageInfo.mipLevels = 1;// texturedata._mipmapLevelCount;
     imageInfo.arrayLayers = 1;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;//TODO: switch to linear with initiallayout=preinitialized?
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    imageInfo.format = VK_FORMAT_D32_SFLOAT;//TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't need stencil currently anyway
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;//VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    imageInfo.format = _depthFormat;//TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't need stencil currently anyway
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.flags = 0; // Optional
@@ -1457,25 +1412,49 @@ void GpuScene::CreateDepthTexture()
         throw std::runtime_error("failed to create depth rt!");
     }
 
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _depthTexture, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkDeviceMemory textureImageMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate image memory!");
+    }
+
+    vkBindImageMemory(device.getLogicalDevice(), _depthTexture, textureImageMemory, 0);
+
+//TODO: change to vk_image_layout_depth_attachment_optimal
+//transition param will be specified in renderpass
+    //device.transitionImageLayout(_depthTexture, _depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+
     //TODO: must be power of 2
     int bigger = width > height ? width : height;
     int log_bigger = floor(log2f(bigger));
-    int mip_level = -1;
-    if (1 << log_bigger == bigger)
-    {
-        mip_level = log_bigger;
-    }
-    else
-    {
-        mip_level = log_bigger + 1;
-    }
+    int mip_level = log_bigger;
+	
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;//TODO: switch to linear with initiallayout=preinitialized?
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;//VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    imageInfo.format = VK_FORMAT_D32_SFLOAT;//TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't need stencil currently anyway
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.flags = 0; // Optional
+
 
     imageInfo.mipLevels = mip_level;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
-    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+//VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 
         if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_depthPyramidTexture) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create depth rt!");
+            throw std::runtime_error("failed to create depth pyramid!");
         }
 
 }
@@ -1528,10 +1507,90 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
                               deviceref.getSwapChainExtent().width /
                                  float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
 
-  applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
+  applMesh = new AAPLMeshData("debug1.bin");
 
   std::ifstream f(scenefile.data());
   sceneFile = nlohmann::json::parse(f);
+  sceneFile["occluder_verts"];
+  sceneFile["occluder_indices"];
+  {
+	VkBufferCreateInfo bufferInfo{};
+          bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+          bufferInfo.size = sceneFile["occluder_indices"].size()*sizeof(uint32_t);//TODO uint16_t
+          bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+          bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          bufferInfo.flags = 0;
+          if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+              &_occludersIndexBuffer) != VK_SUCCESS) {
+              throw std::runtime_error("failed to create vertex buffer!");
+          }
+          VkMemoryRequirements memRequirements;
+          vkGetBufferMemoryRequirements(device.getLogicalDevice(), _occludersIndexBuffer,
+              &memRequirements);
+
+          VkMemoryAllocateInfo allocInfo{};
+          allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+          allocInfo.allocationSize = memRequirements.size;
+          allocInfo.memoryTypeIndex = findMemoryType(
+              memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+          if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+              &_occludersIndexBufferMemory) != VK_SUCCESS) {
+              throw std::runtime_error("failed to allocate vertex buffer memory!");
+          }
+          vkBindBufferMemory(device.getLogicalDevice(), _occludersIndexBuffer,
+              _occludersIndexBufferMemory, 0);
+          uint32_t* data;
+          vkMapMemory(device.getLogicalDevice(), _occludersIndexBufferMemory, 0, bufferInfo.size,
+              0, (void**)&data);
+	  for(int i=0;i<sceneFile["occluder_indices"].size();++i)
+	  {
+		  	*data++=sceneFile["occludder_indices"][i].template get<uint32_t>();
+	  }
+
+	  vkUnmapMemory(device.getLogicalDevice(),_occludersBufferMemory);
+
+
+  }
+	VkBufferCreateInfo bufferInfo{};
+          bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+          bufferInfo.size = sceneFile["occluder_verts"].size()*sizeof(float)*3;
+          bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+          bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          bufferInfo.flags = 0;
+          if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+              &_occludersVertBuffer) != VK_SUCCESS) {
+              throw std::runtime_error("failed to create vertex buffer!");
+          }
+          VkMemoryRequirements memRequirements;
+          vkGetBufferMemoryRequirements(device.getLogicalDevice(), _occludersVertBuffer,
+              &memRequirements);
+
+          VkMemoryAllocateInfo allocInfo{};
+          allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+          allocInfo.allocationSize = memRequirements.size;
+          allocInfo.memoryTypeIndex = findMemoryType(
+              memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+          if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+              &_occludersBufferMemory) != VK_SUCCESS) {
+              throw std::runtime_error("failed to allocate vertex buffer memory!");
+          }
+          vkBindBufferMemory(device.getLogicalDevice(), _occludersVertBuffer,
+              _occludersBufferMemory, 0);
+          float* data;
+          vkMapMemory(device.getLogicalDevice(), _occludersBufferMemory, 0, bufferInfo.size,
+              0, (void**)&data);
+	  for(int i=0;i<sceneFile["occluder_verts"].size();++i)
+	  {
+		  for(int j=0;j<3;j++)
+		  	*data++=sceneFile["occludder_verts"][i][j].template get<float>();
+	  }
+
+	  vkUnmapMemory(device.getLogicalDevice(),_occludersBufferMemory);
+
 
   CreateTextures();
 
@@ -1771,26 +1830,27 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
 
   CreateDepthTexture();
   CreateZdepthView();
-  CreateOccluderZPassFrameBuffer();
   CreateOccluderZPass();
+  CreateOccluderZPassFrameBuffer();
 
   createTextureSampler();
 
   //auto textureRes = createTexture(applMesh->_textures[13]);
   //auto textureRes = createTexture("G:\\AdvancedVulkanRendering\\textures\\texture.jpg");
   //currentImage = textureRes.first;
-  //init_descriptorsV2();
+  init_descriptorsV2();
   //init_descriptors(textureRes.second);
   //init_descriptors(textures[13].second);
   init_appl_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
+  createRenderOccludersPipeline(occluderZPass);
 }
 
 void GpuScene::CreateOccluderZPass()
 {
     //no color attachment only depth attachment
     VkAttachmentDescription depthAttachment{};
-    depthAttachment.format = VK_FORMAT_D32_SFLOAT;//TODO: should use the rt format?
+    depthAttachment.format = _depthFormat;//TODO: should use the rt format?
     depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
     depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1800,7 +1860,7 @@ void GpuScene::CreateOccluderZPass()
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkAttachmentReference depthAttachmentRef{};
-    depthAttachmentRef.attachment = 1;
+    depthAttachmentRef.attachment = 0;
     depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass{};
@@ -1848,7 +1908,7 @@ void GpuScene::CreateOccluderZPassFrameBuffer()
     framebufferInfo.height = device.getSwapChainExtent().height;
     framebufferInfo.layers = 1;
 
-    if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo, nullptr, &_depghFrameBuffer) != VK_SUCCESS) {
+    if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo, nullptr, &_depthFrameBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create z framebuffer!");
     }
 }
@@ -1859,7 +1919,7 @@ void GpuScene::CreateZdepthView()
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     createInfo.image = _depthTexture;
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    createInfo.format = VK_FORMAT_D32_SFLOAT;
+    createInfo.format = _depthFormat	;
     createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
     createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1877,12 +1937,12 @@ void GpuScene::CreateZdepthView()
 }
 
 
-void GpuScene::DrawOccluders(VkImage _dst)
+void GpuScene::DrawOccluders()
 {
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = occluderZPass;
-    renderPassInfo.framebuffer = _depghFrameBuffer;
+    renderPassInfo.framebuffer = _depthFrameBuffer;
     renderPassInfo.renderArea.offset = { 0, 0 };
     renderPassInfo.renderArea.extent = device.getSwapChainExtent();
 
@@ -1893,7 +1953,19 @@ void GpuScene::DrawOccluders(VkImage _dst)
     renderPassInfo.pClearValues = clearValues.data();
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);//TODO: seperate commandbuffer?
+	
+    VkDeviceSize offsets[] = {0};
+    VkBuffer vertexBuffers[] = {_occludersVertBuffer};
+    vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,drawOccluderPipeline);
+    vkCmdBindVertexBuffers(commandBuffer,0,1,vertexBuffers,offsets);
+    vkCmdBindIndexBuffer(commandBuffer,_occludersIndexBuffer,0,VK_INDEX_TYPE_UINT32);
 
+    mat4 objtocamera = transpose(maincamera->getObjectToCamera());
+	
+    vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout,0,1,&globalDescriptor,0,nullptr);
+ 
+    vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
+    vkCmdDrawIndexed(commandBuffer,sceneFile["occluder_indices"].size(),1,0,0,0);
     vkCmdEndRenderPass(commandBuffer);
 }
 
@@ -1905,6 +1977,8 @@ void GpuScene::recordCommandBuffer(int imageIndex){
         if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
             throw std::runtime_error("failed to begin recording command buffer!");
         }
+
+	DrawOccluders();
 
     VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

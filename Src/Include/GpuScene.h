@@ -226,14 +226,19 @@ private:
   VkImage            _depthTexture;
   VkImage            _depthPyramidTexture;
   VkImageView           _depthTextureView;
-  VkFramebuffer         _depghFrameBuffer;
+  VkFramebuffer         _depthFrameBuffer;
+  VkFormat		_depthFormat=VK_FORMAT_D32_SFLOAT_S8_UINT;
+  VkBuffer		_occludersVertBuffer;
+  VkBuffer		_occludersIndexBuffer;
+  VkDeviceMemory	_occludersBufferMemory;
+  VkDeviceMemory	_occludersIndexBufferMemory;
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
 
   void CreateOccludeRenderPipeline();
 
-  //VkPipelineLayout drawOccluderPipelineLayout;
+  VkPipelineLayout drawOccluderPipelineLayout;
   VkPipeline drawOccluderPipeline;
 
   void createRenderOccludersPipeline(VkRenderPass renderPass);
@@ -269,15 +274,15 @@ private:
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
 
-    void CreateDepthTexture();
-    void DrawOccluders(VkImage _dst);
-
-    void CreateTextures();
+        void CreateTextures();
 
     void updateSamplerInDescriptors(VkImageView currentImage);
 
     void ConfigureMaterial(const AAPLMaterial&, AAPLShaderMaterial&);
 
+	
+    void CreateDepthTexture();
+    void DrawOccluders();
     void CreateOccluderZPass();
     void CreateOccluderZPassFrameBuffer();
     void CreateZdepthView();
