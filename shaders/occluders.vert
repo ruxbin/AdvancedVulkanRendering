@@ -5,9 +5,9 @@ layout(location = 0) in vec3 position;
 layout (set=0,binding=0 )uniform camera
 {
     mat4 projectionMatrix;
+    mat4 viewMatrix;
 } Camera;
 
-layout(location = 0) out vec3 fragColor;
 
 //push constants block
 layout( push_constant ) uniform constants

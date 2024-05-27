@@ -151,7 +151,7 @@ private:
 
 
   VkDescriptorSetLayout applSetLayout;
-  VkDescriptorPool applEescriptorPool;
+  VkDescriptorPool applDescriptorPool;
   VkDescriptorSet applDescriptorSet;
 
   VkBuffer uniformBuffer;
@@ -236,7 +236,6 @@ private:
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
 
-  void CreateOccludeRenderPipeline();
 
   VkPipelineLayout drawOccluderPipelineLayout;
   VkPipeline drawOccluderPipeline;

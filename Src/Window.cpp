@@ -21,8 +21,9 @@ int main(int nargs, char ** args) {
 
     VulkanDevice vk(window);
 
-    std::string_view scenePath = "../GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
-    std::string_view sceneS = "scene.scene";
+    std::string_view scenePath = "D:\\SOURCE\\GraphicsAPI\\UsingMetalToDrawAViewContentsents\\Resources\\edward.obj";
+    //std::string_view scenePath = "../GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
+    std::string_view sceneS = "G:\\AdvancedVulkanRendering\\scene.scene";
     GpuScene gpuScene(sceneS,scenePath, vk);
     //GpuScene gpuScene(std::string_view("useless"), vk); //TODO: why error?
 

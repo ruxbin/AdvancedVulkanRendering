@@ -122,16 +122,17 @@ VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
   return shaderModule;
 }
 
+//TODO: cache the pso
 void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
 {
-    auto occludersVSShaderCode = readFile("shaders/occluders.vs.spv");
+    auto occludersVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawoccluders.vs.spv");
     VkShaderModule occludersVSShaderModule = createShaderModule(occludersVSShaderCode);
     VkPipelineShaderStageCreateInfo drawOccludersVSShaderStageInfo{};
     drawOccludersVSShaderStageInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     drawOccludersVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
     drawOccludersVSShaderStageInfo.module = occludersVSShaderModule;
-    drawOccludersVSShaderStageInfo.pName = "main";
+    drawOccludersVSShaderStageInfo.pName = "RenderSceneVS";
 
     //we don't need fragment stage 
     VkPipelineShaderStageCreateInfo shaderStages[] = { drawOccludersVSShaderStageInfo };
@@ -218,16 +219,22 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     colorBlending.blendConstants[2] = 0.0f;
     colorBlending.blendConstants[3] = 0.0f;
 
-    // VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    // pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    // pipelineLayoutInfo.setLayoutCount = 1;
-    // pipelineLayoutInfo.pSetLayouts = &globalSetLayout;//TODO: use seperate layout??
-    // pipelineLayoutInfo.pushConstantRangeCount = 0;
+    VkPushConstantRange pushconstantRange = { .stageFlags =
+                                              VK_SHADER_STAGE_VERTEX_BIT,
+                                          .offset = 0,
+                                          .size = sizeof(mat4) };
 
-    // if (vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo,
-    //     nullptr, &pipelineLayout) != VK_SUCCESS) {
-    //     throw std::runtime_error("failed to create pipeline layout!");
-    // }
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+     pipelineLayoutInfo.setLayoutCount = 1;
+     pipelineLayoutInfo.pSetLayouts = &globalSetLayout;//TODO: use seperate layout??
+     pipelineLayoutInfo.pushConstantRangeCount = 1;
+     pipelineLayoutInfo.pPushConstantRanges = &pushconstantRange;
+
+     if (vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo,
+         nullptr, &pipelineLayout) != VK_SUCCESS) {
+         throw std::runtime_error("failed to create pipeline layout!");
+     }
    
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -240,7 +247,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = pipelineLayout;//TODO: seperate layout? currently just reuse
-    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.renderPass = occluderZPass;
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
@@ -264,154 +271,19 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     }
 }
 
-//TODO: cache the pso
-void GpuScene::CreateOccludeRenderPipeline()
-{
-    auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
-    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-    vertShaderStageInfo.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = vertShaderModule;
-    vertShaderStageInfo.pName = "main";
-    VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo};
 
 
-    VkVertexInputBindingDescription edwardInputBinding = {
-        .binding = 0,
-        .stride = sizeof(float) * 3 * 2 + sizeof(float) * 2,
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
-
-    VkVertexInputAttributeDescription edwardInputAttributes[] = {
-        {.location = 0,
-         .binding = 0,
-         .format = VK_FORMAT_R32G32B32_SFLOAT,
-         .offset = 0},
-        {.location = 1,
-         .binding = 0,
-         .format = VK_FORMAT_R32G32B32_SFLOAT,
-         .offset = sizeof(float) * 3},
-        {.location = 2,
-         .binding = 0,
-         .format = VK_FORMAT_R32G32_SFLOAT,
-         .offset = sizeof(float) * 3 * 2} };
-
-    VkPipelineVertexInputStateCreateInfo edwardVertexInputInfo{};
-    edwardVertexInputInfo.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    edwardVertexInputInfo.vertexBindingDescriptionCount = 1;
-    edwardVertexInputInfo.pVertexBindingDescriptions = &edwardInputBinding;
-    edwardVertexInputInfo.vertexAttributeDescriptionCount = 3;
-    edwardVertexInputInfo.pVertexAttributeDescriptions = edwardInputAttributes;
-
-    VkPipelineDepthStencilStateCreateInfo depthStencilState{};
-    depthStencilState.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencilState.depthWriteEnable = VK_TRUE;
-    depthStencilState.depthTestEnable = VK_TRUE;
-    depthStencilState.stencilTestEnable = VK_FALSE;
-    depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthStencilState.depthBoundsTestEnable = VK_FALSE;
-
-
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    /*VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-    colorBlendAttachment.blendEnable = VK_FALSE;*/
-
-    VkPipelineColorBlendStateCreateInfo colorBlending{};
-    colorBlending.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.logicOp = VK_LOGIC_OP_COPY;
-    colorBlending.attachmentCount = 0;
-    /*colorBlending.pAttachments = &colorBlendAttachment;
-    colorBlending.blendConstants[0] = 0.0f;
-    colorBlending.blendConstants[1] = 0.0f;
-    colorBlending.blendConstants[2] = 0.0f;
-    colorBlending.blendConstants[3] = 0.0f;*/
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;//change to strip
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-    const VkExtent2D& swapChainExtentRef = device.getSwapChainExtent();
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = (float)swapChainExtentRef.width;
-    viewport.height = (float)swapChainExtentRef.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor{};
-    scissor.offset = { 0, 0 };
-    scissor.extent = swapChainExtentRef;
-
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.scissorCount = 1;
-    viewportState.pScissors = &scissor;
-
-    VkPipelineRasterizationStateCreateInfo rasterizer{};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
-
-    VkGraphicsPipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = sizeof(shaderStages)/sizeof(shaderStages[0]);
-    pipelineInfo.pStages = shaderStages;
-    pipelineInfo.pVertexInputState = &edwardVertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = occluderZPass;
-    pipelineInfo.subpass = 0;
-    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
-    // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
-    // is being created with fragment shader state, and subpass uses a
-    // depth/stencil attachment, pDepthStencilState must be a valid pointer to a
-    // valid VkPipelineDepthStencilStateCreateInfo structure
-    pipelineInfo.pDepthStencilState = &depthStencilState;
-
-    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo,
-        nullptr, &graphicsPipeline) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create graphics pipeline!");
-    }
-
-
-    
-
-}
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
-  auto vertShaderCode = readFile("shaders/vert.spv");
-  auto fragShaderCode = readFile("shaders/frag.spv");
+  auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
+  auto fragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\frag.spv");
 
-  auto evertShaderCode = readFile("shaders/edward.vs.spv");
-  auto efragShaderCode = readFile("shaders/edward.ps.spv");
+  auto evertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.vs.spv");
+  auto efragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.ps.spv");
 
-  auto drawClusterVSShaderCode = readFile("shaders/drawcluster.vs.spv");
-  auto drawClusterPSShaderCode = readFile("shaders/drawcluster.ps.spv");
+  auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.vs.spv");
+  auto drawClusterPSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.ps.spv");
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -549,11 +421,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   colorBlending.blendConstants[3] = 0.0f;
 
 
-  VkPushConstantRange epushconstantRange = {.stageFlags =
-                                                VK_SHADER_STAGE_VERTEX_BIT,
-                                            .offset = 0,
-                                            .size = sizeof(mat4)};
-  
+
 
 
   VkPushConstantRange drawclusterpushconstantRange = { .stageFlags =
@@ -1018,13 +886,13 @@ void GpuScene::init_appl_descriptors()
     pool_info.pPoolSizes = sizes.data();
 
     vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
-        &descriptorPool);
+        &applDescriptorPool);
 
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.pNext = nullptr;
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     // using the pool we just set
-    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorPool = applDescriptorPool;
     // only 1 descriptor
     allocInfo.descriptorSetCount = 1;
     // using the global data layout
@@ -1137,27 +1005,16 @@ void GpuScene::init_descriptorsV2()
     // we use it from the vertex shader
     camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-    VkDescriptorSetLayoutBinding textureBinding = {};
-    textureBinding.binding = 1;
-    textureBinding.descriptorCount = 1;
-    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+   
 
-    VkDescriptorSetLayoutBinding samplerBinding = {};
-    samplerBinding.binding = 2;
-    samplerBinding.descriptorCount = 1;
-    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-
-    VkDescriptorSetLayoutBinding bindings[] = { camBufferBinding,textureBinding,samplerBinding };
+    VkDescriptorSetLayoutBinding bindings[] = { camBufferBinding };
 
     VkDescriptorSetLayoutCreateInfo setinfo = {};
     setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     setinfo.pNext = nullptr;
 
     // we are going to have 1 binding
-    setinfo.bindingCount = 3;
+    setinfo.bindingCount = sizeof(bindings)/sizeof(bindings[0]);
     // no flags
     setinfo.flags = 0;
     // point to the camera buffer binding
@@ -1170,8 +1027,7 @@ void GpuScene::init_descriptorsV2()
     // create a descriptor pool that will hold 10 uniform buffers
     std::vector<VkDescriptorPoolSize> sizes = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,10},
-        {VK_DESCRIPTOR_TYPE_SAMPLER,10} };
+        };
 
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1222,41 +1078,10 @@ void GpuScene::init_descriptorsV2()
 
     //vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
 
-    VkImageView currentImage;//TODO:
-    VkDescriptorImageInfo imageinfo;
-    imageinfo.imageView = currentImage;
-    imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    //imageinfo.sampler = textureSampler;
 
 
-    VkWriteDescriptorSet setWriteTexture = {};
-    setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setWriteTexture.pNext = nullptr;
 
-    // we are going to write into binding number 0
-    setWriteTexture.dstBinding = 1;
-    // of the global descriptor
-    setWriteTexture.dstSet = globalDescriptor;
-    setWriteTexture.dstArrayElement = 0;
-
-    setWriteTexture.descriptorCount = 1;
-    setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    setWriteTexture.pImageInfo = &imageinfo;
-
-
-    VkDescriptorImageInfo samplerinfo;
-    samplerinfo.sampler = textureSampler;
-    VkWriteDescriptorSet setSampler = {};
-    setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setSampler.dstBinding = 2;
-    setSampler.pNext = nullptr;
-    setSampler.dstSet = globalDescriptor;
-    setSampler.dstArrayElement = 0;
-    setSampler.descriptorCount = 1;
-    setSampler.pImageInfo = &samplerinfo;
-
-
-    std::array< VkWriteDescriptorSet, 3> writes = { setWrite , setWriteTexture, setSampler };
+    std::array< VkWriteDescriptorSet, 1> writes = { setWrite  };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 }
@@ -1507,7 +1332,7 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
                               deviceref.getSwapChainExtent().width /
                                  float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
 
-  applMesh = new AAPLMeshData("debug1.bin");
+  applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
 
   std::ifstream f(scenefile.data());
   sceneFile = nlohmann::json::parse(f);
@@ -1546,10 +1371,10 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
               0, (void**)&data);
 	  for(int i=0;i<sceneFile["occluder_indices"].size();++i)
 	  {
-		  	*data++=sceneFile["occludder_indices"][i].template get<uint32_t>();
+		  	*data++=sceneFile["occluder_indices"][i].template get<uint32_t>();
 	  }
 
-	  vkUnmapMemory(device.getLogicalDevice(),_occludersBufferMemory);
+	  vkUnmapMemory(device.getLogicalDevice(), _occludersIndexBufferMemory);
 
 
   }
@@ -1585,8 +1410,14 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
               0, (void**)&data);
 	  for(int i=0;i<sceneFile["occluder_verts"].size();++i)
 	  {
-		  for(int j=0;j<3;j++)
-		  	*data++=sceneFile["occludder_verts"][i][j].template get<float>();
+          //for (int j = 0; j < 3; j++)
+          //{
+          //z和y需要换下顺序
+          float x = sceneFile["occluder_verts"][i][0].template get<float>();
+          float z = sceneFile["occluder_verts"][i][1].template get<float>();
+          float y = sceneFile["occluder_verts"][i][2].template get<float>();
+          //}
+          *data++ = x; *data++ = y; *data++ = z;
 	  }
 
 	  vkUnmapMemory(device.getLogicalDevice(),_occludersBufferMemory);
@@ -1960,11 +1791,11 @@ void GpuScene::DrawOccluders()
     vkCmdBindVertexBuffers(commandBuffer,0,1,vertexBuffers,offsets);
     vkCmdBindIndexBuffer(commandBuffer,_occludersIndexBuffer,0,VK_INDEX_TYPE_UINT32);
 
-    mat4 objtocamera = transpose(maincamera->getObjectToCamera());
+    //mat4 objtocamera = transpose(maincamera->getObjectToCamera());
 	
     vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout,0,1,&globalDescriptor,0,nullptr);
  
-    vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
+    //vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
     vkCmdDrawIndexed(commandBuffer,sceneFile["occluder_indices"].size(),1,0,0,0);
     vkCmdEndRenderPass(commandBuffer);
 }
