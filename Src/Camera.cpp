@@ -28,7 +28,8 @@ mat4& Camera::getProjectMatrix()
 Camera::Camera(float fov,float n ,float f, vec3 origin,float aspect)
 {
     mat4 trans = translate(-origin.x,-origin.y,-origin.z);
-    mat4 proj = perspective(fov, aspect, n, f);
+    //mat4 proj = perspective(fov, aspect, n, f);
+    mat4 proj = reverseZperspective(fov,aspect,n,f);
     _projectionMatrix = proj;
     _objectToCameraMatrix = trans;
 	_origin = origin;
@@ -40,7 +41,8 @@ Camera::Camera(float fov,float n ,float f, vec3 origin,float aspect)
 Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 right)
 {
 	
-	mat4 proj = perspective(fov, aspect, n, f);
+	//mat4 proj = perspective(fov, aspect, n, f);
+	mat4 proj = reverseZperspective(fov,aspect,n,f);
 	_projectionMatrix = proj;
 	vec3 up = right.cross(lookat);
 	_x = right;

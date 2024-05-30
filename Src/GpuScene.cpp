@@ -125,14 +125,14 @@ VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
 //TODO: cache the pso
 void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
 {
-    auto occludersVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawoccluders.vs.spv");
+    auto occludersVSShaderCode = readFile("shaders/occluders.vs.spv");
     VkShaderModule occludersVSShaderModule = createShaderModule(occludersVSShaderCode);
     VkPipelineShaderStageCreateInfo drawOccludersVSShaderStageInfo{};
     drawOccludersVSShaderStageInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     drawOccludersVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
     drawOccludersVSShaderStageInfo.module = occludersVSShaderModule;
-    drawOccludersVSShaderStageInfo.pName = "RenderSceneVS";
+    drawOccludersVSShaderStageInfo.pName = "main";
 
     //we don't need fragment stage 
     VkPipelineShaderStageCreateInfo shaderStages[] = { drawOccludersVSShaderStageInfo };
@@ -257,7 +257,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     depthStencilState1.depthWriteEnable = VK_TRUE;
     depthStencilState1.depthTestEnable = VK_TRUE;
     depthStencilState1.stencilTestEnable = VK_FALSE;
-    depthStencilState1.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencilState1.depthCompareOp = VK_COMPARE_OP_GREATER;
     depthStencilState1.depthBoundsTestEnable = VK_FALSE;
     // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
     // is being created with fragment shader state, and subpass uses a
@@ -276,14 +276,14 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
-  auto vertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\vert.spv");
-  auto fragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\frag.spv");
+  auto vertShaderCode = readFile("shaders/vert.spv");
+  auto fragShaderCode = readFile("shaders/frag.spv");
 
-  auto evertShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.vs.spv");
-  auto efragShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\edward.ps.spv");
+  auto evertShaderCode = readFile("shaders/edward.vs.spv");
+  auto efragShaderCode = readFile("shaders/edward.ps.spv");
 
-  auto drawClusterVSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.vs.spv");
-  auto drawClusterPSShaderCode = readFile("G:\\AdvancedVulkanRendering\\shaders\\drawcluster.ps.spv");
+  auto drawClusterVSShaderCode = readFile("shaders/drawcluster.vs.spv");
+  auto drawClusterPSShaderCode = readFile("shaders/drawcluster.ps.spv");
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -480,7 +480,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   depthStencilState.depthWriteEnable = VK_TRUE;
   depthStencilState.depthTestEnable = VK_TRUE;
   depthStencilState.stencilTestEnable = VK_FALSE;
-  depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
+  depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
   depthStencilState.depthBoundsTestEnable = VK_FALSE;
 
  /* VkGraphicsPipelineCreateInfo edwardpipelineInfo{};
@@ -1332,7 +1332,7 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
                               deviceref.getSwapChainExtent().width /
                                  float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
 
-  applMesh = new AAPLMeshData("G:\\AdvancedVulkanRendering\\debug1.bin");
+  applMesh = new AAPLMeshData("debug1.bin");
 
   std::ifstream f(scenefile.data());
   sceneFile = nlohmann::json::parse(f);
@@ -1779,7 +1779,7 @@ void GpuScene::DrawOccluders()
 
     std::array<VkClearValue, 1> clearValues{};
    
-    clearValues[0].depthStencil = { 1.0f, 0 };
+    clearValues[0].depthStencil = { 0.0f, 0 };
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
 
@@ -1820,7 +1820,7 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 
         std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        clearValues[1].depthStencil = {1.0f, 0};
+        clearValues[1].depthStencil = {0.0f, 0};
         renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         renderPassInfo.pClearValues = clearValues.data();
 

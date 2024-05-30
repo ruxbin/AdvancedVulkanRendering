@@ -175,6 +175,20 @@ static mat4 perspective(float fovy, float aspect, float nearp, float farp)
     return m;
 }
 
+static mat4 reverseZperspective(float fovy, float aspect, float nearp , float farp)
+{
+	mat4 m(1.f);
+	float invtf = 1.0f / tan(fovy * 0.5f);
+    m[0].x = invtf / aspect;
+    m[1].y = invtf;
+    m[2].z = nearp / (nearp - farp);
+    m[2].w = (-1.0f * farp * nearp) / (nearp-farp);
+    m[3].z = 1.0f;
+    m[3].w = 0.0f;
+    return m;
+
+}
+
 static mat4 orthographic(float left, float right, float bottom, float top, float nearp, float farp)
 {
     mat4 m(1.0f);
