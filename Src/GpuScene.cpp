@@ -1337,7 +1337,7 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
   std::ifstream f(scenefile.data());
   sceneFile = nlohmann::json::parse(f);
   sceneFile["occluder_verts"];
-  sceneFile["occluder_indices"];
+
   {
 	VkBufferCreateInfo bufferInfo{};
           bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1406,6 +1406,9 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
           vkBindBufferMemory(device.getLogicalDevice(), _occludersVertBuffer,
               _occludersBufferMemory, 0);
           float* data;
+          float x_offset = sceneFile["center_offset"][0].template get<float>();
+          float y_offset = sceneFile["center_offset"][1].template get<float>();
+          float z_offset = sceneFile["center_offset"][2].template get<float>();
           vkMapMemory(device.getLogicalDevice(), _occludersBufferMemory, 0, bufferInfo.size,
               0, (void**)&data);
 	  for(int i=0;i<sceneFile["occluder_verts"].size();++i)
@@ -1417,7 +1420,7 @@ GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const
           float z = sceneFile["occluder_verts"][i][1].template get<float>();
           float y = sceneFile["occluder_verts"][i][2].template get<float>();
           //}
-          *data++ = x; *data++ = y; *data++ = z;
+          *data++ = x-x_offset; *data++ = y-y_offset; *data++ = z-z_offset;
 	  }
 
 	  vkUnmapMemory(device.getLogicalDevice(),_occludersBufferMemory);
