@@ -11,6 +11,7 @@
 #include <array>
 #include <functional>
 #include <cstdlib>
+
 static std::vector<char> readFile(const std::string &filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
@@ -125,7 +126,7 @@ VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
 //TODO: cache the pso
 void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
 {
-    auto occludersVSShaderCode = readFile("shaders/occluders.vs.spv");
+    auto occludersVSShaderCode = readFile((_rootPath / "shaders/occluders.vs.spv").generic_string());
     VkShaderModule occludersVSShaderModule = createShaderModule(occludersVSShaderCode);
     VkPipelineShaderStageCreateInfo drawOccludersVSShaderStageInfo{};
     drawOccludersVSShaderStageInfo.sType =
@@ -276,14 +277,14 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
-  auto vertShaderCode = readFile("shaders/vert.spv");
-  auto fragShaderCode = readFile("shaders/frag.spv");
+  auto vertShaderCode = readFile((_rootPath/"shaders/vert.spv").generic_string());
+  auto fragShaderCode = readFile((_rootPath / "shaders/frag.spv").generic_string());
 
-  auto evertShaderCode = readFile("shaders/edward.vs.spv");
-  auto efragShaderCode = readFile("shaders/edward.ps.spv");
+  auto evertShaderCode = readFile((_rootPath / "shaders/edward.vs.spv").generic_string());
+  auto efragShaderCode = readFile((_rootPath / "shaders/edward.ps.spv").generic_string());
 
-  auto drawClusterVSShaderCode = readFile("shaders/drawcluster.vs.spv");
-  auto drawClusterPSShaderCode = readFile("shaders/drawcluster.ps.spv");
+  auto drawClusterVSShaderCode = readFile((_rootPath / "shaders/drawcluster.vs.spv").generic_string());
+  auto drawClusterPSShaderCode = readFile((_rootPath / "shaders/drawcluster.ps.spv").generic_string());
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1313,28 +1314,31 @@ void GpuScene::ConfigureMaterial(const AAPLMaterial& input, AAPLShaderMaterial& 
     output.alpha = input.opacity;
 }
 
-GpuScene::GpuScene(std::string_view&scenefile, std::string_view &filepath, const VulkanDevice &deviceref)
-    : device(deviceref), modelScale(1.f) {
-  LoadObj(filepath.data());
+
+GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
+    : device(deviceref), modelScale(1.f), _rootPath(root) {
+
   createSyncObjects();
-  createVertexBuffer();
-  createIndexBuffer();
   createUniformBuffer();
 
   createCommandBuffer(deviceref.getCommandPool());
-
 
   //maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
   //                        deviceref.getSwapChainExtent().width /
   //                            float(deviceref.getSwapChainExtent().height));
 
-  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(-19.3780651f, 5.88073206f, -5.17611504f),
-                              deviceref.getSwapChainExtent().width /
-                                 float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
+  //maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(-19.3780651f, 5.88073206f, -5.17611504f),
+  //                            deviceref.getSwapChainExtent().width /
+  //                               float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
 
-  applMesh = new AAPLMeshData("debug1.bin");
+  maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 20),
+      deviceref.getSwapChainExtent().width /
+      float(deviceref.getSwapChainExtent().height), vec3(0,0,-1), vec3(-1,0, 0));
 
-  std::ifstream f(scenefile.data());
+
+  applMesh = new AAPLMeshData( (_rootPath /"debug1.bin").generic_string().c_str() );
+
+  std::ifstream f(root/"scene.scene");
   sceneFile = nlohmann::json::parse(f);
   sceneFile["occluder_verts"];
 
@@ -1857,73 +1861,6 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 
 }
 
-void GpuScene::createVertexBuffer() {
-  VkBufferCreateInfo bufferInfo{};
-  bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  bufferInfo.size = getVertexSize();
-  bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-  bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  bufferInfo.flags = 0;
-  if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
-                     &vertexBuffer) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create vertex buffer!");
-  }
-  VkMemoryRequirements memRequirements;
-  vkGetBufferMemoryRequirements(device.getLogicalDevice(), vertexBuffer,
-                                &memRequirements);
-
-  VkMemoryAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  allocInfo.allocationSize = memRequirements.size;
-  allocInfo.memoryTypeIndex = findMemoryType(
-      memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                       &vertexBufferMemory) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate vertex buffer memory!");
-  }
-  vkBindBufferMemory(device.getLogicalDevice(), vertexBuffer,
-                     vertexBufferMemory, 0);
-  void *data;
-  vkMapMemory(device.getLogicalDevice(), vertexBufferMemory, 0, bufferInfo.size,
-              0, &data);
-  memcpy(data, getRawVertexData(), (size_t)bufferInfo.size);
-  vkUnmapMemory(device.getLogicalDevice(), vertexBufferMemory);
-}
-
-void GpuScene::createIndexBuffer() {
-  VkBufferCreateInfo bufferInfo{};
-  bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  bufferInfo.size = getIndexSize();
-  bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-  bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  bufferInfo.flags = 0;
-  if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr, &indexBuffer) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to create index buffer!");
-  }
-  VkMemoryRequirements memRequirements;
-  vkGetBufferMemoryRequirements(device.getLogicalDevice(), indexBuffer, &memRequirements);
-
-  VkMemoryAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  allocInfo.allocationSize = memRequirements.size;
-  allocInfo.memoryTypeIndex = findMemoryType(
-      memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &indexBufferMemory) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate vertex buffer memory!");
-  }
-  vkBindBufferMemory(device.getLogicalDevice(), indexBuffer, indexBufferMemory, 0);
-  void *data;
-  vkMapMemory(device.getLogicalDevice(), indexBufferMemory, 0, bufferInfo.size, 0, &data);
-  memcpy(data, getRawIndexData(), (size_t)bufferInfo.size);
-  vkUnmapMemory(device.getLogicalDevice(), indexBufferMemory);
-}
-
 
 struct PerObjPush
 {
@@ -1966,6 +1903,10 @@ void GpuScene::DrawChunks()
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
         vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
+
+        //if (maincamera->getFrustrum().FructumCull(m_Chunks[i].boundingBox))
+        //    continue;
+
         vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
     }
 }

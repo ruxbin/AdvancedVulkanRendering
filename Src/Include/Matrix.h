@@ -71,10 +71,15 @@ struct vec3
     float &operator [] (unsigned int i)             { return (&x)[i]; }
     const float &operator [] (unsigned int i) const { return (&x)[i]; }
 
-    vec3 cross(const vec3& rhs) {
+    vec3 cross(const vec3& rhs)const {
         return vec3(y * rhs.z - z * rhs.y, z * rhs.x - x * rhs.z, x * rhs.y - y * rhs.x);
         //(1,0,0)*(0,1,0)
         //->(0,0,1)
+    }
+
+    float dot(const vec3& rhs)const
+    {
+        return x * rhs.x + y * rhs.y + z * rhs.z;
     }
 };
 
@@ -105,6 +110,12 @@ struct vec4
     const float &operator [] (unsigned int i) const { return (&x)[i]; }
 
     vec3 xyz() const { return vec3(x, y, z); }
+    vec3 xyz_w() const { return vec3(x/w, y/w, z/w); }
+
+    float dot(const vec4& rhs)
+    {
+        return x * rhs.x + y * rhs.y + z * rhs.z + w * rhs.w;
+    }
 };
 
 struct mat4
@@ -145,10 +156,13 @@ struct mat4
         m.w *= s;
         return m;
     }
-
+    //
+    // @param vec4 rhs is in column, 4x4 * 4x1 => 4x1
+    //
     vec4 operator * (const vec4 &rhs)
     {
         return x * rhs.x + y * rhs.y + z * rhs.z + w * rhs.w;
+        //return vec4(x.dot(rhs), y.dot(rhs), z.dot(rhs), w.dot(rhs));
     }
 
     vec4 &operator [] (unsigned int i) { return (&x)[i]; }

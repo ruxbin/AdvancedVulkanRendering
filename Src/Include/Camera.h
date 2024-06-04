@@ -1,6 +1,6 @@
 #pragma once
 #include "Matrix.h"
-
+#include "Frustum.h"
 class Camera
 {
 private:
@@ -12,8 +12,9 @@ private:
     vec3 _y;//up & down -- w/s
     vec3 _z;//forward & backword --f/g
     void updateCameraMatrix();
+    Frustum _frustum;
 public:
-    Camera(float fov,float n ,float f, vec3 origin,float aspect);
+   
     Camera(float fov, float n, float f, vec3 origin, float aspect, vec3 lookat, vec3 right);
     void * getProjectionMatrixData();
     void * getObjectToCameraData();
@@ -27,7 +28,7 @@ public:
     void MoveDown(float length);
     void RotateZ(float angle);
     void RotateY(float angle);
-
+    const Frustum& getFrustrum()const { return _frustum; }
 
 };
 

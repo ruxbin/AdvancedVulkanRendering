@@ -5,6 +5,7 @@
 #include "GpuScene.h"
 #include <string_view>
 #include <chrono>
+#include <filesystem>
 
 int main(int nargs, char ** args) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -19,12 +20,27 @@ int main(int nargs, char ** args) {
         spdlog::error("SDL create window failed");
     }
 
+    
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    while (!std::filesystem::exists(currentPath / "shaders"))
+    {
+        if (currentPath != currentPath.parent_path())
+            currentPath = currentPath.parent_path();
+        else
+            break;
+    }
+    if (!std::filesystem::exists(currentPath / "shaders"))
+    {
+        spdlog::error("failed to locate shaders");
+        return 1;
+    }
+        
+
     VulkanDevice vk(window);
 
-    std::string_view scenePath = "D:\\SOURCE\\GraphicsAPI\\UsingMetalToDrawAViewContentsents\\Resources\\edward.obj";
+
     //std::string_view scenePath = "../GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
-    std::string_view sceneS = "G:\\AdvancedVulkanRendering\\scene.scene";
-    GpuScene gpuScene(sceneS,scenePath, vk);
+    GpuScene gpuScene(currentPath, vk);
     //GpuScene gpuScene(std::string_view("useless"), vk); //TODO: why error?
 
     SDL_Event e; 

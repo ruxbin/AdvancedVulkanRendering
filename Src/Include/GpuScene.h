@@ -1,5 +1,6 @@
 #pragma once
 #include "Matrix.h"
+#include "Common.h"
 #include "VulkanSetup.h"
 #include "vulkan/vulkan.h"
 #include "Camera.h"
@@ -10,6 +11,7 @@
 #include <vector>
 #include <utility>
 #include <stdio.h>
+#include <filesystem>
 
 struct AAPLTextureData
 {
@@ -56,29 +58,8 @@ struct AAPLMeshData
   ~AAPLMeshData();
 };
 
-struct AAPLBoundingBox3
-{
-    alignas(16) vec3 min;
-    alignas(16) vec3 max;
-};
 
-struct AAPLSphere
-{
-    vec4 data;//xyz center, w radius
-};
 
-struct AAPLMeshChunk
-{
-    AAPLBoundingBox3 boundingBox;
-    vec4 normalDistribution;
-    vec4 cluterMean;
-
-    AAPLSphere boundingSphere;
-
-    unsigned int materialIndex;
-    unsigned int indexBegin;
-    unsigned int indexCount;
-};
 
 
 struct alignas(16) AAPLShaderMaterial
@@ -240,6 +221,9 @@ private:
   VkPipelineLayout drawOccluderPipelineLayout;
   VkPipeline drawOccluderPipeline;
 
+
+  std::filesystem::path _rootPath;
+
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffer(VkCommandPool commandPool) {
@@ -258,7 +242,7 @@ private:
     void createSyncObjects();
 
   public:
-    GpuScene(std::string_view& scenefile, std::string_view &filepath, const VulkanDevice &deviceref);
+    GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref);
     GpuScene() = delete;
     GpuScene(const GpuScene &) = delete;
     void Draw();
@@ -363,9 +347,6 @@ private:
             throw std::runtime_error("failed to create texture sampler!");
         }
     }
-
-    void createVertexBuffer();
-    void createIndexBuffer();
     void recordCommandBuffer(int frameindex);
     std::pair<VkImage, VkImageView> createTexture(const AAPLTextureData&);
 
