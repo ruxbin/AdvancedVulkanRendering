@@ -383,7 +383,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
   rasterizer.lineWidth = 1.0f;
   rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-  rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   rasterizer.depthBiasEnable = VK_FALSE;
 
   VkPipelineRasterizationStateCreateInfo rasterizer_wireframe{};
@@ -394,7 +394,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   rasterizer_wireframe.polygonMode = VK_POLYGON_MODE_FILL;
   rasterizer_wireframe.lineWidth = 1.0f;
   rasterizer_wireframe.cullMode = VK_CULL_MODE_NONE;
-  rasterizer_wireframe.frontFace = VK_FRONT_FACE_CLOCKWISE;
+  rasterizer_wireframe.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   rasterizer_wireframe.depthBiasEnable = VK_FALSE;
 
   VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -1323,24 +1323,27 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
 
   createCommandBuffer(deviceref.getCommandPool());
 
+  applMesh = new AAPLMeshData((_rootPath / "debug1.bin").generic_string().c_str());
+
+  std::ifstream f(root / "scene.scene");
+  sceneFile = nlohmann::json::parse(f);
+
   //maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
   //                        deviceref.getSwapChainExtent().width /
   //                            float(deviceref.getSwapChainExtent().height));
+  vec3 camera_pos = vec3(sceneFile["camera_position"][0].template get<float>(), sceneFile["camera_position"][1].template get<float>(), sceneFile["camera_position"][2].template get<float>());
+  vec3 camera_up = vec3(sceneFile["camera_up"][0].template get<float>(), sceneFile["camera_up"][1].template get<float>(), sceneFile["camera_up"][2].template get<float>());
+  vec3 camera_dir = vec3(sceneFile["camera_direction"][0].template get<float>(), sceneFile["camera_direction"][1].template get<float>(), sceneFile["camera_direction"][2].template get<float>());
+  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, camera_pos,
+                              deviceref.getSwapChainExtent().width /
+                                 float(deviceref.getSwapChainExtent().height),camera_dir,camera_up * -1.f);
 
-  //maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(-19.3780651f, 5.88073206f, -5.17611504f),
-  //                            deviceref.getSwapChainExtent().width /
-  //                               float(deviceref.getSwapChainExtent().height),vec3(0.0872095972f, -0.188510686f, 0.957563162f),vec3(0.993293643f, -0.0356985331f, -0.0974915177f));
-
-  maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 20),
-      deviceref.getSwapChainExtent().width /
-      float(deviceref.getSwapChainExtent().height), vec3(0,0,-1), vec3(-1,0, 0));
+  //maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 20),
+  //    deviceref.getSwapChainExtent().width /
+  //    float(deviceref.getSwapChainExtent().height), vec3(0,0,-1), vec3(-1,0, 0));
 
 
-  applMesh = new AAPLMeshData( (_rootPath /"debug1.bin").generic_string().c_str() );
 
-  std::ifstream f(root/"scene.scene");
-  sceneFile = nlohmann::json::parse(f);
-  sceneFile["occluder_verts"];
 
   {
 	VkBufferCreateInfo bufferInfo{};
@@ -1899,16 +1902,21 @@ void GpuScene::DrawChunks()
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
+    uint32_t occluded = 0;
     for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
         vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
 
-        //if (maincamera->getFrustrum().FructumCull(m_Chunks[i].boundingBox))
-        //    continue;
+        if (maincamera->getFrustrum().FructumCull(m_Chunks[i].boundingBox))
+        {
+            ++occluded;
+            continue;
+        }
 
         vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
     }
+    spdlog::log(spdlog::level::info, "occlued chunks: {}", occluded);
 }
 
 void GpuScene::Draw() {

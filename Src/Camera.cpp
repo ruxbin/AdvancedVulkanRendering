@@ -26,13 +26,13 @@ mat4& Camera::getProjectMatrix()
 }
 
 
-Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 right)
+Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 up)
 {
 	
 	//mat4 proj = perspective(fov, aspect, n, f);
 	mat4 proj = reverseZperspective(fov,aspect,n,f);
 	_projectionMatrix = proj;
-	vec3 up = right.cross(lookat);
+	vec3 right = up.cross(lookat);
 	_x = right;
 	_y = up;
 	_z = lookat;
@@ -50,9 +50,12 @@ void Camera::updateCameraMatrix()
 	_objectToCameraMatrix.y = vec4(_y, 0);
 	_objectToCameraMatrix.z = vec4(_z, 0);
 	_objectToCameraMatrix.w = vec4(0, 0, 0, 1);
+
+	_objectToCameraMatrix = transM * _objectToCameraMatrix;
 	//proj to world
 	//mat4 viewproj = transpose(_objectToCameraMatrix * _projectionMatrix);
-	mat4 viewproj =  transpose(_objectToCameraMatrix)*transpose(transM);
+	//mat4 viewproj = transpose(_projectionMatrix)*transpose(_objectToCameraMatrix)*transpose(transM);
+	mat4 viewproj = transpose(_projectionMatrix) * transpose(_objectToCameraMatrix);
 	
 	mat4 invViewProj = inverse(viewproj);
 	vec4 clipCoords[8] = {	{-1,-1,0,1},{-1,1,0,1},{1,1,0,1},{1,-1,0,1},				//far
@@ -72,6 +75,7 @@ void Camera::updateCameraMatrix()
 				{worldCoords[0],worldCoords[4],worldCoords[1]},{worldCoords[2],worldCoords[7],worldCoords[3]}, //left & right 
 				{worldCoords[1],worldCoords[5],worldCoords[2]},{worldCoords[0 ],worldCoords[3],worldCoords[4]}, //top & bottom 
 				};
+
 }
 
 void Camera::MoveLeft(float dist)
@@ -118,7 +122,7 @@ void Camera::RotateZ(float angle)
 	//rotate _x
 	angle = PI * angle / 180.f;
 	_x = _x*cosf(angle)+_y*sinf(angle);
-	_y = _x.cross(_z);
+	_y = _z.cross(_x);
 	updateCameraMatrix();
 }
 void Camera::RotateY(float angle)
@@ -126,6 +130,6 @@ void Camera::RotateY(float angle)
 	//rotate _z
 	angle = PI * angle / 180.f;
 	_x = _x * cosf(angle) + _z * sinf(angle);
-	_z = _y.cross(_x);
+	_z = _x.cross(_y);
 	updateCameraMatrix();
 }

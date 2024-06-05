@@ -115,16 +115,16 @@ float4 RenderScenePS(VSOutput input) : SV_Target
     //return float4(0.5,0.5,0.5,1);
 
 
-    //float4 col = float4(input.TextureUV,0,1);
-    //if(materials[pushConstants.materialIndex].albedo_texture_index!=0xffffffff){
-    //    col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
-    //    col.a = 1;
-    //}
+    float4 col = float4(input.TextureUV,0,1);
+    if(materials[pushConstants.materialIndex].albedo_texture_index!=0xffffffff){
+        col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+        col.a = 1;
+    }
 
-    float ddx_z = abs(ddx(input.Position.z))*10000;
-    float ddy_z = abs(ddy(input.Position.z))*10000;
+    //float ddx_z = abs(ddx(input.Position.z))*10000;
+    //float ddy_z = abs(ddy(input.Position.z))*10000;
 
-    float4 col = float4(ddx_z,ddy_z,0,1);
+    //float4 col = float4(ddx_z,ddy_z,0,1);
 
     return col;
 
