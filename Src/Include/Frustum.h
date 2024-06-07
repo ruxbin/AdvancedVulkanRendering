@@ -12,7 +12,7 @@ private:
 	
 
 public:
-	bool FructumCull(const AAPLBoundingBox3& aabb) const
+	bool FrustumCull(const AAPLBoundingBox3& aabb) const
 	{
 		for (int i = 0; i < NUM_PLANES; i++)
 		{

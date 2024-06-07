@@ -28,7 +28,7 @@ public:
     void MoveDown(float length);
     void RotateZ(float angle);
     void RotateY(float angle);
-    const Frustum& getFrustrum()const { return _frustum; }
+    const Frustum& getFrustum()const { return _frustum; }
 
 };
 

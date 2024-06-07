@@ -120,7 +120,7 @@ int main(int nargs, char ** args) {
             {
                 
                 
-                if (std::chrono::system_clock::now() - lastTime > std::chrono::milliseconds(100))
+                if (std::chrono::system_clock::now() - lastTime > std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
                 {
                     gpuScene.Draw();
                     lastTime = std::chrono::system_clock::now();

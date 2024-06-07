@@ -1889,6 +1889,8 @@ void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
     vkCmdDrawIndexed(commandBuffer,chunk.indexCount,1,chunk.indexBegin,0,0);
 }
 
+
+
 void GpuScene::DrawChunks()
 {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
@@ -1903,19 +1905,33 @@ void GpuScene::DrawChunks()
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
     uint32_t occluded = 0;
+
+    //static std::vector<bool> debug_frustum_cull(applMesh->_chunkCount,false);
+    //static bool captured = false;
+        
     for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
         vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
-
-        if (maincamera->getFrustrum().FructumCull(m_Chunks[i].boundingBox))
+        //if (captured)
+        //{
+        //    if (debug_frustum_cull[i])
+        //        continue;
+        //}
+        //else
         {
-            ++occluded;
-            continue;
+            if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox))
+            {
+                //debug_frustum_cull[i] = true;
+                ++occluded;
+                continue;
+            }
         }
+        
 
         vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
     }
+    //captured = true;
     spdlog::log(spdlog::level::info, "occlued chunks: {}", occluded);
 }
 

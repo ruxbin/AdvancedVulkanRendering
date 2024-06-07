@@ -1,4 +1,4 @@
-
+#include "commonstruct.hlsl"
 
 struct UniformBuffer
 {
@@ -16,34 +16,14 @@ struct GeometyBuffer
 };
 
 
-struct AAPLSphere
-{
-        float4 data;//xyz center, w radius
-};
 
 struct PushConstants
 {
     uint materialIndex;
 };
 
-struct AAPLBoundingBox3
-{
-    float3 min;
-    float3 max;
-};
 
-struct AAPLMeshChunk
-{
-    AAPLBoundingBox3 boundingBox;
-    float4 normalDistribution;
-    float4 cluterMean;
 
-    AAPLSphere boundingSphere;
-
-    unsigned int materialIndex;
-    unsigned int indexBegin;
-    unsigned int indexCount;
-};
 
 struct AAPLShaderMaterial
 {
