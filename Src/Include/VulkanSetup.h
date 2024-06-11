@@ -83,7 +83,9 @@ VkDebugUtilsMessengerEXT debugMessenger;
   constexpr static const char *const deviceExtensionNames[] = {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
   VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME ,
-VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME 
+VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME,
+VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME  // supress validation error pCreateInfos[0].pStages[0] SPIR-V Extension SPV_KHR_non_semantic_info was declared, but one of the following requirements is required
+//VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
   };
   constexpr static const char *const validationLayers[] = {
       

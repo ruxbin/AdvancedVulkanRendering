@@ -50,7 +50,8 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
   appInfo.pEngineName = "YouHe";
   appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-  appInfo.apiVersion = VK_API_VERSION_1_2;//need bindless & vkGetPhysicalDeviceFeatures2
+  //VK_API_VERSION_1_2运行时vkCmdPipelineBarrier2会抛异常
+  appInfo.apiVersion = VK_API_VERSION_1_3;//need bindless & vkGetPhysicalDeviceFeatures2 &VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
 
   VkInstanceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -288,6 +289,10 @@ void VulkanDevice::createLogicalDevice() {
   VkPhysicalDeviceFeatures2 device_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &indexing_features };
   vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features);
 
+  VkPhysicalDeviceSynchronization2Features synchron2_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,nullptr };
+  VkPhysicalDeviceFeatures2 device_features1{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &synchron2_features };
+  vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features1);
+
   bool bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
 
   // Enable all features: just pass the physical features 2 struct.
@@ -314,12 +319,14 @@ void VulkanDevice::createLogicalDevice() {
     createInfo.enabledLayerCount = 0;
   }
   createInfo.pNext = &physical_features2;
+
+  physical_features2.pNext = &synchron2_features;
   if (bindless_supported) {
       // This should be already set to VK_TRUE, as we queried before.
       indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
       indexing_features.runtimeDescriptorArray = VK_TRUE;
 
-      physical_features2.pNext = &indexing_features;
+      synchron2_features.pNext = &indexing_features;
   }
 
   if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=

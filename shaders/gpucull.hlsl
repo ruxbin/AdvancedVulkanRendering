@@ -82,7 +82,7 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID,uint3 GTid:SV_GroupThread
     uint insertIndex = 0;
 	InterlockedAdd(writeIndex[0],1,insertIndex);
 	DrawIndexedIndirectCommand drawParam = {meshChunks[chunkIndex].indexCount,1,meshChunks[chunkIndex].indexBegin,0,0};
-        drawParams[insertIndex] = drawParam;
+    drawParams[insertIndex] = drawParam;
 	chunkIndices[insertIndex] = chunkIndex;
 	//{
             //.indexCount = meshChunks[chunkIndex].indexCount,.instanceCount = 1, .firstIndex = meshChunks[chunkIndex].indexBegin, vertexOffset = 0, firstInstance = 0

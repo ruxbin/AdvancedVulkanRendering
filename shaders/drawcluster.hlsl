@@ -77,7 +77,7 @@ struct VSOutput
     float4 Position   : SV_POSITION; 
     //float4 Diffuse    : COLOR0;
     float2 TextureUV  : TEXCOORD0;
-    uint drawcallid : SV_InstanceID;
+    uint drawcallid : TEXCOORD1;
 };
 
 

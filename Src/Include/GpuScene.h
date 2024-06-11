@@ -299,7 +299,7 @@ private:
     };
 
     struct gpuCullParams{
-	    uint32_t totalChunks;
+        alignas(16) uint32_t totalChunks;
 	    Frustum frustum;
     };
 

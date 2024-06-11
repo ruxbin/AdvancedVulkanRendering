@@ -11,6 +11,7 @@
 #include <array>
 #include <functional>
 #include <cstdlib>
+#include <cstddef>
 
 static std::vector<char> readFile(const std::string &filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -133,7 +134,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     drawOccludersVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
     drawOccludersVSShaderStageInfo.module = occludersVSShaderModule;
-    drawOccludersVSShaderStageInfo.pName = "main";
+    drawOccludersVSShaderStageInfo.pName = "RenderSceneVS";
 
     //we don't need fragment stage 
     VkPipelineShaderStageCreateInfo shaderStages[] = { drawOccludersVSShaderStageInfo };
@@ -311,7 +312,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   auto efragShaderCode = readFile((_rootPath / "shaders/edward.ps.spv").generic_string());
 
   auto drawClusterVSShaderCode = readFile((_rootPath / "shaders/drawcluster.vs.spv").generic_string());
-  auto drawClusterPSShaderCode = readFile((_rootPath / "shaders/drawcluster.scc.ps.spv").generic_string());
+  auto drawClusterPSShaderCode = readFile((_rootPath / "shaders/drawcluster.ps.spv").generic_string());
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -928,7 +929,7 @@ VkDescriptorSetLayoutBinding bindings[] = { drawParamsBinding, cullParamsBinding
     VkDescriptorBufferInfo drawParamsBufferInfo;
     drawParamsBufferInfo.buffer = drawParamsBuffer;
     drawParamsBufferInfo.offset = 0;
-    drawParamsBufferInfo.range = sizeof(applMesh->_chunkCount*sizeof(VkDrawIndexedIndirectCommand));
+    drawParamsBufferInfo.range = applMesh->_chunkCount*sizeof(VkDrawIndexedIndirectCommand);
 
     VkWriteDescriptorSet drawParamsWrite = {};
     drawParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1959,7 +1960,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
    m_Chunks = (AAPLMeshChunk*)uncompressData((unsigned char*)applMesh->_chunkData, applMesh->compressedChunkDataLength, applMesh->_chunkCount * sizeof(AAPLMeshChunk));
 
    {
-	VkBufferCreateInfo meshChunkBufferCreateInfo;
+    VkBufferCreateInfo meshChunkBufferCreateInfo{};
 	meshChunkBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 	meshChunkBufferCreateInfo.size = applMesh->_chunkCount*sizeof(AAPLMeshChunk);
 	meshChunkBufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -1990,6 +1991,9 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
        vkMapMemory(device.getLogicalDevice(), meshChunksBufferMemory, 0, meshChunkBufferCreateInfo.size, 0, &data);
        std::memcpy(data,(void*)m_Chunks,meshChunkBufferCreateInfo.size);
 	vkUnmapMemory(device.getLogicalDevice(),meshChunksBufferMemory); 
+
+    free(m_Chunks);
+
    }
 
    {
@@ -2060,7 +2064,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
 VkBufferCreateInfo writeIndexBufferInfo{};
       writeIndexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       writeIndexBufferInfo.size = sizeof(uint32_t);
-      writeIndexBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      writeIndexBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
       writeIndexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       writeIndexBufferInfo.flags = 0;
       if (vkCreateBuffer(device.getLogicalDevice(), &writeIndexBufferInfo, nullptr,
@@ -2281,7 +2285,25 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 	vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,encodeDrawBufferPipelineLayout,0,1,&gpuCullDescriptorSet,0,nullptr);
   	vkCmdDispatch(commandBuffer,groupx,1,1);
 
+    VkMemoryBarrier2 memoryBarrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR
+    };
+
+    VkDependencyInfo dependencyInfo = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext = nullptr,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &memoryBarrier,
+    };
+
 	DrawOccluders();
+
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
     VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -2301,7 +2323,7 @@ void GpuScene::recordCommandBuffer(int imageIndex){
             //vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
             //vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
             //vkCmdDraw(commandBuffer, 6, 1, 0, 0);
-
+        
         DrawChunks();
 
             //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
@@ -2363,7 +2385,7 @@ void GpuScene::DrawChunks()
     vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     //if the descriptor set data isn't change we can omit this?
-    //vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
     uint32_t occluded = 0;
@@ -2396,7 +2418,7 @@ void GpuScene::DrawChunks()
     //captured = true;
     spdlog::log(spdlog::level::info, "occlued chunks: {}", occluded);
 #else
-    //vkCmdDrawIndexedIndirectCount(commandBuffer,drawParamsBuffer,0,writeIndexBuffer,0,applMesh->_chunkCount,sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdDrawIndexedIndirectCount(commandBuffer,drawParamsBuffer,0,writeIndexBuffer,0,applMesh->_chunkCount,sizeof(VkDrawIndexedIndirectCommand));
 #endif
 }
 
@@ -2427,6 +2449,21 @@ void GpuScene::Draw() {
          (size_t)sizeof(mat4));
   memcpy(((mat4*)data)+1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
   vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
+
+  //spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
+  vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(gpuCullParams), 0, &data);
+  memcpy(data, &applMesh->_chunkCount, sizeof(uint32_t));
+  //memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
+  //offsetof isn't working as expected
+  memcpy((char*)data + 16, &maincamera->getFrustum(), sizeof(Frustum));
+
+  vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+
+  uint32_t startIndex = 0;
+  vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0, sizeof(uint32_t), 0, &data);
+  memcpy((uint32_t*)data, &startIndex, sizeof(uint32_t));
+  vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemory);
+
   vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
 
   recordCommandBuffer( imageIndex);

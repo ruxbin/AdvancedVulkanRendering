@@ -18,7 +18,7 @@ struct AAPLSphere
     vec4 data;//xyz center, w radius
 };
 
-struct AAPLMeshChunk
+struct alignas(16) AAPLMeshChunk
 {
     AAPLBoundingBox3 boundingBox;
     vec4 normalDistribution;
