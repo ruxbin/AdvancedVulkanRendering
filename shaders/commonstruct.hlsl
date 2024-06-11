@@ -25,7 +25,7 @@ struct AAPLMeshChunk
     unsigned int indexCount;
 };
 
-
+//keep it the same as VkDrawIndexedIndirectCommand
 struct DrawIndexedIndirectCommand
 {
     uint indexCount;

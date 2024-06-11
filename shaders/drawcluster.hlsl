@@ -47,6 +47,8 @@ struct AAPLShaderMaterial
 [[vk::binding(1,0)]] StructuredBuffer<AAPLShaderMaterial> materials;
 [[vk::binding(2,0)]] SamplerState _LinearClampSampler;
 [[vk::binding(3,0)]] Texture2D<half> _Textures[];  //bindless textures
+[[vk::binding(4,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks; 
+[[vk::binding(5,0)]] StructuredBuffer<uint> chunkIndex;
 
 // [[vk::binding(0,1)]] Buffer<float3> positions;
 // [[vk::binding(1,1)]] Buffer<float3> normals;
@@ -67,6 +69,7 @@ struct VSInput
     [[vk::location(1)]] float3 normal:NORMAL;
     [[vk::location(2)]] float3 tangent:Tangent;
     [[vk::location(3)]] float2 uv:TEXCOORD0;
+	uint drawcallid: SV_InstanceID;
 };
 
 struct VSOutput
@@ -74,6 +77,7 @@ struct VSOutput
     float4 Position   : SV_POSITION; 
     //float4 Diffuse    : COLOR0;
     float2 TextureUV  : TEXCOORD0;
+    uint drawcallid : SV_InstanceID;
 };
 
 
@@ -85,19 +89,22 @@ VSOutput RenderSceneVS( VSInput input)
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
+    Output.drawcallid = input.drawcallid;
     return Output;    
 }
 
 
-float4 RenderScenePS(VSOutput input) : SV_Target
+float4 RenderScenePS(VSOutput input ) : SV_Target
 {
     //half4 col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
     //return float4(0.5,0.5,0.5,1);
 
 
     float4 col = float4(input.TextureUV,0,1);
-    if(materials[pushConstants.materialIndex].albedo_texture_index!=0xffffffff){
-        col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+    uint chunkindex = chunkIndex[input.drawcallid];
+    uint materialIndex = meshChunks[chunkindex].materialIndex;
+    if(materials[materialIndex].albedo_texture_index!=0xffffffff){
+        col = _Textures[materials[materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
         col.a = 1;
     }
 

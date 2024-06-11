@@ -229,8 +229,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
      pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
      pipelineLayoutInfo.setLayoutCount = 1;
      pipelineLayoutInfo.pSetLayouts = &globalSetLayout;//TODO: use seperate layout??
-     pipelineLayoutInfo.pushConstantRangeCount = 1;
-     pipelineLayoutInfo.pPushConstantRanges = &pushconstantRange;
+     pipelineLayoutInfo.pushConstantRangeCount = 0;
 
      if (vkCreatePipelineLayout(device.getLogicalDevice(), &pipelineLayoutInfo,
          nullptr, &pipelineLayout) != VK_SUCCESS) {
@@ -272,8 +271,36 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     }
 }
 
+void GpuScene::createComputePipeline()
+{
+	auto computeShaderCode = readFile((_rootPath/"shaders/gpucull.scc.spv").generic_string());
+	VkShaderModule computeShaderModule = createShaderModule(computeShaderCode);
+	VkPipelineShaderStageCreateInfo computeStageInfo{};
+	computeStageInfo.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	computeStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	computeStageInfo.module = computeShaderModule;
+	computeStageInfo.pName = "EncodeDrawBuffer";
+	
 
+	VkPipelineLayoutCreateInfo encodeDrawBufferPipelineLayoutInfo{};
+	encodeDrawBufferPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	encodeDrawBufferPipelineLayoutInfo.setLayoutCount = 1;
+	encodeDrawBufferPipelineLayoutInfo.pSetLayouts = &gpuCullSetLayout;
+	encodeDrawBufferPipelineLayoutInfo.pushConstantRangeCount = 0;
 
+	if (vkCreatePipelineLayout(device.getLogicalDevice(), &encodeDrawBufferPipelineLayoutInfo,
+      nullptr, &encodeDrawBufferPipelineLayout) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create drawcluster pipeline layout!");
+  	}
+	VkComputePipelineCreateInfo computePipelineCreateInfo{};
+	computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	computePipelineCreateInfo.layout = encodeDrawBufferPipelineLayout;
+	computePipelineCreateInfo.stage=computeStageInfo;
+	computePipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+
+	vkCreateComputePipelines(device.getLogicalDevice(),VK_NULL_HANDLE,1,&computePipelineCreateInfo,nullptr,&encodeDrawBufferPipeline);
+
+}
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
@@ -284,7 +311,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   auto efragShaderCode = readFile((_rootPath / "shaders/edward.ps.spv").generic_string());
 
   auto drawClusterVSShaderCode = readFile((_rootPath / "shaders/drawcluster.vs.spv").generic_string());
-  auto drawClusterPSShaderCode = readFile((_rootPath / "shaders/drawcluster.ps.spv").generic_string());
+  auto drawClusterPSShaderCode = readFile((_rootPath / "shaders/drawcluster.scc.ps.spv").generic_string());
 
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -815,6 +842,207 @@ VkFormat mapFromApple(MTLPixelFormat appleformat)
     return VK_FORMAT_UNDEFINED;
 }
 
+void GpuScene::init_drawparams_descriptors()
+{
+	VkDescriptorSetLayoutBinding  drawParamsBinding = {};
+	drawParamsBinding.binding = 0;
+	drawParamsBinding.descriptorCount = 1;
+	drawParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	drawParamsBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding cullParamsBinding = {};
+	cullParamsBinding.binding = 1;
+	cullParamsBinding.descriptorCount = 1;
+	cullParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	cullParamsBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding meshChunksBinding = {};
+	meshChunksBinding.binding = 2;
+	meshChunksBinding.descriptorCount = 1;
+	meshChunksBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	meshChunksBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding writeIndexBinding = {};
+	writeIndexBinding.binding = 3;
+	writeIndexBinding.descriptorCount = 1;
+	writeIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writeIndexBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutBinding chunkIndicesBinding = {};
+	chunkIndicesBinding.binding = 4;
+	chunkIndicesBinding.descriptorCount = 1;
+	chunkIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	chunkIndicesBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+
+
+VkDescriptorSetLayoutBinding bindings[] = { drawParamsBinding, cullParamsBinding, meshChunksBinding ,writeIndexBinding,chunkIndicesBinding };
+
+    constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
+
+    VkDescriptorSetLayoutCreateInfo setinfo = {};
+    setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    //setinfo.pNext = &flag_info;
+    setinfo.pNext = nullptr;
+
+    setinfo.bindingCount = bindingcount;
+    setinfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    // point to the camera buffer binding
+    setinfo.pBindings = bindings;
+
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
+        &gpuCullSetLayout);
+
+    std::vector<VkDescriptorPoolSize> sizes = {
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
+       };
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
+    pool_info.maxSets = 10;
+    pool_info.poolSizeCount = (uint32_t)sizes.size();
+    pool_info.pPoolSizes = sizes.data();
+
+    vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
+        &gpuCullDescriptorPool);
+
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.pNext = nullptr;
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    // using the pool we just set
+    allocInfo.descriptorPool = gpuCullDescriptorPool;
+    // only 1 descriptor
+    allocInfo.descriptorSetCount = 1;
+    // using the global data layout
+    allocInfo.pSetLayouts = &gpuCullSetLayout;
+
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
+        &gpuCullDescriptorSet);
+
+
+
+    // information about the buffer we want to point at in the descriptor
+
+    VkDescriptorBufferInfo drawParamsBufferInfo;
+    drawParamsBufferInfo.buffer = drawParamsBuffer;
+    drawParamsBufferInfo.offset = 0;
+    drawParamsBufferInfo.range = sizeof(applMesh->_chunkCount*sizeof(VkDrawIndexedIndirectCommand));
+
+    VkWriteDescriptorSet drawParamsWrite = {};
+    drawParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    drawParamsWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    drawParamsWrite.dstBinding = 0;
+    // of the global descriptor
+    drawParamsWrite.dstSet = gpuCullDescriptorSet;
+
+    drawParamsWrite.descriptorCount = 1;
+    drawParamsWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    drawParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    drawParamsWrite.pBufferInfo = &drawParamsBufferInfo;
+
+
+    VkDescriptorBufferInfo cullParamsBufferInfo;
+    cullParamsBufferInfo.buffer = cullParamsBuffer;
+    // at 0 offset
+    cullParamsBufferInfo.offset = 0;
+    cullParamsBufferInfo.range = sizeof(gpuCullParams);
+
+    VkWriteDescriptorSet cullParamsWrite = {};
+    cullParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cullParamsWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    cullParamsWrite.dstBinding = 1;
+    // of the global descriptor
+    cullParamsWrite.dstSet = gpuCullDescriptorSet;
+
+    cullParamsWrite.descriptorCount = 1;
+    cullParamsWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    cullParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    cullParamsWrite.pBufferInfo = &cullParamsBufferInfo;
+
+	
+    VkDescriptorBufferInfo meshChunksBufferInfo;
+    meshChunksBufferInfo.buffer = meshChunksBuffer;
+    // at 0 offset
+    meshChunksBufferInfo.offset = 0;
+    meshChunksBufferInfo.range = sizeof(AAPLMeshChunk)*applMesh->_chunkCount;
+
+    VkWriteDescriptorSet meshChunksBufferWrite = {};
+    meshChunksBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    meshChunksBufferWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    meshChunksBufferWrite.dstBinding = 2;
+    // of the global descriptor
+    meshChunksBufferWrite.dstSet = gpuCullDescriptorSet;
+
+    meshChunksBufferWrite.descriptorCount = 1;
+    meshChunksBufferWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    meshChunksBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    meshChunksBufferWrite.pBufferInfo = &meshChunksBufferInfo;
+
+
+
+    VkDescriptorBufferInfo writeIndexBufferInfo;
+    writeIndexBufferInfo.buffer = writeIndexBuffer;
+    // at 0 offset
+    writeIndexBufferInfo.offset = 0;
+    writeIndexBufferInfo.range = sizeof(uint32_t);
+
+    VkWriteDescriptorSet writeIndexBufferWrite = {};
+    writeIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writeIndexBufferWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    writeIndexBufferWrite.dstBinding = 3;
+    // of the global descriptor
+    writeIndexBufferWrite.dstSet = gpuCullDescriptorSet;
+
+    writeIndexBufferWrite.descriptorCount = 1;
+    writeIndexBufferWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    writeIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writeIndexBufferWrite.pBufferInfo = &writeIndexBufferInfo;
+
+    VkDescriptorBufferInfo chunkIndicesBufferInfo;
+    chunkIndicesBufferInfo.buffer = chunkIndicesBuffer;
+    // at 0 offset
+    chunkIndicesBufferInfo.offset = 0;
+    chunkIndicesBufferInfo.range = sizeof(uint32_t)*applMesh->_chunkCount;
+
+    VkWriteDescriptorSet chunkIndicesBufferWrite = {};
+    chunkIndicesBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    chunkIndicesBufferWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    chunkIndicesBufferWrite.dstBinding = 4;
+    // of the global descriptor
+    chunkIndicesBufferWrite.dstSet = gpuCullDescriptorSet;
+
+    chunkIndicesBufferWrite.descriptorCount = 1;
+    chunkIndicesBufferWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    chunkIndicesBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    chunkIndicesBufferWrite.pBufferInfo = &chunkIndicesBufferInfo;
+
+
+
+    std::array< VkWriteDescriptorSet, bindingcount> writes = { drawParamsWrite, cullParamsWrite , meshChunksBufferWrite, writeIndexBufferWrite,chunkIndicesBufferWrite };
+   // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+
+
+}
+
 void GpuScene::init_appl_descriptors()
 {
     // information about the binding.
@@ -847,12 +1075,30 @@ void GpuScene::init_appl_descriptors()
     textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    VkDescriptorSetLayoutBinding meshChunksBinding = {};
+    meshChunksBinding.binding = 4;
+    meshChunksBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    meshChunksBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    // we use it from the vertex shader
+    meshChunksBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorSetLayoutBinding bindings[] = { uniformBufferBinding, matBinding, samplerBinding ,textureBinding };
+
+    VkDescriptorSetLayoutBinding chunkIndexBinding = {};
+    chunkIndexBinding.binding = 5;
+    chunkIndexBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    chunkIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    // we use it from the vertex shader
+    chunkIndexBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+
+    VkDescriptorSetLayoutBinding bindings[] = { uniformBufferBinding, matBinding, samplerBinding ,textureBinding,meshChunksBinding,chunkIndexBinding };
 
     constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
-    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0,VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT };
+    std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = { 0,0,0,VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT,0,0 };
 
     //VkDescriptorBindingFlags flag = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT;
     
@@ -987,7 +1233,52 @@ void GpuScene::init_appl_descriptors()
     setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     setWriteTexture.pImageInfo = imageinfo.data();
 
-    std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture };
+	
+    VkDescriptorBufferInfo meshChunksBufferInfo;
+    meshChunksBufferInfo.buffer = meshChunksBuffer;
+    // at 0 offset
+    meshChunksBufferInfo.offset = 0;
+    meshChunksBufferInfo.range = sizeof(AAPLMeshChunk)*applMesh->_chunkCount;
+
+    VkWriteDescriptorSet meshChunksWrite = {};
+    meshChunksWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    meshChunksWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    meshChunksWrite.dstBinding = 4;
+    // of the global descriptor
+    meshChunksWrite.dstSet = applDescriptorSet;
+
+    meshChunksWrite.descriptorCount = 1;
+    meshChunksWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    meshChunksWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    meshChunksWrite.pBufferInfo = &meshChunksBufferInfo;
+
+    VkDescriptorBufferInfo chunkIndexBufferInfo;
+    chunkIndexBufferInfo.buffer = chunkIndicesBuffer;
+    // at 0 offset
+    chunkIndexBufferInfo.offset = 0;
+    chunkIndexBufferInfo.range = sizeof(uint32_t)*applMesh->_chunkCount;
+
+    VkWriteDescriptorSet chunkIndexBufferWrite = {};
+    chunkIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    chunkIndexBufferWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    chunkIndexBufferWrite.dstBinding = 5;
+    // of the global descriptor
+    chunkIndexBufferWrite.dstSet = applDescriptorSet;
+
+    chunkIndexBufferWrite.descriptorCount = 1;
+    chunkIndexBufferWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    chunkIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    chunkIndexBufferWrite.pBufferInfo = &chunkIndexBufferInfo;
+
+
+
+    std::array< VkWriteDescriptorSet, bindingcount> writes = { uniformWrite, setWrite , setSampler, setWriteTexture,meshChunksWrite,chunkIndexBufferWrite };
    // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
@@ -1667,6 +1958,171 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
 
    m_Chunks = (AAPLMeshChunk*)uncompressData((unsigned char*)applMesh->_chunkData, applMesh->compressedChunkDataLength, applMesh->_chunkCount * sizeof(AAPLMeshChunk));
 
+   {
+	VkBufferCreateInfo meshChunkBufferCreateInfo;
+	meshChunkBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	meshChunkBufferCreateInfo.size = applMesh->_chunkCount*sizeof(AAPLMeshChunk);
+	meshChunkBufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	meshChunkBufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	meshChunkBufferCreateInfo.flags = 0;
+
+	if(vkCreateBuffer(device.getLogicalDevice(),&meshChunkBufferCreateInfo,nullptr,&meshChunksBuffer)!=VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to allocate mesh chunk buffer");
+	}
+
+       VkMemoryRequirements memRequirements;
+       vkGetBufferMemoryRequirements(device.getLogicalDevice(), meshChunksBuffer, &memRequirements);
+
+       VkMemoryAllocateInfo allocInfo{};
+       allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+       allocInfo.allocationSize = memRequirements.size;
+       allocInfo.memoryTypeIndex = findMemoryType(
+           memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+       if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &meshChunksBufferMemory) !=
+           VK_SUCCESS) {
+           throw std::runtime_error("failed to allocate mesh chunks buffer memory!");
+       }
+       vkBindBufferMemory(device.getLogicalDevice(), meshChunksBuffer, meshChunksBufferMemory, 0);
+       void* data;
+       vkMapMemory(device.getLogicalDevice(), meshChunksBufferMemory, 0, meshChunkBufferCreateInfo.size, 0, &data);
+       std::memcpy(data,(void*)m_Chunks,meshChunkBufferCreateInfo.size);
+	vkUnmapMemory(device.getLogicalDevice(),meshChunksBufferMemory); 
+   }
+
+   {
+	VkBufferCreateInfo drawParamsBufferInfo{};
+      drawParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      drawParamsBufferInfo.size = sizeof(VkDrawIndexedIndirectCommand)*applMesh->_chunkCount;
+      drawParamsBufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      drawParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      drawParamsBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &drawParamsBufferInfo, nullptr,
+                         &drawParamsBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create uniform buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), drawParamsBuffer,
+                                    &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          findMemoryType(memRequirements.memoryTypeBits,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &drawParamsBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate drawparams buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), drawParamsBuffer,
+                         drawParamsBufferMemory, 0);
+
+   }
+
+   {
+	VkBufferCreateInfo cullParamsBufferInfo{};
+      cullParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      cullParamsBufferInfo.size = sizeof(gpuCullParams);
+      cullParamsBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+      cullParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      cullParamsBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &cullParamsBufferInfo, nullptr,
+                         &cullParamsBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create uniform buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), cullParamsBuffer,
+                                    &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          findMemoryType(memRequirements.memoryTypeBits,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &cullParamsBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate uniform buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), cullParamsBuffer,
+                         cullParamsBufferMemory, 0);
+
+   }
+
+   {
+VkBufferCreateInfo writeIndexBufferInfo{};
+      writeIndexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      writeIndexBufferInfo.size = sizeof(uint32_t);
+      writeIndexBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      writeIndexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      writeIndexBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &writeIndexBufferInfo, nullptr,
+                         &writeIndexBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create writeindex buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), writeIndexBuffer,
+                                    &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          findMemoryType(memRequirements.memoryTypeBits,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &writeIndexBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate uniform buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), writeIndexBuffer,
+                        writeIndexBufferMemory, 0);
+
+
+   }
+
+   {
+	
+VkBufferCreateInfo chunkIndicesBufferInfo{};
+      chunkIndicesBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      chunkIndicesBufferInfo.size = sizeof(uint32_t)*applMesh->_chunkCount;
+      chunkIndicesBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      chunkIndicesBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      chunkIndicesBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &chunkIndicesBufferInfo, nullptr,
+                         &chunkIndicesBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create writeindex buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), chunkIndicesBuffer,
+                                    &memRequirements);
+
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          findMemoryType(memRequirements.memoryTypeBits,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &chunkIndicesBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate uniform buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), chunkIndicesBuffer,
+                        chunkIndicesBufferMemory, 0);
+
+
+   }
+
   AAPLSubMesh * submeshes = (AAPLSubMesh*)uncompressData((unsigned char*)applMesh->_meshData, applMesh->compressedMeshDataLength, applMesh->_meshCount * sizeof(AAPLSubMesh));
 
   CreateDepthTexture();
@@ -1683,8 +2139,10 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
   //init_descriptors(textureRes.second);
   //init_descriptors(textures[13].second);
   init_appl_descriptors();
+  init_drawparams_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
+  createComputePipeline();
 }
 
 void GpuScene::CreateOccluderZPass()
@@ -1818,6 +2276,10 @@ void GpuScene::recordCommandBuffer(int imageIndex){
         if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
             throw std::runtime_error("failed to begin recording command buffer!");
         }
+	uint32_t groupx = (applMesh->_chunkCount + 127)/128;
+	vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,encodeDrawBufferPipeline);
+	vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,encodeDrawBufferPipelineLayout,0,1,&gpuCullDescriptorSet,0,nullptr);
+  	vkCmdDispatch(commandBuffer,groupx,1,1);
 
 	DrawOccluders();
 
@@ -1901,14 +2363,14 @@ void GpuScene::DrawChunks()
     vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     //if the descriptor set data isn't change we can omit this?
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+    //vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
     uint32_t occluded = 0;
 
     //static std::vector<bool> debug_frustum_cull(applMesh->_chunkCount,false);
     //static bool captured = false;
-        
+#ifdef CPU_DRAW 
     for (int i = beginindex; i < applMesh->_chunkCount && i<indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex};
@@ -1933,6 +2395,9 @@ void GpuScene::DrawChunks()
     }
     //captured = true;
     spdlog::log(spdlog::level::info, "occlued chunks: {}", occluded);
+#else
+    //vkCmdDrawIndexedIndirectCount(commandBuffer,drawParamsBuffer,0,writeIndexBuffer,0,applMesh->_chunkCount,sizeof(VkDrawIndexedIndirectCommand));
+#endif
 }
 
 void GpuScene::Draw() {
@@ -1947,6 +2412,10 @@ void GpuScene::Draw() {
 
   //updateSamplerInDescriptors();
 
+  //dispatch the gpu cull threadgroups
+
+
+
   uint32_t imageIndex;
   vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(), UINT64_MAX, imageAvailableSemaphore,
                         VK_NULL_HANDLE, &imageIndex);
@@ -1959,6 +2428,7 @@ void GpuScene::Draw() {
   memcpy(((mat4*)data)+1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
   vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
   vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
+
   recordCommandBuffer( imageIndex);
 
   VkSubmitInfo submitInfo{};

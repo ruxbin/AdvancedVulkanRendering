@@ -135,8 +135,25 @@ private:
   VkDescriptorPool applDescriptorPool;
   VkDescriptorSet applDescriptorSet;
 
+
+  VkDescriptorSetLayout gpuCullSetLayout;
+  VkDescriptorPool gpuCullDescriptorPool;
+  VkDescriptorSet gpuCullDescriptorSet;
+
   VkBuffer uniformBuffer;
   VkDeviceMemory uniformBufferMemory;
+
+  VkBuffer drawParamsBuffer;
+  VkDeviceMemory drawParamsBufferMemory;
+  VkBuffer cullParamsBuffer;
+  VkDeviceMemory cullParamsBufferMemory;
+  VkBuffer meshChunksBuffer;
+  VkDeviceMemory meshChunksBufferMemory;
+  VkBuffer writeIndexBuffer;
+  VkDeviceMemory writeIndexBufferMemory;
+  VkBuffer chunkIndicesBuffer;
+  VkDeviceMemory chunkIndicesBufferMemory;
+
 
   VkBuffer vertexBuffer;
   VkDeviceMemory vertexBufferMemory;
@@ -179,6 +196,9 @@ private:
   VkPipelineLayout drawclusterPipelineLayout;
   VkPipeline drawclusterPipeline;
 
+  VkPipelineLayout encodeDrawBufferPipelineLayout;
+  VkPipeline encodeDrawBufferPipeline;
+
 
   VkBuffer occluderVertexBuffer;
   VkDeviceMemory occluderVertexBufferMemory;
@@ -216,6 +236,7 @@ private:
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
+  void createComputePipeline();
 
 
   VkPipelineLayout drawOccluderPipelineLayout;
@@ -254,6 +275,8 @@ private:
     void init_descriptorsV2();
 
     void init_appl_descriptors();
+
+    void init_drawparams_descriptors();
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
 
@@ -273,6 +296,11 @@ private:
     struct uniformBufferData {
       mat4 projectionMatrix;
       mat4 viewMatrix;
+    };
+
+    struct gpuCullParams{
+	    uint32_t totalChunks;
+	    Frustum frustum;
     };
 
     uint32_t findMemoryType(uint32_t typeFilter,
