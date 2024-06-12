@@ -551,6 +551,12 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   .stride = sizeof(float) * 2,
   .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
 
+  constexpr VkVertexInputBindingDescription drawClusterInputBindingInstance = {
+      .binding = 4,
+      .stride = sizeof(uint32_t),
+      .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
+  };
+
   VkVertexInputAttributeDescription drawclusterInputAttributes[] = {
       {.location = 0,
        .binding = 0,
@@ -567,17 +573,25 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       {.location = 3,
        .binding = 3,
        .format = VK_FORMAT_R32G32_SFLOAT,
+       .offset = 0},
+
+
+       {.location = 4,
+       .binding = 4,
+       .format = VK_FORMAT_R32_UINT,
        .offset = 0}
    };
 
-  constexpr std::array<VkVertexInputBindingDescription, 4> drawculsterinputs = { drawClusterInputBindingPosition ,drawClusterInputBindingNormal ,drawClusterInputBindingTangent ,drawClusterInputBindingUV };
+  constexpr int inputChannelCount = sizeof(drawclusterInputAttributes) / sizeof(drawclusterInputAttributes[0]);
+
+  constexpr std::array<VkVertexInputBindingDescription, inputChannelCount> drawculsterinputs = {drawClusterInputBindingPosition ,drawClusterInputBindingNormal ,drawClusterInputBindingTangent ,drawClusterInputBindingUV,drawClusterInputBindingInstance};
 
   VkPipelineVertexInputStateCreateInfo drawclusterVertexInputInfo{};
   drawclusterVertexInputInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   drawclusterVertexInputInfo.vertexBindingDescriptionCount = drawculsterinputs.size();
   drawclusterVertexInputInfo.pVertexBindingDescriptions = drawculsterinputs.data();
-  drawclusterVertexInputInfo.vertexAttributeDescriptionCount = 4;
+  drawclusterVertexInputInfo.vertexAttributeDescriptionCount = inputChannelCount;
   drawclusterVertexInputInfo.pVertexAttributeDescriptions = drawclusterInputAttributes;
 
   VkGraphicsPipelineCreateInfo drawclusterpipelineInfo{};
@@ -875,9 +889,15 @@ void GpuScene::init_drawparams_descriptors()
 	chunkIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	chunkIndicesBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    VkDescriptorSetLayoutBinding instanceToDrawIDMapBinding = {};
+    instanceToDrawIDMapBinding.binding = 5;
+    instanceToDrawIDMapBinding.descriptorCount = 1;
+    instanceToDrawIDMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    instanceToDrawIDMapBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
 
-VkDescriptorSetLayoutBinding bindings[] = { drawParamsBinding, cullParamsBinding, meshChunksBinding ,writeIndexBinding,chunkIndicesBinding };
+
+VkDescriptorSetLayoutBinding bindings[] = { drawParamsBinding, cullParamsBinding, meshChunksBinding ,writeIndexBinding,chunkIndicesBinding,instanceToDrawIDMapBinding };
 
     constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
@@ -1036,7 +1056,30 @@ VkDescriptorSetLayoutBinding bindings[] = { drawParamsBinding, cullParamsBinding
 
 
 
-    std::array< VkWriteDescriptorSet, bindingcount> writes = { drawParamsWrite, cullParamsWrite , meshChunksBufferWrite, writeIndexBufferWrite,chunkIndicesBufferWrite };
+    VkDescriptorBufferInfo applInstanceBufferInfo;
+    applInstanceBufferInfo.buffer = applInstanceBuffer;
+    // at 0 offset
+    applInstanceBufferInfo.offset = 0;
+    applInstanceBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount;
+
+    VkWriteDescriptorSet instanceToDrawIDMapBufferWrite = {};
+    instanceToDrawIDMapBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    instanceToDrawIDMapBufferWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    instanceToDrawIDMapBufferWrite.dstBinding = 5;
+    // of the global descriptor
+    instanceToDrawIDMapBufferWrite.dstSet = gpuCullDescriptorSet;
+
+    instanceToDrawIDMapBufferWrite.descriptorCount = 1;
+    instanceToDrawIDMapBufferWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    instanceToDrawIDMapBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    instanceToDrawIDMapBufferWrite.pBufferInfo = &applInstanceBufferInfo;
+
+
+
+    std::array< VkWriteDescriptorSet, bindingcount> writes = { drawParamsWrite, cullParamsWrite , meshChunksBufferWrite, writeIndexBufferWrite,chunkIndicesBufferWrite,instanceToDrawIDMapBufferWrite };
    // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite , setSampler };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
@@ -2127,6 +2170,41 @@ VkBufferCreateInfo chunkIndicesBufferInfo{};
 
    }
 
+
+   {
+
+       VkBufferCreateInfo applInstanceBufferInfo{};
+       applInstanceBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+       applInstanceBufferInfo.size = sizeof(uint32_t) * applMesh->_chunkCount;
+       applInstanceBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+       applInstanceBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+       applInstanceBufferInfo.flags = 0;
+       if (vkCreateBuffer(device.getLogicalDevice(), &applInstanceBufferInfo, nullptr,
+           &applInstanceBuffer) != VK_SUCCESS) {
+           throw std::runtime_error("failed to create writeindex buffer!");
+       }
+       VkMemoryRequirements memRequirements;
+       vkGetBufferMemoryRequirements(device.getLogicalDevice(), applInstanceBuffer,
+           &memRequirements);
+
+       VkMemoryAllocateInfo allocInfo{};
+       allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+       allocInfo.allocationSize = memRequirements.size;
+       allocInfo.memoryTypeIndex =
+           findMemoryType(memRequirements.memoryTypeBits,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+       if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+           &applInstanceBufferMemory) != VK_SUCCESS) {
+           throw std::runtime_error("failed to allocate uniform buffer memory!");
+       }
+       vkBindBufferMemory(device.getLogicalDevice(), applInstanceBuffer,
+           applInstanceBufferMemory, 0);
+
+
+   }
+
   AAPLSubMesh * submeshes = (AAPLSubMesh*)uncompressData((unsigned char*)applMesh->_meshData, applMesh->compressedMeshDataLength, applMesh->_meshCount * sizeof(AAPLSubMesh));
 
   CreateDepthTexture();
@@ -2378,8 +2456,8 @@ void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
 void GpuScene::DrawChunks()
 {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
-    VkBuffer vertexBuffers[] = { applVertexBuffer , applNormalBuffer, applTangentBuffer, applUVBuffer };
-    VkDeviceSize offsets[] = { 0,0,0,0 };
+    VkBuffer vertexBuffers[] = { applVertexBuffer , applNormalBuffer, applTangentBuffer, applUVBuffer, applInstanceBuffer };
+    VkDeviceSize offsets[] = { 0,0,0,0,0 };
 
     vkCmdBindVertexBuffers(commandBuffer, 0, sizeof(vertexBuffers) / sizeof(vertexBuffers[0]), vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);

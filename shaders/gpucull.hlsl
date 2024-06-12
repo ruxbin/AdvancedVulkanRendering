@@ -65,6 +65,8 @@ Frustum frustum;
 [[vk::binding(3,0)]] RWStructuredBuffer<uint> writeIndex;
 [[vk::binding(4,0)]] RWStructuredBuffer<uint> chunkIndices;
 
+[[vk::binding(5,0)]] RWStructuredBuffer<uint> instanceToDrawIDMap;
+
 groupshared uint visible[128];
 //TODO: 合批
 
@@ -81,9 +83,10 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID,uint3 GTid:SV_GroupThread
     visible[groupThreadIndex]=1;
     uint insertIndex = 0;
 	InterlockedAdd(writeIndex[0],1,insertIndex);
-	DrawIndexedIndirectCommand drawParam = {meshChunks[chunkIndex].indexCount,1,meshChunks[chunkIndex].indexBegin,0,0};
+            DrawIndexedIndirectCommand drawParam = { meshChunks[chunkIndex].indexCount, 1, meshChunks[chunkIndex].indexBegin, 0, insertIndex };
     drawParams[insertIndex] = drawParam;
 	chunkIndices[insertIndex] = chunkIndex;
+            instanceToDrawIDMap[insertIndex] = insertIndex;
 	//{
             //.indexCount = meshChunks[chunkIndex].indexCount,.instanceCount = 1, .firstIndex = meshChunks[chunkIndex].indexBegin, vertexOffset = 0, firstInstance = 0
 

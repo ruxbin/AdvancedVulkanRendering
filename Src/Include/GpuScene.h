@@ -187,6 +187,9 @@ private:
   VkBuffer applUVBuffer;
   VkDeviceMemory applUVBufferMemory;
 
+  VkBuffer applInstanceBuffer;
+  VkDeviceMemory applInstanceBufferMemory;
+
   VkBuffer applIndexBuffer;
   VkDeviceMemory applIndexMemory;
 
