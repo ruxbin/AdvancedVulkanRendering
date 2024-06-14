@@ -29,13 +29,13 @@ mat4& Camera::getProjectMatrix()
 Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 up)
 {
 	
-	//mat4 proj = perspective(fov, aspect, n, f);
-	mat4 proj = reverseZperspective(fov,aspect,n,f);
+	mat4 proj = perspective(fov, aspect, n, f);
+	//mat4 proj = reverseZperspective(fov,aspect,n,f);
 	_projectionMatrix = proj;
-	vec3 right = up.cross(lookat);
-	_x = right;
-	_y = up;
 	_z = lookat;
+	_x = normalize(up.cross(_z));
+	_y = _z.cross(_x);
+	
 	_origin = origin;
 
 	// error C2512 : “Frustum”: 没有合适的默认构造函数可用
@@ -44,18 +44,21 @@ Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 loo
 
 void Camera::updateCameraMatrix()
 {
-	mat4 transM = translate(_origin * -1.f);
-	_objectToCameraMatrix.x = vec4(_x,0);
+	//mat4 transM = translate(_origin * -1.f);
+	vec3 t(_x.dot(_origin)*-1,_y.dot(_origin)*-1, _z.dot(_origin)*-1);
+	_objectToCameraMatrix.x = vec4(_x,t.x);
 
-	_objectToCameraMatrix.y = vec4(_y, 0);
-	_objectToCameraMatrix.z = vec4(_z, 0);
+	_objectToCameraMatrix.y = vec4(_y, t.y);
+	_objectToCameraMatrix.z = vec4(_z, t.z);
 	_objectToCameraMatrix.w = vec4(0, 0, 0, 1);
 
-	_objectToCameraMatrix = transM * _objectToCameraMatrix;
+	//_objectToCameraMatrix = transM * _objectToCameraMatrix;
 	//proj to world
 	//mat4 viewproj = transpose(_objectToCameraMatrix * _projectionMatrix);
 	//mat4 viewproj = transpose(_projectionMatrix)*transpose(_objectToCameraMatrix)*transpose(transM);
 	mat4 viewproj = transpose(_projectionMatrix) * transpose(_objectToCameraMatrix);
+
+
 	
 	mat4 invViewProj = inverse(viewproj);
 	vec4 clipCoords[8] = {	{-1,-1,0,1},{-1,1,0,1},{1,1,0,1},{1,-1,0,1},				//far

@@ -75,6 +75,9 @@ struct vec3
         return vec3(y * rhs.z - z * rhs.y, z * rhs.x - x * rhs.z, x * rhs.y - y * rhs.x);
         //(1,0,0)*(0,1,0)
         //->(0,0,1)
+
+        //(0,1,0)*(0,0,1)->(1,0,0)
+        //(0,0,1)*(1,0,0)->(0,1,0)
     }
 
     float dot(const vec3& rhs)const

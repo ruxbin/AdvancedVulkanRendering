@@ -258,7 +258,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     depthStencilState1.depthWriteEnable = VK_TRUE;
     depthStencilState1.depthTestEnable = VK_TRUE;
     depthStencilState1.stencilTestEnable = VK_FALSE;
-    depthStencilState1.depthCompareOp = VK_COMPARE_OP_GREATER;
+    depthStencilState1.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencilState1.depthBoundsTestEnable = VK_FALSE;
     // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
     // is being created with fragment shader state, and subpass uses a
@@ -509,7 +509,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   depthStencilState.depthWriteEnable = VK_TRUE;
   depthStencilState.depthTestEnable = VK_TRUE;
   depthStencilState.stencilTestEnable = VK_FALSE;
-  depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
+  depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
   depthStencilState.depthBoundsTestEnable = VK_FALSE;
 
  /* VkGraphicsPipelineCreateInfo edwardpipelineInfo{};
@@ -1669,9 +1669,9 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
   vec3 camera_pos = vec3(sceneFile["camera_position"][0].template get<float>(), sceneFile["camera_position"][1].template get<float>(), sceneFile["camera_position"][2].template get<float>());
   vec3 camera_up = vec3(sceneFile["camera_up"][0].template get<float>(), sceneFile["camera_up"][1].template get<float>(), sceneFile["camera_up"][2].template get<float>());
   vec3 camera_dir = vec3(sceneFile["camera_direction"][0].template get<float>(), sceneFile["camera_direction"][1].template get<float>(), sceneFile["camera_direction"][2].template get<float>());
-  maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, camera_pos,
+  maincamera = new Camera(65 * 3.1414926f / 180.f, 0.1, 100, camera_pos,
                               deviceref.getSwapChainExtent().width /
-                                 float(deviceref.getSwapChainExtent().height),camera_dir,camera_up * -1.f);
+                                 float(deviceref.getSwapChainExtent().height),camera_dir,camera_up);
 
   //maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 20),
   //    deviceref.getSwapChainExtent().width /
@@ -2329,7 +2329,7 @@ void GpuScene::DrawOccluders()
 
     std::array<VkClearValue, 1> clearValues{};
    
-    clearValues[0].depthStencil = { 0.0f, 0 };
+    clearValues[0].depthStencil = { 1.0f, 0 };
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
 
@@ -2392,7 +2392,7 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 
         std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        clearValues[1].depthStencil = {0.0f, 0};
+        clearValues[1].depthStencil = {1.0f, 0};
         renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         renderPassInfo.pClearValues = clearValues.data();
 
