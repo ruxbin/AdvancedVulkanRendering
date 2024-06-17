@@ -45,8 +45,8 @@ struct Frustum
 
 bool FrustumCull(Frustum frustum,  AAPLBoundingBox3 aabb)
 {
-    return false;
-	//[unroll]
+    //return false;
+	[unroll]
     for (int i = 0; i < 6; i++)
     {
         if (!IsInside(frustum.borders[i],aabb))

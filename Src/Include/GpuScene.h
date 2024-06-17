@@ -202,6 +202,10 @@ private:
   VkPipelineLayout encodeDrawBufferPipelineLayout;
   VkPipeline encodeDrawBufferPipeline;
 
+	VkPipelineLayout drawclusterBasePipelineLayout;
+  	VkPipeline drawclusterBasePipeline;
+
+
 
   VkBuffer occluderVertexBuffer;
   VkDeviceMemory occluderVertexBufferMemory;
@@ -236,6 +240,26 @@ private:
   VkBuffer		_occludersIndexBuffer;
   VkDeviceMemory	_occludersBufferMemory;
   VkDeviceMemory	_occludersIndexBufferMemory;
+
+
+	
+  VkImage            	_gbufferAlbedoAlpha;
+  VkImage		_gbufferNormals;
+  VkImage		_gbufferEmissive;
+  VkImage		_gbufferF0Roughness;
+  VkImageView           _gbufferAlbedoAlphaTextureView;
+  VkImageView		_gbufferNormalsTextureView;
+  VkImageView		_gbufferEmissiveTextureView;
+  VkImageView		_gbufferF0RoughnessTextureView;
+  VkFormat		_gbufferFormat[4] = {	VK_FORMAT_B8G8R8A8_UNORM,
+	  					VK_FORMAT_R16G16B16A16_SFLOAT,
+  						VK_FORMAT_B8G8R8A8_UNORM,
+  						VK_FORMAT_B8G8R8A8_UNORM
+  						};
+  VkImage		_gbuffers[4];
+  VkImageView		_gbuffersView[4];
+  VkFramebuffer         _basePassFrameBuffer;
+  VkRenderPass		_basePass;
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
@@ -283,6 +307,8 @@ private:
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
 
+    void DrawChunksBasePass();
+
         void CreateTextures();
 
     void updateSamplerInDescriptors(VkImageView currentImage);
@@ -296,9 +322,15 @@ private:
     void CreateOccluderZPassFrameBuffer();
     void CreateZdepthView();
 
+    void CreateGBuffers();
+    void CreateBasePassFrameBuffer();
+    void CreateDeferredBasePass();
+    void CreateDeferredLightingPass();
+
     struct uniformBufferData {
       mat4 projectionMatrix;
       mat4 viewMatrix;
+      mat4 invViewMatrix;
     };
 
     struct gpuCullParams{

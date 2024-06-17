@@ -29,9 +29,15 @@ mat4& Camera::getProjectMatrix()
 Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 up)
 {
 	
-	mat4 proj = perspective(fov, aspect, n, f);
-	//mat4 proj = reverseZperspective(fov,aspect,n,f);
-	_projectionMatrix = proj;
+	//mat4 proj = perspective(fov, aspect, n, f);
+	mat4 flipx;
+	flipx.x[0]=-1;
+	flipx.y[1]=1;
+	flipx.z[2]=1;
+	flipx.w[3]=1;
+
+	mat4 proj = reverseZperspective(fov,aspect,n,f);
+	_projectionMatrix = proj*flipx;
 	_z = lookat;
 	_x = normalize(up.cross(_z));
 	_y = _z.cross(_x);
@@ -51,6 +57,8 @@ void Camera::updateCameraMatrix()
 	_objectToCameraMatrix.y = vec4(_y, t.y);
 	_objectToCameraMatrix.z = vec4(_z, t.z);
 	_objectToCameraMatrix.w = vec4(0, 0, 0, 1);
+	
+	_invViewMatrix = inverse(_objectToCameraMatrix);
 
 	//_objectToCameraMatrix = transM * _objectToCameraMatrix;
 	//proj to world
@@ -74,9 +82,9 @@ void Camera::updateCameraMatrix()
 
 	
 
-	_frustum = { {worldCoords[0],worldCoords[1],worldCoords[2]},{worldCoords[4],worldCoords[6],worldCoords[5]}, //far & near 
-				{worldCoords[0],worldCoords[4],worldCoords[1]},{worldCoords[2],worldCoords[7],worldCoords[3]}, //left & right 
-				{worldCoords[1],worldCoords[5],worldCoords[2]},{worldCoords[0 ],worldCoords[3],worldCoords[4]}, //top & bottom 
+	_frustum = { {worldCoords[0],worldCoords[2],worldCoords[1]},{worldCoords[4],worldCoords[5],worldCoords[6]}, //far & near 
+				{worldCoords[0],worldCoords[1],worldCoords[4]},{worldCoords[2],worldCoords[3],worldCoords[7]}, //left & right 
+				{worldCoords[1],worldCoords[2],worldCoords[5]},{worldCoords[0],worldCoords[4],worldCoords[3]}, //top & bottom 
 				};
 
 }

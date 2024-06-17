@@ -258,7 +258,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass)
     depthStencilState1.depthWriteEnable = VK_TRUE;
     depthStencilState1.depthTestEnable = VK_TRUE;
     depthStencilState1.stencilTestEnable = VK_FALSE;
-    depthStencilState1.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencilState1.depthCompareOp = VK_COMPARE_OP_GREATER;
     depthStencilState1.depthBoundsTestEnable = VK_FALSE;
     // The Vulkan spec states: If renderPass is not VK_NULL_HANDLE, the pipeline
     // is being created with fragment shader state, and subpass uses a
@@ -314,6 +314,9 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   auto drawClusterVSShaderCode = readFile((_rootPath / "shaders/drawcluster.vs.spv").generic_string());
   auto drawClusterPSShaderCode = readFile((_rootPath / "shaders/drawcluster.ps.spv").generic_string());
 
+auto drawClusterBasePSShaderCode = readFile((_rootPath / "shaders/drawcluster.base.ps.spv").generic_string());
+
+
   VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
   VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
@@ -322,6 +325,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
   VkShaderModule drawclusterVSShaderModule = createShaderModule(drawClusterVSShaderCode);
   VkShaderModule drawclusterPSShaderModule = createShaderModule(drawClusterPSShaderCode);
+  VkShaderModule drawclusterBasePSShaderModule = createShaderModule(drawClusterBasePSShaderCode);
 
   VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
   vertShaderStageInfo.sType =
@@ -365,12 +369,24 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   drawclusterPSShaderStageInfo.module = drawclusterPSShaderModule;
   drawclusterPSShaderStageInfo.pName = "RenderScenePS";
 
+  VkPipelineShaderStageCreateInfo drawclusterBasePSShaderStageInfo{};
+  drawclusterPSShaderStageInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  drawclusterPSShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  drawclusterPSShaderStageInfo.module = drawclusterBasePSShaderModule;
+  drawclusterPSShaderStageInfo.pName = "RenderSceneBasePass";
+
+
   VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo,
                                                     fragShaderStageInfo};
   VkPipelineShaderStageCreateInfo eshaderStages[] = {evertShaderStageInfo,
                                                      efragShaderStageInfo};
   VkPipelineShaderStageCreateInfo drawclusterShaderStages[] = { drawclusterVSShaderStageInfo,
                                                     drawclusterPSShaderStageInfo };
+
+  VkPipelineShaderStageCreateInfo drawclusterBasePassStages[] = { drawclusterVSShaderStageInfo,
+                                                    drawclusterBasePSShaderStageInfo };
+
 
   VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
   vertexInputInfo.sType =
@@ -411,7 +427,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
   rasterizer.lineWidth = 1.0f;
   rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
   rasterizer.depthBiasEnable = VK_FALSE;
 
   VkPipelineRasterizationStateCreateInfo rasterizer_wireframe{};
@@ -422,7 +438,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   rasterizer_wireframe.polygonMode = VK_POLYGON_MODE_FILL;
   rasterizer_wireframe.lineWidth = 1.0f;
   rasterizer_wireframe.cullMode = VK_CULL_MODE_NONE;
-  rasterizer_wireframe.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizer_wireframe.frontFace = VK_FRONT_FACE_CLOCKWISE;
   rasterizer_wireframe.depthBiasEnable = VK_FALSE;
 
   VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -469,6 +485,19 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       throw std::runtime_error("failed to create drawcluster pipeline layout!");
   }
 
+	VkPipelineLayoutCreateInfo drawclusterBasePipelineLayoutInfo{};
+  drawclusterBasePipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  drawclusterBasePipelineLayoutInfo.setLayoutCount = 1;
+  drawclusterBasePipelineLayoutInfo.pSetLayouts = &applSetLayout;
+  drawclusterBasePipelineLayoutInfo.pushConstantRangeCount = 0;
+
+  if (vkCreatePipelineLayout(device.getLogicalDevice(), &drawclusterBasePipelineLayoutInfo,
+      nullptr, &drawclusterBasePipelineLayout) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create drawcluster pipeline layout!");
+  }
+
+
+
   VkPipelineDepthStencilStateCreateInfo depthStencilState1{};
   depthStencilState1.sType =
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -509,7 +538,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   depthStencilState.depthWriteEnable = VK_TRUE;
   depthStencilState.depthTestEnable = VK_TRUE;
   depthStencilState.stencilTestEnable = VK_FALSE;
-  depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
+  depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
   depthStencilState.depthBoundsTestEnable = VK_FALSE;
 
  /* VkGraphicsPipelineCreateInfo edwardpipelineInfo{};
@@ -615,6 +644,29 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       throw std::runtime_error("failed to create drawcluster graphics pipeline!");
   }
 
+  VkGraphicsPipelineCreateInfo drawclusterBasePipelineInfo{};
+  drawclusterBasePipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  drawclusterBasePipelineInfo.stageCount = 2;
+  drawclusterBasePipelineInfo.pStages = drawclusterBasePassStages;
+  drawclusterBasePipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
+  drawclusterBasePipelineInfo.pInputAssemblyState = &inputAssembly;
+  drawclusterBasePipelineInfo.pViewportState = &viewportState;
+  drawclusterBasePipelineInfo.pRasterizationState = &rasterizer;
+  drawclusterBasePipelineInfo.pMultisampleState = &multisampling;
+  drawclusterBasePipelineInfo.pColorBlendState = &colorBlending;
+  drawclusterBasePipelineInfo.layout = drawclusterBasePipelineLayout;
+  drawclusterBasePipelineInfo.renderPass = _basePass;
+  drawclusterBasePipelineInfo.subpass = 0;
+  drawclusterBasePipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+  drawclusterBasePipelineInfo.pDepthStencilState = &depthStencilState;
+
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterBasePipelineInfo,
+      nullptr, &drawclusterBasePipeline) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
+  }
+
+
+
   vkDestroyShaderModule(device.getLogicalDevice(), fragShaderModule, nullptr);
   vkDestroyShaderModule(device.getLogicalDevice(), vertShaderModule, nullptr);
 
@@ -624,6 +676,8 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
   vkDestroyShaderModule(device.getLogicalDevice(), drawclusterVSShaderModule, nullptr);
   vkDestroyShaderModule(device.getLogicalDevice(), drawclusterPSShaderModule, nullptr);
+
+  //TODO : Destroy shader modules
 }
 
 enum MTLPixelFormat
@@ -1549,6 +1603,79 @@ void GpuScene::CreateTextures()
     }
 }
 
+void GpuScene::CreateGBuffers() {
+
+    int width = device.getSwapChainExtent().width;
+    int height = device.getSwapChainExtent().height;
+
+    for (int i = 0; i < 4; i++) {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1; // texturedata._mipmapLevelCount;
+        imageInfo.arrayLayers = 1;
+        imageInfo.tiling =
+            VK_IMAGE_TILING_OPTIMAL; // TODO: switch to linear with
+                                     // initiallayout=preinitialized?
+        imageInfo.initialLayout =
+            VK_IMAGE_LAYOUT_UNDEFINED; // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        imageInfo.format =
+            _gbufferFormat[i]; // TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't
+                               // need stencil currently anyway
+        imageInfo.usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.flags = 0; // Optional
+
+        if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+                          &_gbuffers[i]) != VK_SUCCESS) {
+          throw std::runtime_error("failed to create depth rt!");
+        }
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(device.getLogicalDevice(), _gbuffers[i],
+                                     &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex =
+            findMemoryType(memRequirements.memoryTypeBits,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        VkDeviceMemory textureImageMemory;
+        if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                             &textureImageMemory) != VK_SUCCESS) {
+          throw std::runtime_error("failed to allocate image memory!");
+        }
+
+        vkBindImageMemory(device.getLogicalDevice(), _gbuffers[i],
+                          textureImageMemory, 0);
+
+        VkImageViewCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = _gbuffers[i];
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = _gbufferFormat[i];
+        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(device.getLogicalDevice(), &createInfo, nullptr,
+                              &_gbuffersView[i]) != VK_SUCCESS) {
+          throw std::runtime_error("failed to create gbuffers image views!");
+        }
+    }
+}
+
 void GpuScene::CreateDepthTexture()
 {
     int width = device.getSwapChainExtent().width;
@@ -1671,11 +1798,11 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref)
   vec3 camera_dir = vec3(sceneFile["camera_direction"][0].template get<float>(), sceneFile["camera_direction"][1].template get<float>(), sceneFile["camera_direction"][2].template get<float>());
   maincamera = new Camera(65 * 3.1414926f / 180.f, 0.1, 100, camera_pos,
                               deviceref.getSwapChainExtent().width /
-                                 float(deviceref.getSwapChainExtent().height),camera_dir,camera_up);
+                                 float(deviceref.getSwapChainExtent().height),camera_dir,camera_up*-1);
 
-  //maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 20),
+  //maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 0),
   //    deviceref.getSwapChainExtent().width /
-  //    float(deviceref.getSwapChainExtent().height), vec3(0,0,-1), vec3(-1,0, 0));
+  //    float(deviceref.getSwapChainExtent().height), vec3(0,0,1), vec3(0,1, 0));
 
 
 
@@ -2209,8 +2336,12 @@ VkBufferCreateInfo chunkIndicesBufferInfo{};
 
   CreateDepthTexture();
   CreateZdepthView();
+  CreateGBuffers();
   CreateOccluderZPass();
   CreateOccluderZPassFrameBuffer();
+  CreateDeferredBasePass();
+  CreateBasePassFrameBuffer();
+
 
   createTextureSampler();
 
@@ -2225,6 +2356,73 @@ VkBufferCreateInfo chunkIndicesBufferInfo{};
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
   createComputePipeline();
+}
+
+void GpuScene::CreateDeferredBasePass()
+{
+	VkAttachmentDescription gbufferAttachments[4]={};
+	for(int i=0;i<4;i++)
+	{
+		gbufferAttachments[i] = {};
+		gbufferAttachments[i].format = _gbufferFormat[i];
+		gbufferAttachments[i].samples = VK_SAMPLE_COUNT_1_BIT;
+		gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		gbufferAttachments[i].storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+		gbufferAttachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    		gbufferAttachments[i].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+
+	}
+
+	VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = device.getWindowDepthFormat();
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference gbufferAttachmentRefs[4] = {};
+    for(int i=0;i<4;i++)
+    {
+	    gbufferAttachmentRefs[i].attachment = i;
+	    gbufferAttachmentRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
+    VkAttachmentReference depthAttachmentRef{};
+    depthAttachmentRef.attachment = 4;
+    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 4;
+    subpass.pColorAttachments = gbufferAttachmentRefs;
+    subpass.pDepthStencilAttachment = &depthAttachmentRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcAccessMask = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;//TODO: is dependency mask right?
+    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 5> attachments = {gbufferAttachments[0],gbufferAttachments[1],gbufferAttachments[2],gbufferAttachments[3], depthAttachment };
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr, &_basePass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create base pass!");
+    }
+
 }
 
 void GpuScene::CreateOccluderZPass()
@@ -2272,6 +2470,30 @@ void GpuScene::CreateOccluderZPass()
         throw std::runtime_error("failed to create render pass!");
     }
 
+}
+
+void GpuScene::CreateBasePassFrameBuffer() {
+	
+
+	std::array<VkImageView, 5> attachments = {
+		_gbuffersView[0],_gbuffersView[1],_gbuffersView[2],_gbuffersView[3],
+               device.getWindowDepthImageView()
+    };
+
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = _basePass;
+    framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    ;
+    framebufferInfo.pAttachments = attachments.data();
+    framebufferInfo.width = device.getSwapChainExtent().width;
+    framebufferInfo.height = device.getSwapChainExtent().height;
+    framebufferInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo,
+                            nullptr, &_basePassFrameBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create basepass framebuffer!");
+    }
 }
 
 void GpuScene::CreateOccluderZPassFrameBuffer()
@@ -2329,7 +2551,7 @@ void GpuScene::DrawOccluders()
 
     std::array<VkClearValue, 1> clearValues{};
    
-    clearValues[0].depthStencil = { 1.0f, 0 };
+    clearValues[0].depthStencil = { 0.0f, 0 };
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
 
@@ -2385,14 +2607,14 @@ void GpuScene::recordCommandBuffer(int imageIndex){
 
     VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = device.getMainRenderPass();
-        renderPassInfo.framebuffer = device.getSwapChainFrameBuffer(imageIndex);
+        renderPassInfo.renderPass = _basePass;//device.getMainRenderPass();
+        renderPassInfo.framebuffer = _basePassFrameBuffer;//device.getSwapChainFrameBuffer(imageIndex);
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = device.getSwapChainExtent();
 
         std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        clearValues[1].depthStencil = {1.0f, 0};
+        clearValues[1].depthStencil = {0.0f, 0};
         renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         renderPassInfo.pClearValues = clearValues.data();
 
@@ -2402,7 +2624,7 @@ void GpuScene::recordCommandBuffer(int imageIndex){
             //vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
             //vkCmdDraw(commandBuffer, 6, 1, 0, 0);
         
-        DrawChunks();
+        DrawChunksBasePass();
 
             //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
             //VkBuffer vertexBuffers[] = {vertexBuffer};
@@ -2451,7 +2673,32 @@ void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
     vkCmdDrawIndexed(commandBuffer,chunk.indexCount,1,chunk.indexBegin,0,0);
 }
 
+void GpuScene::DrawChunksBasePass() {
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      drawclusterBasePipeline);
+    VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
+                                applTangentBuffer, applUVBuffer,
+                                applInstanceBuffer};
+    VkDeviceSize offsets[] = {0, 0, 0, 0, 0};
 
+    vkCmdBindVertexBuffers(commandBuffer, 0,
+                           sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
+                           vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0,
+                         VK_INDEX_TYPE_UINT32);
+
+    // if the descriptor set data isn't change we can omit this?
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            drawclusterPipelineLayout, 0, 1, &applDescriptorSet,
+                            0, nullptr);
+    constexpr int beginindex = 0;
+    constexpr int indexClamp = 0xffffff;
+    uint32_t occluded = 0;
+
+   vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer, 0,
+                                  writeIndexBuffer, 0, applMesh->_chunkCount,
+                                  sizeof(VkDrawIndexedIndirectCommand));
+}
 
 void GpuScene::DrawChunks()
 {
@@ -2526,6 +2773,8 @@ void GpuScene::Draw() {
   memcpy(data, transpose(maincamera->getProjectMatrix()).value_ptr(),
          (size_t)sizeof(mat4));
   memcpy(((mat4*)data)+1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
+
+  memcpy(((mat4*)data)+2, transpose(maincamera->getInvViewMatrix()).value_ptr(),(size_t)sizeof(mat4));
   vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
 
   //spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));

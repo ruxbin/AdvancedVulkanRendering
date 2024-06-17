@@ -4,6 +4,7 @@ struct UniformBuffer
 {
     float4x4 projectionMatrix;
     float4x4 viewMatrix;
+    float4x4 invViewMatrix;
 };
 
 struct GeometyBuffer
@@ -23,6 +24,16 @@ struct PushConstants
 };
 
 
+
+struct AAPLPixelSurfaceData
+{
+    half3 normal;
+    half3 albedo;
+    half3 F0;
+    half  roughness;
+    half  alpha;
+    half3 emissive;
+};
 
 
 struct AAPLShaderMaterial
@@ -79,6 +90,20 @@ struct VSOutput
     //float4 Diffuse    : COLOR0;
     float2 TextureUV  : TEXCOORD0;
     uint drawcallid : TEXCOORD1;
+
+	half3 viewDir : TEXCOORD2;
+    half3 normal : TEXCOORD3;
+    half3 tangent : TEXCOORD4;
+    float3 wsPosition : TEXCOORD5;
+};
+
+struct PSOutput
+{
+	half4 albedo : SV_Target0;
+	half4 normals : SV_Target1;
+	half4 emissive : SV_Target2;
+	half4 F0Roughness : SV_Target3;
+
 };
 
 
@@ -91,9 +116,56 @@ VSOutput RenderSceneVS( VSInput input)
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
     Output.drawcallid = input.drawcallid;
+
+
+	Output.viewDir = normalize(float3(ub.invViewMatrix._m03,ub.invViewMatrix._m13,ub.invViewMatrix._m23)-input.position);
+	Output.wsPosition = input.position;
+
+	Output.normal = normalize(input.normal);
+	Output.tangent = normalize(input.tangent);
+
     return Output;    
 }
 
+
+PSOutput RenderSceneBasePass(VSOutput input)
+{
+	PSOutput output;
+    uint chunkindex = chunkIndex[input.drawcallid];
+    uint materialIndex = meshChunks[chunkindex].materialIndex;
+    AAPLShaderMaterial material = materials[materialIndex];
+         half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+	half4 materialData = half4(0,0,0,0);
+	half3 emissive = 0;
+
+	if(material.hasMetallicRoughness>0)
+		materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+
+	if(material.hasEmissive>0)
+		emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+
+	half3 geonormal = normalize(input.normal);
+	half3 geotan = normalize(input.tangent);
+	half3 geobinormal = normalize(cross(geotan,geonormal));
+	half3 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+	texnormal.xy = 2*texnormal.xy-1;
+	
+	texnormal.z = sqrt(saturate(1.0f - dot(texnormal.xy, texnormal.xy)));
+
+    	half3 normal = texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinormal;
+	AAPLPixelSurfaceData surfaceData;
+	surfaceData.normal = normal;
+	surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
+	surfaceData.F0=lerp((half)0.04, baseColor.rgb, materialData.b);
+	surfaceData.roughness=max((half)0.08, materialData.g);
+	surfaceData.alpha=baseColor.a * material.alpha;
+	surfaceData.emissive=emissive;
+	output.albedo      = half4(surfaceData.albedo, surfaceData.alpha);
+    	output.normals     = half4(surfaceData.normal, 0.0f);
+    	output.emissive    = half4(surfaceData.emissive, 0.0f);
+    	output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
+	return output;
+}
 
 float4 RenderScenePS(VSOutput input ) : SV_Target
 {

@@ -41,6 +41,8 @@ VkFramebuffer getSwapChainFrameBuffer(int i) const {return swapChainFramebuffers
 VkSwapchainKHR getSwapChain() const {return swapChain;}
 VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
+VkImageView getWindowDepthImageView()const{return depthImageView;}
+VkFormat getWindowDepthFormat()const{return depthFormat;}
 private:
   constexpr std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -224,7 +226,7 @@ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME  // supress validation error pCre
 
     return indices;
   }
-
+VkFormat depthFormat;
   void createSwapChain();
   void createImageViews();
   void createFramebuffers();
@@ -296,7 +298,7 @@ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME  // supress validation error pCre
   }
 
   void CreateDepthResource() {
-    VkFormat depthFormat = findDepthFormat();
+    depthFormat = findDepthFormat();
     createImage(
         swapChainExtent.width, swapChainExtent.height, depthFormat,
         VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
