@@ -316,6 +316,8 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     auto drawClusterBasePSShaderCode = readFile((_rootPath / "shaders/drawcluster.base.ps.spv").generic_string());
 
+    auto deferredLightingVSShaderCode = readFile((_rootPath / "shaders/deferredlighting.vs.spv").generic_string());
+    auto deferredLightingPSShaderCode = readFile((_rootPath / "shaders/deferredlighting.ps.spv").generic_string());
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -326,6 +328,9 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     VkShaderModule drawclusterVSShaderModule = createShaderModule(drawClusterVSShaderCode);
     VkShaderModule drawclusterPSShaderModule = createShaderModule(drawClusterPSShaderCode);
     VkShaderModule drawclusterBasePSShaderModule = createShaderModule(drawClusterBasePSShaderCode);
+
+    VkShaderModule deferredLightingVSShaderModule = createShaderModule(deferredLightingVSShaderCode);
+    VkShaderModule deferredLightingPSShaderModule = createShaderModule(deferredLightingPSShaderCode);
 
     VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
     vertShaderStageInfo.sType =
@@ -362,6 +367,13 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterVSShaderStageInfo.module = drawclusterVSShaderModule;
     drawclusterVSShaderStageInfo.pName = "RenderSceneVS";
 
+    VkPipelineShaderStageCreateInfo deferredLightingVSShaderStageInfo{};
+    deferredLightingVSShaderStageInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    deferredLightingVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    deferredLightingVSShaderStageInfo.module = deferredLightingVSShaderModule;
+    deferredLightingVSShaderStageInfo.pName = "AAPLSimpleTexVertexOutFSQuadVertexShader";
+
     VkPipelineShaderStageCreateInfo drawclusterPSShaderStageInfo{};
     drawclusterPSShaderStageInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -377,6 +389,13 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterBasePSShaderStageInfo.pName = "RenderSceneBasePass";
 
 
+    VkPipelineShaderStageCreateInfo deferredLightingPSShaderStageInfo{};
+    deferredLightingPSShaderStageInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    deferredLightingPSShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    deferredLightingPSShaderStageInfo.module = deferredLightingPSShaderModule;
+    deferredLightingPSShaderStageInfo.pName = "DeferredLighting";
+
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
                                                       fragShaderStageInfo };
     VkPipelineShaderStageCreateInfo eshaderStages[] = { evertShaderStageInfo,
@@ -386,6 +405,10 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     VkPipelineShaderStageCreateInfo drawclusterBasePassStages[] = { drawclusterVSShaderStageInfo,
                                                       drawclusterBasePSShaderStageInfo };
+
+
+    VkPipelineShaderStageCreateInfo deferredLightingPassStages[] = { deferredLightingVSShaderStageInfo,
+                                                   deferredLightingPSShaderStageInfo };
 
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
@@ -429,6 +452,17 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
+
+
+    VkPipelineRasterizationStateCreateInfo rasterizerBackFace{};
+    rasterizerBackFace.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizerBackFace.depthClampEnable = VK_FALSE;
+    rasterizerBackFace.rasterizerDiscardEnable = VK_FALSE;
+    rasterizerBackFace.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizerBackFace.lineWidth = 1.0f;
+    rasterizerBackFace.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizerBackFace.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizerBackFace.depthBiasEnable = VK_FALSE;
 
     VkPipelineRasterizationStateCreateInfo rasterizer_wireframe{};
     rasterizer_wireframe.sType =
@@ -523,7 +557,16 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         throw std::runtime_error("failed to create drawcluster pipeline layout!");
     }
 
+    VkPipelineLayoutCreateInfo deferredLightingPipelineLayoutInfo{};
+    deferredLightingPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    deferredLightingPipelineLayoutInfo.setLayoutCount = 1;
+    deferredLightingPipelineLayoutInfo.pSetLayouts = &deferredLightingSetLayout;
+    deferredLightingPipelineLayoutInfo.pushConstantRangeCount = 0;
 
+    if (vkCreatePipelineLayout(device.getLogicalDevice(), &deferredLightingPipelineLayoutInfo,
+        nullptr, &deferredLightingPipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster pipeline layout!");
+    }
 
     VkPipelineDepthStencilStateCreateInfo depthStencilState1{};
     depthStencilState1.sType =
@@ -567,6 +610,16 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     depthStencilState.stencilTestEnable = VK_FALSE;
     depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
     depthStencilState.depthBoundsTestEnable = VK_FALSE;
+
+
+    VkPipelineDepthStencilStateCreateInfo depthStencilStateDisable{};
+    depthStencilStateDisable.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencilStateDisable.depthWriteEnable = VK_FALSE;
+    depthStencilStateDisable.depthTestEnable = VK_FALSE;
+    depthStencilStateDisable.stencilTestEnable = VK_FALSE;
+    depthStencilStateDisable.depthCompareOp = VK_COMPARE_OP_GREATER;
+    depthStencilStateDisable.depthBoundsTestEnable = VK_FALSE;
 
     /* VkGraphicsPipelineCreateInfo edwardpipelineInfo{};
      edwardpipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -650,7 +703,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterVertexInputInfo.vertexAttributeDescriptionCount = inputChannelCount;
     drawclusterVertexInputInfo.pVertexAttributeDescriptions = drawclusterInputAttributes;
 
-    VkGraphicsPipelineCreateInfo drawclusterpipelineInfo{};
+    /*VkGraphicsPipelineCreateInfo drawclusterpipelineInfo{};
     drawclusterpipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     drawclusterpipelineInfo.stageCount = 2;
     drawclusterpipelineInfo.pStages = drawclusterShaderStages;
@@ -669,7 +722,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterpipelineInfo,
         nullptr, &drawclusterPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create drawcluster graphics pipeline!");
-    }
+    }*/
 
     VkGraphicsPipelineCreateInfo drawclusterBasePipelineInfo{};
     drawclusterBasePipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -692,6 +745,27 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
     }
 
+
+    VkGraphicsPipelineCreateInfo deferredLightingPipelineInfo{};
+    deferredLightingPipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    deferredLightingPipelineInfo.stageCount = 2;
+    deferredLightingPipelineInfo.pStages = deferredLightingPassStages;
+    deferredLightingPipelineInfo.pVertexInputState = &edwardVertexInputInfo;//TODO: don't need that?
+    deferredLightingPipelineInfo.pInputAssemblyState = &inputAssembly;
+    deferredLightingPipelineInfo.pViewportState = &viewportState;
+    deferredLightingPipelineInfo.pRasterizationState = &rasterizerBackFace;
+    deferredLightingPipelineInfo.pMultisampleState = &multisampling;
+    deferredLightingPipelineInfo.pColorBlendState = &colorBlending;
+    deferredLightingPipelineInfo.layout = deferredLightingPipelineLayout;
+    deferredLightingPipelineInfo.renderPass = _deferredLightingPass;
+    deferredLightingPipelineInfo.subpass = 0;
+    deferredLightingPipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+    deferredLightingPipelineInfo.pDepthStencilState = &depthStencilStateDisable;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &deferredLightingPipelineInfo,
+        nullptr, &deferredLightingPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
+    }
 
 
     vkDestroyShaderModule(device.getLogicalDevice(), fragShaderModule, nullptr);
@@ -936,6 +1010,185 @@ VkFormat mapFromApple(MTLPixelFormat appleformat)
         spdlog::error("unsupported appleformat {}", appleformat);
     }
     return VK_FORMAT_UNDEFINED;
+}
+
+
+void GpuScene::init_deferredlighting_descriptors()
+{
+    VkDescriptorSetLayoutBinding albedoBinding = {};
+    albedoBinding.binding = 0;
+    albedoBinding.descriptorCount = 1;
+    albedoBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    albedoBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding normalBinding = {};
+    normalBinding.binding = 1;
+    normalBinding.descriptorCount = 1;
+    normalBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    normalBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding emessiveBinding = {};
+    emessiveBinding.binding = 2;
+    emessiveBinding.descriptorCount = 1;
+    emessiveBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    emessiveBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding f0RoughnessBinding = {};
+    f0RoughnessBinding.binding = 3;
+    f0RoughnessBinding.descriptorCount = 1;
+    f0RoughnessBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    f0RoughnessBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding depthBinding = {};
+    depthBinding.binding = 4;
+    depthBinding.descriptorCount = 1;
+    depthBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    depthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding nearestClampSamplerBinding = {};
+    nearestClampSamplerBinding.binding = 5;
+    nearestClampSamplerBinding.descriptorCount = 1;
+    nearestClampSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    nearestClampSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding frameDataBinding = {};
+    frameDataBinding.binding = 6;
+    frameDataBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    frameDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+
+    VkDescriptorSetLayoutBinding bindings[] = { albedoBinding, normalBinding, emessiveBinding, f0RoughnessBinding,depthBinding, nearestClampSamplerBinding,frameDataBinding };
+
+    VkDescriptorSetLayoutCreateInfo setinfo = {};
+    setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setinfo.pNext = nullptr;
+
+    // we are going to have 1 binding
+    setinfo.bindingCount = sizeof(bindings) / sizeof(bindings[0]);
+    // no flags
+    setinfo.flags = 0;
+    // point to the camera buffer binding
+    setinfo.pBindings = bindings;
+
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
+        &deferredLightingSetLayout);
+
+    // other code ....
+    // create a descriptor pool that will hold 10 uniform buffers
+    std::vector<VkDescriptorPoolSize> sizes = {
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
+    };
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = 0;
+    pool_info.maxSets = 2;
+    pool_info.poolSizeCount = (uint32_t)sizes.size();
+    pool_info.pPoolSizes = sizes.data();
+
+    vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
+        &deferredLightingDescriptorPool);
+
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.pNext = nullptr;
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    // using the pool we just set
+    allocInfo.descriptorPool = deferredLightingDescriptorPool;
+    // only 1 descriptor
+    allocInfo.descriptorSetCount = 1;
+    // using the global data layout
+    allocInfo.pSetLayouts = &deferredLightingSetLayout;
+
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
+        &deferredLightingDescriptorSet);
+
+    // information about the buffer we want to point at in the descriptor
+    VkDescriptorBufferInfo binfo;
+    // it will be the camera buffer
+    binfo.buffer = uniformBuffer;
+    // at 0 offset
+    binfo.offset = 0;
+    // of the size of a camera data struct
+    binfo.range = sizeof(FrameData);
+
+    VkWriteDescriptorSet setWrite = {};
+    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite.dstBinding = 6;
+    // of the global descriptor
+    setWrite.dstSet = deferredLightingDescriptorSet;
+
+    setWrite.descriptorCount = 1;
+    setWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite.pBufferInfo = &binfo;
+
+
+    VkDescriptorImageInfo samplerinfo;
+    samplerinfo.sampler = nearestClampSampler;
+    VkWriteDescriptorSet setSampler = {};
+    setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setSampler.dstBinding = 5;
+    setSampler.pNext = nullptr;
+    setSampler.dstSet = deferredLightingDescriptorSet;
+    setSampler.dstArrayElement = 0;
+    setSampler.descriptorCount = 1;
+    setSampler.pImageInfo = &samplerinfo;
+    setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+
+
+
+    std::array<VkDescriptorImageInfo, 4> imageinfo{};
+    //imageinfo.resize(textures.size());
+    for (int texturei = 0; texturei < 4; ++texturei)
+    {
+        imageinfo[texturei].imageView = _gbuffersView[texturei];
+        imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        //imageinfo[texturei].sampler = textureSampler;
+    }
+
+
+    VkWriteDescriptorSet setWriteTexture[4] = {};
+    for (int i = 0; i < 4; i++)
+    {
+        setWriteTexture[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        setWriteTexture[i].pNext = nullptr;
+
+
+        setWriteTexture[i].dstBinding = i;
+        // of the global descriptor
+        setWriteTexture[i].dstSet = deferredLightingDescriptorSet;
+        setWriteTexture[i].dstArrayElement = 0;
+
+        setWriteTexture[i].descriptorCount = 1;
+        setWriteTexture[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        setWriteTexture[i].pImageInfo = &imageinfo[i];
+    }
+    //need transform layout?--yes!
+    VkDescriptorImageInfo depthImageInfo{};
+    depthImageInfo.imageView = device.getWindowDepthImageView();
+    depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet setWriteDepth;
+    setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteDepth.pNext = nullptr;
+    setWriteDepth.dstBinding = 4;
+    setWriteDepth.dstSet = deferredLightingDescriptorSet;
+    setWriteDepth.dstArrayElement = 0;
+    setWriteDepth.descriptorCount = 1;
+    setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setWriteDepth.pImageInfo = &depthImageInfo;
+
+    std::array< VkWriteDescriptorSet, 7> writes = { setWriteTexture[0],setWriteTexture[1],setWriteTexture[2],setWriteTexture[3],setWriteDepth,setSampler,setWrite  };
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 }
 
 void GpuScene::init_drawparams_descriptors()
@@ -1283,7 +1536,7 @@ void GpuScene::init_appl_descriptors()
     // at 0 offset
     unibinfo.offset = 0;
     // of the size of a camera data struct
-    unibinfo.range = sizeof(uniformBufferData);
+    unibinfo.range = sizeof(FrameData);
 
     VkWriteDescriptorSet uniformWrite = {};
     uniformWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1476,7 +1729,7 @@ void GpuScene::init_descriptorsV2()
     // at 0 offset
     binfo.offset = 0;
     // of the size of a camera data struct
-    binfo.range = sizeof(uniformBufferData);
+    binfo.range = sizeof(FrameData);
 
     VkWriteDescriptorSet setWrite = {};
     setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1574,7 +1827,7 @@ void GpuScene::init_descriptors(VkImageView currentImage) {
     // at 0 offset
     binfo.offset = 0;
     // of the size of a camera data struct
-    binfo.range = sizeof(uniformBufferData);
+    binfo.range = sizeof(FrameData);
 
     VkWriteDescriptorSet setWrite = {};
     setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2367,10 +2620,12 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     CreateOccluderZPass();
     CreateOccluderZPassFrameBuffer();
     CreateDeferredBasePass();
+    CreateDeferredLightingPass();
     CreateBasePassFrameBuffer();
-
+    CreateDeferredLighingFrameBuffer();
 
     createTextureSampler();
+    createNearestClampSampler();
 
     //auto textureRes = createTexture(applMesh->_textures[13]);
     //auto textureRes = createTexture("G:\\AdvancedVulkanRendering\\textures\\texture.jpg");
@@ -2380,9 +2635,58 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     //init_descriptors(textures[13].second);
     init_appl_descriptors();
     init_drawparams_descriptors();
+    init_deferredlighting_descriptors();
     createGraphicsPipeline(deviceref.getMainRenderPass());
     createRenderOccludersPipeline(occluderZPass);
     createComputePipeline();
+}
+
+
+
+void GpuScene::CreateDeferredLightingPass()
+{
+    VkAttachmentDescription deferredLightingAttachments = {};
+
+    deferredLightingAttachments.format = device.getSwapChainImageFormat();
+    deferredLightingAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
+    deferredLightingAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    deferredLightingAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    deferredLightingAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    deferredLightingAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    deferredLightingAttachments.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference deferredLightingAttachmentRefs{};
+    deferredLightingAttachmentRefs.attachment = 0;
+    deferredLightingAttachmentRefs.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &deferredLightingAttachmentRefs;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcAccessMask = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 1> attachments = { deferredLightingAttachments };
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr, &_deferredLightingPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create base pass!");
+    }
 }
 
 void GpuScene::CreateDeferredBasePass()
@@ -2405,7 +2709,7 @@ void GpuScene::CreateDeferredBasePass()
     depthAttachment.format = device.getWindowDepthFormat();
     depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
     depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2497,6 +2801,30 @@ void GpuScene::CreateOccluderZPass()
         throw std::runtime_error("failed to create render pass!");
     }
 
+}
+
+void GpuScene::CreateDeferredLighingFrameBuffer() {
+    for (int i = 0; i < 3; i++)
+    {
+        std::array<VkImageView, 1> attachments = {
+            device.getSwapChainImageView(i)
+        };
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = _deferredLightingPass;
+        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        ;
+        framebufferInfo.pAttachments = attachments.data();
+        framebufferInfo.width = device.getSwapChainExtent().width;
+        framebufferInfo.height = device.getSwapChainExtent().height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo,
+            nullptr, &_deferredFrameBuffer[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create deferred lighting framebuffer!");
+        }
+    }
 }
 
 void GpuScene::CreateBasePassFrameBuffer() {
@@ -2677,15 +3005,23 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     //vkCmdDrawIndexed(commandBuffer,getIndexSize()/sizeof(unsigned short),1,0,0,0);
 
 
-    //final blit
     {
-        std::array<VkClearValue, 2> clearValues{};
+        //transition the image layout
+        //notice:换成device的transitionImageLayout会报错,validation layer 关于barrier只在同一个commandbuffer中记录imageview的layout，跨commandbuffer会报错~
+        transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        for (int i = 0; i < 4; i++)
+            transitionImageLayout(_gbuffers[i], _gbufferFormat[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    //final lighting pass
+    {
+        std::array<VkClearValue, 1> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
-        clearValues[1].depthStencil = { 0.0f, 0 };
+        
         VkRenderPassBeginInfo blitPassInfo{};
         blitPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        blitPassInfo.renderPass = device.getMainRenderPass();
-        blitPassInfo.framebuffer = device.getSwapChainFrameBuffer(imageIndex);
+        blitPassInfo.renderPass = _deferredLightingPass;
+        blitPassInfo.framebuffer = _deferredFrameBuffer[imageIndex];
         blitPassInfo.renderArea.offset = { 0, 0 };
         blitPassInfo.renderArea.extent = device.getSwapChainExtent();
         blitPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
@@ -2693,7 +3029,14 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
 
         vkCmdBeginRenderPass(commandBuffer, &blitPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        //DrawChunks();
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            deferredLightingPipeline);
+        
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
+            0, nullptr);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
         vkCmdEndRenderPass(commandBuffer);
     }
 
@@ -2821,14 +3164,18 @@ void GpuScene::Draw() {
     vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(), UINT64_MAX, imageAvailableSemaphore,
         VK_NULL_HANDLE, &imageIndex);
 
-    void* data;
-    vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(uniformBufferData), 0,
-        &data);
+    void* data1;
+    vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(FrameData), 0,
+        &data1);
+    memcpy(data1, &frameConstants, sizeof(FrameConstants));
+    void* data = ((char*)data1) + sizeof(FrameConstants);
     memcpy(data, transpose(maincamera->getProjectMatrix()).value_ptr(),
         (size_t)sizeof(mat4));
     memcpy(((mat4*)data) + 1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
 
     memcpy(((mat4*)data) + 2, transpose(maincamera->getInvViewMatrix()).value_ptr(), (size_t)sizeof(mat4));
+
+    memcpy(((mat4*)data) + 3, transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(), (size_t)sizeof(mat4));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
 
   //spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));

@@ -139,10 +139,10 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   CreateDepthResource();
 
   // createMainRenderPass
-  createRenderPass();
+  //createRenderPass();
 
 //createframebuffers -- after renderpass since framebuffers are bound to renderpass
-  createFramebuffers();
+  //createFramebuffers();
 }
 
 
@@ -538,8 +538,12 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
     if (hasStencilComponent(format)) {
       barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
     }
-  } else {
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  } else if(oldLayout== VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+      barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+  }
+  else
+  {
+      barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   }
 
   VkPipelineStageFlags sourceStage;
@@ -568,7 +572,16 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
 
     sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  } else {
+  }
+  else if ( (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL|| oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+  {
+      barrier.srcAccessMask = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL?VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+      sourceStage = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;   //TODO：VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT？？
+      destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  }
+  else {
     throw std::invalid_argument("unsupported layout transition!");
   }
 

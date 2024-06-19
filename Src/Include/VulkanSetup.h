@@ -43,6 +43,9 @@ VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
 VkImageView getWindowDepthImageView()const{return depthImageView;}
 VkFormat getWindowDepthFormat()const{return depthFormat;}
+VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
+VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
+VkImage getWindowDepthImage()const { return depthImage; }
 private:
   constexpr std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -301,7 +304,7 @@ VkFormat depthFormat;
     depthFormat = findDepthFormat();
     createImage(
         swapChainExtent.width, swapChainExtent.height, depthFormat,
-        VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
     // depthImageView = createImageView(depthImage, depthFormat);
     VkImageViewCreateInfo createInfo{};

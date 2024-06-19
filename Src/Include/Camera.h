@@ -7,6 +7,7 @@ private:
     mat4 _projectionMatrix;
     mat4 _objectToCameraMatrix;
     mat4 _invViewMatrix;
+    mat4 _invViewProjectionMatrix;
     Camera();
     vec3 _origin;
     vec3 _x;//left & right -- a/d
@@ -22,6 +23,7 @@ public:
     mat4 & getObjectToCamera();
     mat4 & getProjectMatrix();
     mat4 & getInvViewMatrix(){return _invViewMatrix;}
+    mat4& getInvViewProjectionMatrix() { return _invViewProjectionMatrix; }
     void MoveLeft(float length);
     void MoveRight(float length);
     void MoveForward(float length);

@@ -66,7 +66,8 @@ void Camera::updateCameraMatrix()
 	//mat4 viewproj = transpose(_projectionMatrix)*transpose(_objectToCameraMatrix)*transpose(transM);
 	mat4 viewproj = transpose(_projectionMatrix) * transpose(_objectToCameraMatrix);
 
-
+	mat4 viewprojmatrix = _objectToCameraMatrix* _projectionMatrix;
+	_invViewProjectionMatrix = inverse(viewprojmatrix);
 	
 	mat4 invViewProj = inverse(viewproj);
 	vec4 clipCoords[8] = {	{-1,-1,0,1},{-1,1,0,1},{1,1,0,1},{1,-1,0,1},				//far
