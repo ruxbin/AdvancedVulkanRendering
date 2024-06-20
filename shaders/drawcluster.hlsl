@@ -46,7 +46,7 @@ cbuffer cam
     CameraParamsBuffer cameraParams;
 }
 [[vk::binding(1,0)]] StructuredBuffer<AAPLShaderMaterial> materials;
-[[vk::binding(2,0)]] SamplerState _LinearClampSampler;
+[[vk::binding(2,0)]] SamplerState _LinearRepeatSampler;
 [[vk::binding(3,0)]] Texture2D<half4> _Textures[];  //bindless textures
 [[vk::binding(4,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks; 
 [[vk::binding(5,0)]] StructuredBuffer<uint> chunkIndex;
@@ -124,25 +124,25 @@ PSOutput RenderSceneBasePass(VSOutput input)
     uint chunkindex = chunkIndex[input.drawcallid];
     uint materialIndex = meshChunks[chunkindex].materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
-         half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
 	half4 materialData = half4(0,0,0,0);
 	half4 emissive = 0;
 
 	if(material.hasMetallicRoughness>0)
-		materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
 
 	if(material.hasEmissive>0)
-		emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
 
 	half3 geonormal = normalize(input.normal);
 	half3 geotan = normalize(input.tangent);
 	half3 geobinormal = normalize(cross(geotan,geonormal));
-	half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
 	texnormal.xy = 2*texnormal.xy-1;
 	
 	texnormal.z = sqrt(saturate(1.0f - dot(texnormal.xy, texnormal.xy)));
 
-    	half3 normal = texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinormal;
+    half3 normal = texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinormal;
 	AAPLPixelSurfaceData surfaceData;
 	surfaceData.normal = normal;
 	surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
@@ -151,9 +151,9 @@ PSOutput RenderSceneBasePass(VSOutput input)
 	surfaceData.alpha=baseColor.a * material.alpha;
 	surfaceData.emissive=emissive.xyz;
 	output.albedo      = half4(surfaceData.albedo, surfaceData.alpha);
-    	output.normals     = half4(surfaceData.normal, 0.0f);
-    	output.emissive    = half4(surfaceData.emissive, 0.0f);
-    	output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
+    output.normals     = half4(surfaceData.normal, 0.0f);
+    output.emissive    = half4(surfaceData.emissive, 0.0f);
+    output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
 	return output;
 }
 
@@ -167,7 +167,7 @@ float4 RenderScenePS(VSOutput input ) : SV_Target
     uint chunkindex = chunkIndex[input.drawcallid];
     uint materialIndex = meshChunks[chunkindex].materialIndex;
     if(materials[materialIndex].albedo_texture_index!=0xffffffff){
-        col = _Textures[materials[materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
+        col = _Textures[materials[materialIndex].albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
         col.a = 1;
     }
 

@@ -258,10 +258,11 @@ private:
   VkImageView		_gbufferNormalsTextureView;
   VkImageView		_gbufferEmissiveTextureView;
   VkImageView		_gbufferF0RoughnessTextureView;
-  VkFormat		_gbufferFormat[4] = {	VK_FORMAT_B8G8R8A8_UNORM,
+  VkFormat		_gbufferFormat[4] = {	
+                        VK_FORMAT_B8G8R8A8_SRGB,
 	  					VK_FORMAT_R16G16B16A16_SFLOAT,
-  						VK_FORMAT_B8G8R8A8_UNORM,
-  						VK_FORMAT_B8G8R8A8_UNORM
+                        VK_FORMAT_B8G8R8A8_SRGB,
+                        VK_FORMAT_B8G8R8A8_SRGB
   						};
   VkImage		_gbuffers[4];
   VkImageView		_gbuffersView[4];
@@ -571,7 +572,7 @@ private:
         vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
     }
 
-    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),0.8f,2.f };
+    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f };
 };
 
 template<>

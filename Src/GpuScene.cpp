@@ -3006,6 +3006,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
 
     {
+        //TODO: test with subpass dependency
         //transition the image layout
         //notice:换成device的transitionImageLayout会报错,validation layer 关于barrier只在同一个commandbuffer中记录imageview的layout，跨commandbuffer会报错~
         transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
