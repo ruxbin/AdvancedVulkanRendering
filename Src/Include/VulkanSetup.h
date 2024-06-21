@@ -393,7 +393,7 @@ VkFormat depthFormat;
       void transitionImageLayout(VkImage image, VkFormat format,
           VkImageLayout oldLayout, VkImageLayout newLayout) const;
 
-      void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)const {
+      void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height,uint32_t miplevel=0)const {
           VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
           VkBufferImageCopy region{};
@@ -401,7 +401,7 @@ VkFormat depthFormat;
           region.bufferRowLength = 0;
           region.bufferImageHeight = 0;
           region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-          region.imageSubresource.mipLevel = 0;
+          region.imageSubresource.mipLevel = miplevel;
           region.imageSubresource.baseArrayLayer = 0;
           region.imageSubresource.layerCount = 1;
           region.imageOffset = { 0, 0, 0 };

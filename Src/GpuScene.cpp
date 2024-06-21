@@ -3638,7 +3638,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     imageInfo.extent.width = texturedata._width;
     imageInfo.extent.height = texturedata._height;
     imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;// texturedata._mipmapLevelCount;
+    imageInfo.mipLevels = texturedata._mipmapLevelCount;
     imageInfo.arrayLayers = 1;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;//TODO: switch to linear with initiallayout=preinitialized?
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3667,29 +3667,34 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     vkBindImageMemory(device.getLogicalDevice(), textureImage, textureImageMemory, 0);
 
    
-    unsigned int rawDataLength = 0;
-    void* pixelDataRaw = loadMipTexture(texturedata, 0, rawDataLength);
-
-    //dds_image_t ddsimage = dds_load_from_memory((const char*)pixelDataRaw, rawDataLength);
-    //spdlog::info("ddsimage info {}, {}", ddsimage->header.width, ddsimage->header.height);
-
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingBufferMemory;
-    createBuffer(rawDataLength, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
-
-    void* mappedData;
-    vkMapMemory(device.getLogicalDevice(), stagingBufferMemory, 0, rawDataLength, 0, &mappedData);
-    memcpy(mappedData, pixelDataRaw, static_cast<size_t>(rawDataLength));
-    vkUnmapMemory(device.getLogicalDevice(), stagingBufferMemory);
-
-    free(pixelDataRaw);
-
     device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    device.copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texturedata._width), static_cast<uint32_t>(texturedata._height));
-    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    for (int miplevel = 0; miplevel < texturedata._mipmapLevelCount; ++miplevel)
+    {
+        unsigned int rawDataLength = 0;
+        void* pixelDataRaw = loadMipTexture(texturedata, miplevel, rawDataLength);
 
-    vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
-    vkFreeMemory(device.getLogicalDevice(), stagingBufferMemory, nullptr);
+        //dds_image_t ddsimage = dds_load_from_memory((const char*)pixelDataRaw, rawDataLength);
+        //spdlog::info("ddsimage info {}, {}", ddsimage->header.width, ddsimage->header.height);
+
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(rawDataLength, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+        void* mappedData;
+        vkMapMemory(device.getLogicalDevice(), stagingBufferMemory, 0, rawDataLength, 0, &mappedData);
+        memcpy(mappedData, pixelDataRaw, static_cast<size_t>(rawDataLength));
+        vkUnmapMemory(device.getLogicalDevice(), stagingBufferMemory);
+
+        free(pixelDataRaw);
+
+        
+        device.copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texturedata._width)>>miplevel, static_cast<uint32_t>(texturedata._height)>>miplevel,miplevel);
+        
+
+        vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
+        vkFreeMemory(device.getLogicalDevice(), stagingBufferMemory, nullptr);
+    }
+    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     VkImageViewCreateInfo imageviewInfo{};
     imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -3699,7 +3704,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     imageviewInfo.format = mapFromApple((MTLPixelFormat)(texturedata._pixelFormat));;
     imageviewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     imageviewInfo.subresourceRange.baseMipLevel = 0;
-    imageviewInfo.subresourceRange.levelCount = 1;// texturedata._mipmapLevelCount;
+    imageviewInfo.subresourceRange.levelCount =  texturedata._mipmapLevelCount;
     imageviewInfo.subresourceRange.baseArrayLayer = 0;
     imageviewInfo.subresourceRange.layerCount = 1;
 
