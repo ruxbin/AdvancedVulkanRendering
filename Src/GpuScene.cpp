@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstddef>
 
+#define USE_CPU_ENCODE_DRAWPARAM
+
 static std::vector<char> readFile(const std::string &filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
@@ -379,7 +381,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     drawclusterPSShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     drawclusterPSShaderStageInfo.module = drawclusterPSShaderModule;
-    drawclusterPSShaderStageInfo.pName = "RenderScenePS";
+    drawclusterPSShaderStageInfo.pName = "RenderSceneBasePS";
 
     VkPipelineShaderStageCreateInfo drawclusterBasePSShaderStageInfo{};
     drawclusterBasePSShaderStageInfo.sType =
@@ -703,7 +705,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterVertexInputInfo.vertexAttributeDescriptionCount = inputChannelCount;
     drawclusterVertexInputInfo.pVertexAttributeDescriptions = drawclusterInputAttributes;
 
-    /*VkGraphicsPipelineCreateInfo drawclusterpipelineInfo{};
+    VkGraphicsPipelineCreateInfo drawclusterpipelineInfo{};
     drawclusterpipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     drawclusterpipelineInfo.stageCount = 2;
     drawclusterpipelineInfo.pStages = drawclusterShaderStages;
@@ -712,9 +714,9 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterpipelineInfo.pViewportState = &viewportState;
     drawclusterpipelineInfo.pRasterizationState = &rasterizer;
     drawclusterpipelineInfo.pMultisampleState = &multisampling;
-    drawclusterpipelineInfo.pColorBlendState = &colorBlending;
+    drawclusterpipelineInfo.pColorBlendState = &colorBlendings;
     drawclusterpipelineInfo.layout = drawclusterPipelineLayout;
-    drawclusterpipelineInfo.renderPass = renderPass;
+    drawclusterpipelineInfo.renderPass = _basePass;
     drawclusterpipelineInfo.subpass = 0;
     drawclusterpipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     drawclusterpipelineInfo.pDepthStencilState = &depthStencilState;
@@ -722,7 +724,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterpipelineInfo,
         nullptr, &drawclusterPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create drawcluster graphics pipeline!");
-    }*/
+    }
 
     VkGraphicsPipelineCreateInfo drawclusterBasePipelineInfo{};
     drawclusterBasePipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -2442,7 +2444,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         std::memcpy(data, (void*)m_Chunks, meshChunkBufferCreateInfo.size);
         vkUnmapMemory(device.getLogicalDevice(), meshChunksBufferMemory);
 
-        free(m_Chunks);
+       // free(m_Chunks);
 
     }
 
@@ -2935,7 +2937,11 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         throw std::runtime_error("failed to begin recording command buffer!");
     }
-    uint32_t groupx = (applMesh->_chunkCount + 127) / 128;
+
+
+#ifndef USE_CPU_ENCODE_DRAWPARAM
+
+    uint32_t groupx = (applMesh->_opaqueChunkCount + 127) / 128;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, encodeDrawBufferPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, encodeDrawBufferPipelineLayout, 0, 1, &gpuCullDescriptorSet, 0, nullptr);
     vkCmdDispatch(commandBuffer, groupx, 1, 1);
@@ -2955,11 +2961,13 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &memoryBarrier,
     };
-
+#endif
     DrawOccluders();
 
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
+#ifndef USE_CPU_ENCODE_DRAWPARAM
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+#endif
     
 
     {
@@ -3075,8 +3083,7 @@ void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
 }
 
 void GpuScene::DrawChunksBasePass() {
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        drawclusterBasePipeline);
+   
     VkBuffer vertexBuffers[] = { applVertexBuffer, applNormalBuffer,
                                 applTangentBuffer, applUVBuffer,
                                 applInstanceBuffer };
@@ -3088,14 +3095,39 @@ void GpuScene::DrawChunksBasePass() {
     vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0,
         VK_INDEX_TYPE_UINT32);
 
+    
+#ifndef USE_CPU_ENCODE_DRAWPARAM
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        drawclusterBasePipeline);
     // if the descriptor set data isn't change we can omit this?
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
         drawclusterBasePipelineLayout, 0, 1, &applDescriptorSet,
         0, nullptr);
-   
     vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer, 0,
         writeIndexBuffer, 0, applMesh->_chunkCount,
         sizeof(VkDrawIndexedIndirectCommand));
+#else
+    constexpr int beginindex = 0;
+    constexpr int indexClamp = 0xffffff;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+    for (int i = beginindex; i < applMesh->_opaqueChunkCount && i < indexClamp; ++i)
+    {
+        PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex };
+        
+        
+        {
+            if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox))
+            {
+                //debug_frustum_cull[i] = true;
+                continue;
+            }
+        }
+
+        vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
+        vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
+    }
+#endif
 }
 
 void GpuScene::DrawChunks()
@@ -3181,7 +3213,7 @@ void GpuScene::Draw() {
 
   //spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
   vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(gpuCullParams), 0, &data);
-  memcpy(data, &applMesh->_chunkCount, sizeof(uint32_t));
+  memcpy(data, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
   //memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
   //offsetof isn't working as expected
   memcpy((char*)data + 16, &maincamera->getFrustum(), sizeof(Frustum));

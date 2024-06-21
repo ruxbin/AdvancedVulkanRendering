@@ -157,26 +157,43 @@ PSOutput RenderSceneBasePass(VSOutput input)
 	return output;
 }
 
-float4 RenderScenePS(VSOutput input ) : SV_Target
+PSOutput RenderSceneBasePS(VSOutput input)
 {
-    //half4 col = _Textures[materials[pushConstants.materialIndex].albedo_texture_index].SampleLevel(_LinearClampSampler,input.TextureUV,0);
-    //return float4(0.5,0.5,0.5,1);
+    PSOutput output;
+    
+    uint materialIndex = pushConstants.materialIndex;
+    AAPLShaderMaterial material = materials[materialIndex];
+    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+    half4 materialData = half4(0, 0, 0, 0);
+    half4 emissive = 0;
 
+    if (material.hasMetallicRoughness > 0)
+        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
 
-    float4 col = float4(input.TextureUV,0,1);
-    uint chunkindex = chunkIndex[input.drawcallid];
-    uint materialIndex = meshChunks[chunkindex].materialIndex;
-    if(materials[materialIndex].albedo_texture_index!=0xffffffff){
-        col = _Textures[materials[materialIndex].albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
-        col.a = 1;
-    }
+    if (material.hasEmissive > 0)
+        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
 
-    //float ddx_z = abs(ddx(input.Position.z))*10000;
-    //float ddy_z = abs(ddy(input.Position.z))*10000;
+    half3 geonormal = normalize(input.normal);
+    half3 geotan = normalize(input.tangent);
+    half3 geobinormal = normalize(cross(geotan, geonormal));
+    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 4);
+    texnormal.xy = 2 * texnormal.xy - 1;
+    half dotproduct = dot(texnormal.xy, texnormal.xy);
+    half oneminusdotproduct = saturate(1.0f - dotproduct);
+    half zzz = sqrt(oneminusdotproduct);
 
-    //float4 col = float4(ddx_z,ddy_z,0,1);
-
-    return col;
-
-    //return float4(col.xyz,1);
+    half3 normal = zzz * geonormal - texnormal.y * geotan + texnormal.x * geobinormal;
+    
+    AAPLPixelSurfaceData surfaceData;
+    surfaceData.normal = normal;
+    surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
+    surfaceData.F0 = lerp((half) 0.04, baseColor.rgb, materialData.b);
+    surfaceData.roughness = max((half) 0.08, materialData.g);
+    surfaceData.alpha = baseColor.a * material.alpha;
+    surfaceData.emissive = emissive.xyz;
+    output.albedo = half4(surfaceData.albedo, surfaceData.alpha);
+    output.normals = half4(surfaceData.normal, 0.0f);
+    output.emissive = half4(surfaceData.emissive, 0.0f);
+    output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
+    return output;
 }
