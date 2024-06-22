@@ -2624,7 +2624,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     CreateDeferredBasePass();
     CreateDeferredLightingPass();
     CreateBasePassFrameBuffer();
-    CreateDeferredLighingFrameBuffer();
+    CreateDeferredLighingFrameBuffer(device.getSwapChainImageCount());
 
     createTextureSampler();
     createNearestClampSampler();
@@ -2805,8 +2805,9 @@ void GpuScene::CreateOccluderZPass()
 
 }
 
-void GpuScene::CreateDeferredLighingFrameBuffer() {
-    for (int i = 0; i < 3; i++)
+void GpuScene::CreateDeferredLighingFrameBuffer(uint32_t count) {
+	_deferredFrameBuffer.resize(count);
+    for (int i = 0; i < count; i++)
     {
         std::array<VkImageView, 1> attachments = {
             device.getSwapChainImageView(i)
@@ -3667,7 +3668,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     vkBindImageMemory(device.getLogicalDevice(), textureImage, textureImageMemory, 0);
 
    
-    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,texturedata._mipmapLevelCount);
     for (int miplevel = 0; miplevel < texturedata._mipmapLevelCount; ++miplevel)
     {
         unsigned int rawDataLength = 0;
@@ -3694,7 +3695,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
         vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
         vkFreeMemory(device.getLogicalDevice(), stagingBufferMemory, nullptr);
     }
-    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,texturedata._mipmapLevelCount);
 
     VkImageViewCreateInfo imageviewInfo{};
     imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

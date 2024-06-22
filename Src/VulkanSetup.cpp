@@ -516,7 +516,7 @@ bool hasStencilComponent(VkFormat format) {
 
 void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
                                          VkImageLayout oldLayout,
-                                         VkImageLayout newLayout) const {
+                                         VkImageLayout newLayout,uint32_t mipcount) const {
   VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
   VkImageMemoryBarrier barrier{};
@@ -528,7 +528,7 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
   barrier.image = image;
   barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   barrier.subresourceRange.baseMipLevel = 0;
-  barrier.subresourceRange.levelCount = 1;
+  barrier.subresourceRange.levelCount = mipcount;
   barrier.subresourceRange.baseArrayLayer = 0;
   barrier.subresourceRange.layerCount = 1;
 

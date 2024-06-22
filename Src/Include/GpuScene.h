@@ -269,7 +269,7 @@ private:
   VkFramebuffer         _basePassFrameBuffer;
   VkRenderPass		_basePass;
 
-  VkFramebuffer     _deferredFrameBuffer[3];
+  std::vector<VkFramebuffer>     _deferredFrameBuffer;
   VkRenderPass      _deferredLightingPass;
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
@@ -415,7 +415,7 @@ private:
 
     void CreateGBuffers();
     void CreateBasePassFrameBuffer();
-    void CreateDeferredLighingFrameBuffer();
+    void CreateDeferredLighingFrameBuffer(uint32_t count);
     void CreateDeferredBasePass();
     void CreateDeferredLightingPass();
 
