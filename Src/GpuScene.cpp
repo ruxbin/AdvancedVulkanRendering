@@ -383,6 +383,29 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterPSShaderStageInfo.module = drawclusterPSShaderModule;
     drawclusterPSShaderStageInfo.pName = "RenderSceneBasePS";
 
+
+
+    VkSpecializationMapEntry mapEntry = {};
+    mapEntry.constantID = 0; // matches constant_id in GLSL and SpecId in SPIR-V
+    mapEntry.offset     = 0;
+    mapEntry.size       = sizeof(bool);
+
+    bool alphaMask = true;
+    VkSpecializationInfo specializationInfo = {};
+    specializationInfo.mapEntryCount = 1;
+    specializationInfo.pMapEntries   = &mapEntry;
+    specializationInfo.dataSize      = sizeof(bool);
+    specializationInfo.pData         = &alphaMask;
+    
+    VkPipelineShaderStageCreateInfo drawclusterPSShaderStageInfoAlphaMask{};
+    drawclusterPSShaderStageInfoAlphaMask.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    drawclusterPSShaderStageInfoAlphaMask.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    drawclusterPSShaderStageInfoAlphaMask.module = drawclusterPSShaderModule;
+    drawclusterPSShaderStageInfoAlphaMask.pName = "RenderSceneBasePS";
+    drawclusterPSShaderStageInfoAlphaMask.pSpecializationInfo = &specializationInfo;
+
+
     VkPipelineShaderStageCreateInfo drawclusterBasePSShaderStageInfo{};
     drawclusterBasePSShaderStageInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -404,6 +427,10 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
                                                        efragShaderStageInfo };
     VkPipelineShaderStageCreateInfo drawclusterShaderStages[] = { drawclusterVSShaderStageInfo,
                                                       drawclusterPSShaderStageInfo };
+
+    VkPipelineShaderStageCreateInfo drawclusterShaderStagesAlphaMask[] = { drawclusterVSShaderStageInfo,
+                                                      drawclusterPSShaderStageInfoAlphaMask };
+
 
     VkPipelineShaderStageCreateInfo drawclusterBasePassStages[] = { drawclusterVSShaderStageInfo,
                                                       drawclusterBasePSShaderStageInfo };
@@ -723,6 +750,12 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterpipelineInfo,
         nullptr, &drawclusterPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster graphics pipeline!");
+    }
+
+    drawclusterpipelineInfo.pStages = drawclusterShaderStagesAlphaMask;
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterpipelineInfo,
+        nullptr, &drawclusterPipelineAlphaMask) != VK_SUCCESS) {
         throw std::runtime_error("failed to create drawcluster graphics pipeline!");
     }
 
@@ -2624,7 +2657,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     CreateDeferredBasePass();
     CreateDeferredLightingPass();
     CreateBasePassFrameBuffer();
-    CreateDeferredLighingFrameBuffer();
+    CreateDeferredLighingFrameBuffer(device.getSwapChainImageCount());
 
     createTextureSampler();
     createNearestClampSampler();
@@ -2805,8 +2838,9 @@ void GpuScene::CreateOccluderZPass()
 
 }
 
-void GpuScene::CreateDeferredLighingFrameBuffer() {
-    for (int i = 0; i < 3; i++)
+void GpuScene::CreateDeferredLighingFrameBuffer(uint32_t count) {
+	_deferredFrameBuffer.resize(count);
+    for (int i = 0; i < count; i++)
     {
         std::array<VkImageView, 1> attachments = {
             device.getSwapChainImageView(i)
@@ -3109,9 +3143,9 @@ void GpuScene::DrawChunksBasePass() {
 #else
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineAlphaMask);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
-    for (int i = beginindex; i < applMesh->_opaqueChunkCount && i < indexClamp; ++i)
+    for (int i = applMesh->_opaqueChunkCount; i < applMesh->_opaqueChunkCount+applMesh->_alphaMaskedChunkCount && i < indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex };
         
@@ -3132,7 +3166,7 @@ void GpuScene::DrawChunksBasePass() {
 
 void GpuScene::DrawChunks()
 {
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineAlphaMask);
     VkBuffer vertexBuffers[] = { applVertexBuffer , applNormalBuffer, applTangentBuffer, applUVBuffer, applInstanceBuffer };
     VkDeviceSize offsets[] = { 0,0,0,0,0 };
 
@@ -3667,7 +3701,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     vkBindImageMemory(device.getLogicalDevice(), textureImage, textureImageMemory, 0);
 
    
-    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,texturedata._mipmapLevelCount);
     for (int miplevel = 0; miplevel < texturedata._mipmapLevelCount; ++miplevel)
     {
         unsigned int rawDataLength = 0;
@@ -3694,7 +3728,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
         vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
         vkFreeMemory(device.getLogicalDevice(), stagingBufferMemory, nullptr);
     }
-    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    device.transitionImageLayout(textureImage, mapFromApple((MTLPixelFormat)(texturedata._pixelFormat)), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,texturedata._mipmapLevelCount);
 
     VkImageViewCreateInfo imageviewInfo{};
     imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

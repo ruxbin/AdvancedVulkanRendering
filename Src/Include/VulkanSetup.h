@@ -46,6 +46,7 @@ VkFormat getWindowDepthFormat()const{return depthFormat;}
 VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
 VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
 VkImage getWindowDepthImage()const { return depthImage; }
+uint32_t getSwapChainImageCount() const {return swapChainImages.size();}
 private:
   constexpr std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -391,7 +392,7 @@ VkFormat depthFormat;
   public:
 
       void transitionImageLayout(VkImage image, VkFormat format,
-          VkImageLayout oldLayout, VkImageLayout newLayout) const;
+          VkImageLayout oldLayout, VkImageLayout newLayout,uint32_t mipcount=1) const;
 
       void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height,uint32_t miplevel=0)const {
           VkCommandBuffer commandBuffer = beginSingleTimeCommands();

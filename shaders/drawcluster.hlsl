@@ -38,6 +38,8 @@ struct AAPLShaderMaterial
 // #endif
 };
 
+[[vk::constant_id(0)]] const bool  specAlphaMask  = false;
+
 [[vk::binding(0,0)]]
 cbuffer cam
 {
@@ -117,6 +119,7 @@ VSOutput RenderSceneVS( VSInput input)
     return Output;    
 }
 
+#define ALPHA_CUTOUT 0.1
 
 PSOutput RenderSceneBasePass(VSOutput input)
 {
@@ -157,26 +160,27 @@ PSOutput RenderSceneBasePass(VSOutput input)
 	return output;
 }
 
+
 PSOutput RenderSceneBasePS(VSOutput input)
 {
     PSOutput output;
     
     uint materialIndex = pushConstants.materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
-    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
     half4 materialData = half4(0, 0, 0, 0);
     half4 emissive = 0;
 
     if (material.hasMetallicRoughness > 0)
-        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
 
     if (material.hasEmissive > 0)
-        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
 
     half3 geonormal = normalize(input.normal);
     half3 geotan = normalize(input.tangent);
     half3 geobinormal = normalize(cross(geotan, geonormal));
-    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 4);
+    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
     texnormal.xy = 2 * texnormal.xy - 1;
     half dotproduct = dot(texnormal.xy, texnormal.xy);
     half oneminusdotproduct = saturate(1.0f - dotproduct);
@@ -191,6 +195,9 @@ PSOutput RenderSceneBasePS(VSOutput input)
     surfaceData.roughness = max((half) 0.08, materialData.g);
     surfaceData.alpha = baseColor.a * material.alpha;
     surfaceData.emissive = emissive.xyz;
+
+	if(specAlphaMask)
+    		clip(surfaceData.alpha - ALPHA_CUTOUT);
     output.albedo = half4(surfaceData.albedo, surfaceData.alpha);
     output.normals = half4(surfaceData.normal, 0.0f);
     output.emissive = half4(surfaceData.emissive, 0.0f);

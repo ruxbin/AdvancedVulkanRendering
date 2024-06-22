@@ -51,7 +51,7 @@ int main(int nargs, char ** args) {
     float currentZDegree = 0;
     float currentYDegree = 0;
     constexpr float rotateSpeed = 0.1f;
-    constexpr float moveSpeed = 3.f;
+    constexpr float moveSpeed = 0.5f;
     while (quit == false) { 
         while (SDL_PollEvent(&e)) {
             
@@ -64,13 +64,13 @@ int main(int nargs, char ** args) {
                     
                    
                 case SDL_SCANCODE_A://a
-                    gpuScene.GetMainCamera()->MoveLeft(moveSpeed);
+                    gpuScene.GetMainCamera()->MoveRight(moveSpeed);
                     break;
                 case SDL_SCANCODE_E://e
                     gpuScene.GetMainCamera()->MoveDown(moveSpeed);
                     break;
                 case SDL_SCANCODE_D://d
-                    gpuScene.GetMainCamera()->MoveRight(moveSpeed);
+                    gpuScene.GetMainCamera()->MoveLeft(moveSpeed);
                     break;
                 case SDL_SCANCODE_Q://q
                     gpuScene.GetMainCamera()->MoveUp(moveSpeed);
