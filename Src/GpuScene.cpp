@@ -42,6 +42,11 @@ struct AAPLCompressionHeader
     uint64_t compressedSize;        // Size of compressed data.
 };
 
+struct PerObjPush
+{
+    uint32_t matindex;
+};
+
 AAPLCompressionHeader* getCompressionHeader(void* data, size_t length)
 {
     assert(data != nullptr);
@@ -318,6 +323,8 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     auto drawClusterBasePSShaderCode = readFile((_rootPath / "shaders/drawcluster.base.ps.spv").generic_string());
 
+    auto drawClusterForwardPsShaderCode = readFile((_rootPath / "shaders/drawcluster.forward.ps.spv").generic_string());
+
     auto deferredLightingVSShaderCode = readFile((_rootPath / "shaders/deferredlighting.vs.spv").generic_string());
     auto deferredLightingPSShaderCode = readFile((_rootPath / "shaders/deferredlighting.ps.spv").generic_string());
 
@@ -330,6 +337,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     VkShaderModule drawclusterVSShaderModule = createShaderModule(drawClusterVSShaderCode);
     VkShaderModule drawclusterPSShaderModule = createShaderModule(drawClusterPSShaderCode);
     VkShaderModule drawclusterBasePSShaderModule = createShaderModule(drawClusterBasePSShaderCode);
+    VkShaderModule drawclusterForwardPSShaderModule = createShaderModule(drawClusterForwardPsShaderCode);
 
     VkShaderModule deferredLightingVSShaderModule = createShaderModule(deferredLightingVSShaderCode);
     VkShaderModule deferredLightingPSShaderModule = createShaderModule(deferredLightingPSShaderCode);
@@ -388,13 +396,13 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     VkSpecializationMapEntry mapEntry = {};
     mapEntry.constantID = 0; // matches constant_id in GLSL and SpecId in SPIR-V
     mapEntry.offset     = 0;
-    mapEntry.size       = sizeof(bool);
+    mapEntry.size       = sizeof(VkBool32);
 
-    bool alphaMask = true;
+    VkBool32 alphaMask = true;
     VkSpecializationInfo specializationInfo = {};
     specializationInfo.mapEntryCount = 1;
     specializationInfo.pMapEntries   = &mapEntry;
-    specializationInfo.dataSize      = sizeof(bool);
+    specializationInfo.dataSize      = sizeof(VkBool32);
     specializationInfo.pData         = &alphaMask;
     
     VkPipelineShaderStageCreateInfo drawclusterPSShaderStageInfoAlphaMask{};
@@ -413,6 +421,13 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterBasePSShaderStageInfo.module = drawclusterBasePSShaderModule;
     drawclusterBasePSShaderStageInfo.pName = "RenderSceneBasePass";
 
+
+    VkPipelineShaderStageCreateInfo drawclusterForwardPSShaderStageInfo{};
+    drawclusterForwardPSShaderStageInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    drawclusterForwardPSShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    drawclusterForwardPSShaderStageInfo.module = drawclusterForwardPSShaderModule;//TODO: 这几个module应该可以合并，在dxc中添加适当的参数？
+    drawclusterForwardPSShaderStageInfo.pName = "RenderSceneForwardPS";
 
     VkPipelineShaderStageCreateInfo deferredLightingPSShaderStageInfo{};
     deferredLightingPSShaderStageInfo.sType =
@@ -434,6 +449,10 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     VkPipelineShaderStageCreateInfo drawclusterBasePassStages[] = { drawclusterVSShaderStageInfo,
                                                       drawclusterBasePSShaderStageInfo };
+
+
+    VkPipelineShaderStageCreateInfo drawclusterForwardStages[] = { drawclusterVSShaderStageInfo,
+                                                      drawclusterForwardPSShaderStageInfo };
 
 
     VkPipelineShaderStageCreateInfo deferredLightingPassStages[] = { deferredLightingVSShaderStageInfo,
@@ -516,6 +535,18 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = VK_FALSE;
 
+    VkPipelineColorBlendAttachmentState colorBlendAttachment1{};
+    colorBlendAttachment1.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment1.blendEnable = VK_TRUE;
+    colorBlendAttachment1.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment1.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment1.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    //colorBlendAttachment1.alphaBlendOp = VK_BLEND_OP_SRC_EXT;
+    //colorBlendAttachment1.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+
+
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType =
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -527,6 +558,18 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     colorBlending.blendConstants[1] = 0.0f;
     colorBlending.blendConstants[2] = 0.0f;
     colorBlending.blendConstants[3] = 0.0f;
+
+    VkPipelineColorBlendStateCreateInfo colorBlendingAlpha{};
+    colorBlendingAlpha.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlendingAlpha.logicOpEnable = VK_FALSE;
+    colorBlendingAlpha.logicOp = VK_LOGIC_OP_COPY;
+    colorBlendingAlpha.attachmentCount = 1;
+    colorBlendingAlpha.pAttachments = &colorBlendAttachment1;
+    colorBlendingAlpha.blendConstants[0] = 1.0f;
+    colorBlendingAlpha.blendConstants[1] = 1.0f;
+    colorBlendingAlpha.blendConstants[2] = 1.0f;
+    colorBlendingAlpha.blendConstants[3] = 1.0f;
 
 
 
@@ -777,6 +820,27 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterBasePipelineInfo,
         nullptr, &drawclusterBasePipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
+    }
+
+    VkGraphicsPipelineCreateInfo drawclusterForwardPipelineInfo{};
+    drawclusterForwardPipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    drawclusterForwardPipelineInfo.stageCount = 2;
+    drawclusterForwardPipelineInfo.pStages = drawclusterForwardStages;
+    drawclusterForwardPipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
+    drawclusterForwardPipelineInfo.pInputAssemblyState = &inputAssembly;
+    drawclusterForwardPipelineInfo.pViewportState = &viewportState;
+    drawclusterForwardPipelineInfo.pRasterizationState = &rasterizer;
+    drawclusterForwardPipelineInfo.pMultisampleState = &multisampling;
+    drawclusterForwardPipelineInfo.pColorBlendState = &colorBlendingAlpha;
+    drawclusterForwardPipelineInfo.layout = drawclusterPipelineLayout;
+    drawclusterForwardPipelineInfo.renderPass = _deferredLightingPass;
+    drawclusterForwardPipelineInfo.subpass = 0;
+    drawclusterForwardPipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+    drawclusterForwardPipelineInfo.pDepthStencilState = &depthStencilState;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &drawclusterForwardPipelineInfo,
+        nullptr, &drawclusterForwardPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
     }
 
@@ -1466,7 +1530,7 @@ void GpuScene::init_appl_descriptors()
     uniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
     // we use it from the vertex shader
-    uniformBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    uniformBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutBinding matBinding = {};
     matBinding.binding = 1;
@@ -3056,7 +3120,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             transitionImageLayout(_gbuffers[i], _gbufferFormat[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
-    //final lighting pass
+    //deferred lighting pass
     {
         std::array<VkClearValue, 1> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
@@ -3079,9 +3143,41 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
             0, nullptr);
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        //vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        //forward pass
+        {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                drawclusterForwardPipeline);
+
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+
+            if (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount + applMesh->_transparentChunkCount != applMesh->_chunkCount)
+                spdlog::error("chunk count error {} {}", applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount + applMesh->_transparentChunkCount, applMesh->_chunkCount);
+
+            for (int i = applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount; i < applMesh->_chunkCount ; ++i)
+            {
+                PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex };
+
+
+                {
+                    if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox))
+                    {
+                        //debug_frustum_cull[i] = true;
+                        continue;
+                    }
+                }
+
+                vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
+                vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
+            }
+        }
         vkCmdEndRenderPass(commandBuffer);
     }
+
+   
+
+
+    //post process
 
    
 
@@ -3092,10 +3188,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 }
 
 
-struct PerObjPush
-{
-    uint32_t matindex;
-};
+
 
 void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
 {

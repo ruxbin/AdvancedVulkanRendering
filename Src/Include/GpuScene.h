@@ -210,6 +210,7 @@ private:
 
 	VkPipelineLayout drawclusterBasePipelineLayout;
   	VkPipeline drawclusterBasePipeline;
+    VkPipeline drawclusterForwardPipeline;
 
     VkPipelineLayout deferredLightingPipelineLayout;
     VkPipeline deferredLightingPipeline;

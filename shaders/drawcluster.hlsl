@@ -1,5 +1,5 @@
 #include "commonstruct.hlsl"
-
+#include "lighting.hlsl"
 
 
 struct GeometyBuffer
@@ -39,6 +39,7 @@ struct AAPLShaderMaterial
 };
 
 [[vk::constant_id(0)]] const bool  specAlphaMask  = false;
+//[[vk::constant_id(1)]] const bool specTransparent = false;
 
 [[vk::binding(0,0)]]
 cbuffer cam
@@ -86,7 +87,7 @@ struct VSOutput
 	half3 viewDir : TEXCOORD2;
     half3 normal : TEXCOORD3;
     half3 tangent : TEXCOORD4;
-    float3 wsPosition : TEXCOORD5;
+    float4 wsPosition : TEXCOORD5;
 };
 
 struct PSOutput
@@ -111,7 +112,7 @@ VSOutput RenderSceneVS( VSInput input)
 
 
     Output.viewDir = normalize(float3(cameraParams.invViewMatrix._m03, cameraParams.invViewMatrix._m13, cameraParams.invViewMatrix._m23) - input.position);
-	Output.wsPosition = input.position;
+    Output.wsPosition = float4(input.position, 1);
 
 	Output.normal = normalize(input.normal);
 	Output.tangent = normalize(input.tangent);
@@ -197,10 +198,53 @@ PSOutput RenderSceneBasePS(VSOutput input)
     surfaceData.emissive = emissive.xyz;
 
 	if(specAlphaMask)
-    		clip(surfaceData.alpha - ALPHA_CUTOUT);
+    {
+        clip(surfaceData.alpha - ALPHA_CUTOUT);
+        surfaceData.alpha = 1;
+
+    }
     output.albedo = half4(surfaceData.albedo, surfaceData.alpha);
     output.normals = half4(surfaceData.normal, 0.0f);
     output.emissive = half4(surfaceData.emissive, 0.0f);
     output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
     return output;
+}
+
+
+half4 RenderSceneForwardPS(VSOutput input) : SV_Target
+{
+    uint materialIndex = pushConstants.materialIndex;
+    AAPLShaderMaterial material = materials[materialIndex];
+    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    half4 materialData = half4(0, 0, 0, 0);
+    half4 emissive = 0;
+
+    if (material.hasMetallicRoughness > 0)
+        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+
+    if (material.hasEmissive > 0)
+        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+
+    half3 geonormal = normalize(input.normal);
+    half3 geotan = normalize(input.tangent);
+    half3 geobinormal = normalize(cross(geotan, geonormal));
+    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    texnormal.xy = 2 * texnormal.xy - 1;
+    half dotproduct = dot(texnormal.xy, texnormal.xy);
+    half oneminusdotproduct = saturate(1.0f - dotproduct);
+    half zzz = sqrt(oneminusdotproduct);
+
+    half3 normal = zzz * geonormal - texnormal.y * geotan + texnormal.x * geobinormal;
+    
+    AAPLPixelSurfaceData surfaceData;
+    surfaceData.normal = normal;
+    surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
+    surfaceData.F0 = lerp((half) 0.04, baseColor.rgb, materialData.b);
+    surfaceData.roughness = max((half) 0.08, materialData.g);
+    surfaceData.alpha = baseColor.a * material.alpha;
+    surfaceData.emissive = emissive.xyz;
+    
+    half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
+    return half4(res, surfaceData.alpha);
+
 }

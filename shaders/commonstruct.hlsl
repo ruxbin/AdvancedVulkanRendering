@@ -62,3 +62,5 @@ struct CameraParamsBuffer
     float4x4 invViewMatrix;
     float4x4 invViewProjectionMatrix;
 };
+
+#define M_PI_F 3.1415926f
