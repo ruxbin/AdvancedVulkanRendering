@@ -2748,7 +2748,7 @@ void GpuScene::CreateDeferredLightingPass()
 
     deferredLightingAttachments.format = device.getSwapChainImageFormat();
     deferredLightingAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
-    deferredLightingAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    deferredLightingAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     deferredLightingAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     deferredLightingAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     deferredLightingAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -3143,7 +3143,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
             0, nullptr);
-        //vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
         //forward pass
         {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3236,8 +3236,28 @@ void GpuScene::DrawChunksBasePass() {
 #else
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineAlphaMask);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+
+
+    vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
+    for (int i=0;i<applMesh->_opaqueChunkCount;++i)
+    {
+	PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex };
+        
+        
+        {
+            if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox))
+            {
+                //debug_frustum_cull[i] = true;
+                continue;
+            }
+        }
+
+        vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
+        vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
+
+    }
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineAlphaMask);
     for (int i = applMesh->_opaqueChunkCount; i < applMesh->_opaqueChunkCount+applMesh->_alphaMaskedChunkCount && i < indexClamp; ++i)
     {
         PerObjPush perobj = { .matindex = m_Chunks[i].materialIndex };
