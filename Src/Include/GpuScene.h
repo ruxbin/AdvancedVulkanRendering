@@ -274,6 +274,8 @@ private:
   std::vector<VkFramebuffer>     _deferredFrameBuffer;
   VkRenderPass      _deferredLightingPass;
 
+  VkRenderPass		_forwardLightingPass;
+
   VkShaderModule createShaderModule(const std::vector<char> &code);
   void createGraphicsPipeline(VkRenderPass renderPass);
   void createComputePipeline();
@@ -420,6 +422,7 @@ private:
     void CreateDeferredLighingFrameBuffer(uint32_t count);
     void CreateDeferredBasePass();
     void CreateDeferredLightingPass();
+    void CreateForwardLightingPass();
 
     struct uniformBufferData {
       mat4 projectionMatrix;

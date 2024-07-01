@@ -2740,7 +2740,71 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     createComputePipeline();
 }
 
+void GpuScene::CreateForwardLightingPass()
+{
 
+	VkAttachmentDescription deferredLightingAttachments = {};
+
+    deferredLightingAttachments.format = device.getSwapChainImageFormat();
+    deferredLightingAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
+    deferredLightingAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    deferredLightingAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    deferredLightingAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    deferredLightingAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    deferredLightingAttachments.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+	
+    VkAttachmentDescription deferredLightingDepthAttachments = {};
+
+    deferredLightingDepthAttachments.format = device.getWindowDepthFormat();
+    deferredLightingDepthAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
+    deferredLightingDepthAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    deferredLightingDepthAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    deferredLightingDepthAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    deferredLightingDepthAttachments.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    deferredLightingDepthAttachments.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+
+    VkAttachmentReference deferredLightingAttachmentRefs{};
+    deferredLightingAttachmentRefs.attachment = 0;
+    deferredLightingAttachmentRefs.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference deferredLightingDepthAttachmentRef{};
+    deferredLightingDepthAttachmentRef.attachment = 1;
+    deferredLightingDepthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &deferredLightingAttachmentRefs;
+    subpass.pDepthStencilAttachment = &deferredLightingDepthAttachmentRef; 
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcAccessMask = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 2> attachments = { deferredLightingAttachments , deferredLightingDepthAttachments};
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr, &_forwardLightingPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create base pass!");
+    }
+
+}
 
 void GpuScene::CreateDeferredLightingPass()
 {
@@ -2753,13 +2817,15 @@ void GpuScene::CreateDeferredLightingPass()
     deferredLightingAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     deferredLightingAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     deferredLightingAttachments.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+	
+    
     VkAttachmentReference deferredLightingAttachmentRefs{};
     deferredLightingAttachmentRefs.attachment = 0;
     deferredLightingAttachmentRefs.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-
+   
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
@@ -2773,7 +2839,7 @@ void GpuScene::CreateDeferredLightingPass()
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    std::array<VkAttachmentDescription, 1> attachments = { deferredLightingAttachments };
+    std::array<VkAttachmentDescription, 1> attachments = { deferredLightingAttachments};
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -2907,7 +2973,8 @@ void GpuScene::CreateDeferredLighingFrameBuffer(uint32_t count) {
     for (int i = 0; i < count; i++)
     {
         std::array<VkImageView, 1> attachments = {
-            device.getSwapChainImageView(i)
+            device.getSwapChainImageView(i),
+	    device.getWindowDepthImageView()
         };
 
         VkFramebufferCreateInfo framebufferInfo{};
@@ -3144,8 +3211,23 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
             0, nullptr);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+        vkCmdEndRenderPass(commandBuffer);
+
+
         //forward pass
         {
+		
+	VkRenderPassBeginInfo forwardPassInfo{};
+        forwardPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        forwardPassInfo.renderPass = _forwardLightingPass;
+        forwardPassInfo.framebuffer = _deferredFrameBuffer[imageIndex];
+        forwardPassInfo.renderArea.offset = { 0, 0 };
+        forwardPassInfo.renderArea.extent = device.getSwapChainExtent();
+        forwardPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        forwardPassInfo.pClearValues = clearValues.data();
+
+
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 drawclusterForwardPipeline);
 
@@ -3171,7 +3253,6 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
                 vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
             }
         }
-        vkCmdEndRenderPass(commandBuffer);
     }
 
    
