@@ -834,7 +834,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     drawclusterForwardPipelineInfo.pMultisampleState = &multisampling;
     drawclusterForwardPipelineInfo.pColorBlendState = &colorBlendingAlpha;
     drawclusterForwardPipelineInfo.layout = drawclusterPipelineLayout;
-    drawclusterForwardPipelineInfo.renderPass = _deferredLightingPass;
+    drawclusterForwardPipelineInfo.renderPass = _forwardLightingPass;
     drawclusterForwardPipelineInfo.subpass = 0;
     drawclusterForwardPipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     drawclusterForwardPipelineInfo.pDepthStencilState = &depthStencilState;
@@ -2720,8 +2720,10 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     CreateOccluderZPassFrameBuffer();
     CreateDeferredBasePass();
     CreateDeferredLightingPass();
+    CreateForwardLightingPass();
     CreateBasePassFrameBuffer();
-    CreateDeferredLighingFrameBuffer(device.getSwapChainImageCount());
+    CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
+    CreateForwardLightingFrameBuffer(device.getSwapChainImageCount());
 
     createTextureSampler();
     createNearestClampSampler();
@@ -2968,13 +2970,40 @@ void GpuScene::CreateOccluderZPass()
 
 }
 
-void GpuScene::CreateDeferredLighingFrameBuffer(uint32_t count) {
+void GpuScene::CreateForwardLightingFrameBuffer(uint32_t count) {
+	_forwardFrameBuffer.resize(count);
+    for (int i = 0; i < count; i++)
+    {
+        std::array<VkImageView, 2> attachments = {
+            device.getSwapChainImageView(i),
+	    device.getWindowDepthImageView()
+        };
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = _forwardLightingPass;
+        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        ;
+        framebufferInfo.pAttachments = attachments.data();
+        framebufferInfo.width = device.getSwapChainExtent().width;
+        framebufferInfo.height = device.getSwapChainExtent().height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo,
+            nullptr, &_forwardFrameBuffer[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create deferred lighting framebuffer!");
+        }
+    }
+}
+
+
+
+void GpuScene::CreateDeferredLightingFrameBuffer(uint32_t count) {
 	_deferredFrameBuffer.resize(count);
     for (int i = 0; i < count; i++)
     {
         std::array<VkImageView, 1> attachments = {
             device.getSwapChainImageView(i),
-	    device.getWindowDepthImageView()
         };
 
         VkFramebufferCreateInfo framebufferInfo{};
@@ -3221,13 +3250,13 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	VkRenderPassBeginInfo forwardPassInfo{};
         forwardPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         forwardPassInfo.renderPass = _forwardLightingPass;
-        forwardPassInfo.framebuffer = _deferredFrameBuffer[imageIndex];
+        forwardPassInfo.framebuffer = _forwardFrameBuffer[imageIndex];
         forwardPassInfo.renderArea.offset = { 0, 0 };
         forwardPassInfo.renderArea.extent = device.getSwapChainExtent();
-        forwardPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        forwardPassInfo.pClearValues = clearValues.data();
+        forwardPassInfo.clearValueCount = 0;//static_cast<uint32_t>(clearValues.size());
+        //forwardPassInfo.pClearValues = clearValues.data();
 
-
+	vkCmdBeginRenderPass(commandBuffer,&forwardPassInfo,VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 drawclusterForwardPipeline);
 
@@ -3252,6 +3281,8 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
                 vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
                 vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
             }
+
+	vkCmdEndRenderPass(commandBuffer);
         }
     }
 
