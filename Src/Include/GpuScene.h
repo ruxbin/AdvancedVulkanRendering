@@ -277,8 +277,7 @@ private:
   std::vector<VkFramebuffer>	_forwardFrameBuffer;
   VkRenderPass		_forwardLightingPass;
 
-  VkShaderModule createShaderModule(const std::vector<char> &code);
-  void createGraphicsPipeline(VkRenderPass renderPass);
+    void createGraphicsPipeline(VkRenderPass renderPass);
   void createComputePipeline();
 
 
@@ -310,7 +309,15 @@ private:
     GpuScene() = delete;
     GpuScene(const GpuScene &) = delete;
     void Draw();
+	const std::filesystem::path& RootPath()const{return _rootPath;} 
+	
 
+	VkShaderModule createShaderModule(const std::vector<char> &code)const;
+
+	const VkPipelineLayout& getDrawClusterPipelineLayout()const{return drawclusterPipelineLayout;}
+
+	const VkPipeline& getDrawClusterPipeline()const{return drawclusterPipeline;}
+	const VkPipeline& getDrawClusterPipelineAlphaMask()const{return drawclusterPipelineAlphaMask;}
 
     Camera* GetMainCamera() { return maincamera; }
     void init_descriptors(VkImageView);
@@ -451,21 +458,7 @@ private:
 	    Frustum frustum;
     };
 
-    uint32_t findMemoryType(uint32_t typeFilter,
-                            VkMemoryPropertyFlags properties) {
-      VkPhysicalDeviceMemoryProperties memProperties;
-      vkGetPhysicalDeviceMemoryProperties(device.getPhysicalDevice(),
-                                          &memProperties);
-      for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((typeFilter & (1 << i)) &&
-            (memProperties.memoryTypes[i].propertyFlags & properties) ==
-                properties) {
-          return i;
-        }
-      }
-
-      throw std::runtime_error("failed to find suitable memory type!");
-    }
+    
 
     void* loadMipTexture(const AAPLTextureData& texturedata,int,unsigned int&);
 
@@ -488,7 +481,7 @@ private:
       allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
       allocInfo.allocationSize = memRequirements.size;
       allocInfo.memoryTypeIndex =
-          findMemoryType(memRequirements.memoryTypeBits,
+          device.findMemoryType(memRequirements.memoryTypeBits,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -570,7 +563,7 @@ private:
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+        allocInfo.memoryTypeIndex = device.findMemoryType(memRequirements.memoryTypeBits, properties);
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate buffer memory!");
@@ -578,6 +571,7 @@ private:
 
         vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
     }
+    friend class Shadow;
 
     FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f };
 };

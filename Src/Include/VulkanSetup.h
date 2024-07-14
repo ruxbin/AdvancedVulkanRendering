@@ -47,6 +47,21 @@ VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
 VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
 VkImage getWindowDepthImage()const { return depthImage; }
 uint32_t getSwapChainImageCount() const {return swapChainImages.size();}
+uint32_t findMemoryType(uint32_t typeFilter,
+                            VkMemoryPropertyFlags properties) {
+      VkPhysicalDeviceMemoryProperties memProperties;
+      vkGetPhysicalDeviceMemoryProperties(getPhysicalDevice(),
+                                          &memProperties);
+      for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & properties) ==
+                properties) {
+          return i;
+        }
+      }
+
+      throw std::runtime_error("failed to find suitable memory type!");
+    }
 private:
   constexpr std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -369,7 +384,7 @@ VkFormat depthFormat;
     vkBindImageMemory(device, image, imageMemory, 0);
   }
 
-  uint32_t findMemoryType(uint32_t typeFilter,
+  /*uint32_t findMemoryType(uint32_t typeFilter,
                           VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -382,7 +397,7 @@ VkFormat depthFormat;
     }
 
     throw std::runtime_error("failed to find suitable memory type!");
-  }
+  }*/
 
   VkCommandBuffer beginSingleTimeCommands()const;
   void endSingleTimeCommands(VkCommandBuffer commandBuffer)const;

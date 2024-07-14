@@ -1,5 +1,9 @@
 #pragma once
 #include "Matrix.h"
+#include <vector>
+#include <cstdlib>
+#include <cstddef>
+#include <string>
 const int WINDOW_WIDTH = 1224;
 const int WINDOW_HEIGHT= 691;
 
@@ -30,3 +34,12 @@ struct alignas(16) AAPLMeshChunk
     unsigned int indexBegin;
     unsigned int indexCount;
 };
+
+std::vector<char> readFile(const std::string &filename); 
+
+struct PerObjPush
+{
+    uint32_t matindex;
+};
+
+

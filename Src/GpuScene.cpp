@@ -15,7 +15,9 @@
 
 #define USE_CPU_ENCODE_DRAWPARAM
 
-static std::vector<char> readFile(const std::string &filename) {
+
+//TODO: move to common.cpp
+std::vector<char> readFile(const std::string &filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
   if (!file.is_open()) {
@@ -40,11 +42,6 @@ struct AAPLCompressionHeader
     uint32_t compressionMode;       // Compression mode in block - of type compression_algorithm.
     uint64_t uncompressedSize;      // Size of uncompressed data.
     uint64_t compressedSize;        // Size of compressed data.
-};
-
-struct PerObjPush
-{
-    uint32_t matindex;
 };
 
 AAPLCompressionHeader* getCompressionHeader(void* data, size_t length)
@@ -116,7 +113,7 @@ void* uncompressData(void* data, size_t dataLength,std::function<void*(uint64_t)
     return dstBuffer;
 }
 
-VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code) {
+VkShaderModule GpuScene::createShaderModule(const std::vector<char> &code)const{
   VkShaderModuleCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
   createInfo.codeSize = code.size();
@@ -541,8 +538,11 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment1.blendEnable = VK_TRUE;
     colorBlendAttachment1.colorBlendOp = VK_BLEND_OP_ADD;
-    colorBlendAttachment1.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    colorBlendAttachment1.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment1.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment1.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment1.alphaBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment1.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment1.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     //colorBlendAttachment1.alphaBlendOp = VK_BLEND_OP_SRC_EXT;
     //colorBlendAttachment1.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
 
@@ -2381,7 +2381,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2417,7 +2417,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
