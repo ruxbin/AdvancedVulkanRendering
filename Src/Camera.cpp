@@ -28,7 +28,8 @@ mat4& Camera::getProjectMatrix()
 
 Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 lookat, vec3 up)
 {
-	
+	_near = n;
+	_far = f;
 	//mat4 proj = perspective(fov, aspect, n, f);
 	mat4 flipx;
 	flipx.x[0]=-1;
@@ -80,8 +81,11 @@ void Camera::updateCameraMatrix()
 		worldCoordsH[i] = invViewProj * clipCoords[i];
 		worldCoords[i] = worldCoordsH[i].xyz_w();
 	}
+	for (int i = 0; i < 4; i++)
+		_frustumCorners[i] = worldCoords[i + 4];
 
-	
+	for (int i = 4; i < 8; i++)
+		_frustumCorners[i] = worldCoords[i - 4];
 
 	_frustum = { {worldCoords[0],worldCoords[2],worldCoords[1]},{worldCoords[4],worldCoords[5],worldCoords[6]}, //far & near 
 				{worldCoords[0],worldCoords[1],worldCoords[4]},{worldCoords[2],worldCoords[3],worldCoords[7]}, //left & right 

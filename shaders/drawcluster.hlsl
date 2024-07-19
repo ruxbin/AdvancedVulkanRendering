@@ -211,6 +211,22 @@ PSOutput RenderSceneBasePS(VSOutput input)
 }
 
 
+void RenderSceneDepthOnly(VSOutput input)
+{
+    PSOutput output;
+    
+    uint materialIndex = pushConstants.materialIndex;
+    AAPLShaderMaterial material = materials[materialIndex];
+    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+   
+    if (specAlphaMask)
+    {
+        clip(baseColor.w - ALPHA_CUTOUT);
+
+    }
+    
+}
+
 half4 RenderSceneForwardPS(VSOutput input) : SV_Target
 {
     uint materialIndex = pushConstants.materialIndex;

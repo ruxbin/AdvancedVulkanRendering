@@ -67,6 +67,7 @@ struct vec3
     vec3 &operator += (const vec3 &rhs) { *this = *this + rhs; return *this; }
     vec3 &operator *= (const vec3 &rhs) { *this = *this * rhs; return *this; }
     vec3 &operator -= (const vec3 &rhs) { *this = *this - rhs; return *this; }
+    vec3 &operator /= (const float s) { *this = *this / s; return *this; }
 
     float &operator [] (unsigned int i)             { return (&x)[i]; }
     const float &operator [] (unsigned int i) const { return (&x)[i]; }
@@ -83,6 +84,11 @@ struct vec3
     float dot(const vec3& rhs)const
     {
         return x * rhs.x + y * rhs.y + z * rhs.z;
+    }
+
+    float length()const
+    {
+        return sqrtf(x * x + y * y + z * z);
     }
 };
 
@@ -120,6 +126,17 @@ struct vec4
         return x * rhs.x + y * rhs.y + z * rhs.z + w * rhs.w;
     }
 };
+
+
+static vec4 round(const vec4& input)
+{
+    vec4 res;
+    res.x = round(input.x);
+    res.y = round(input.y);
+    res.z = round(input.z);
+    res.w = round(input.w);
+    return res;
+}
 
 struct mat4
 {
@@ -206,16 +223,34 @@ static mat4 reverseZperspective(float fovy, float aspect, float nearp , float fa
 
 }
 
-static mat4 orthographic(float left, float right, float bottom, float top, float nearp, float farp)
+static mat4 orthographic(float width, float height, float nearp, float farp, float offsetx,float offsety)
 {
     mat4 m(1.0f);
-    m[0].x = 2.0f / (right - left);
-    m[3].x = -(right + left) / (right - left);
-    m[1].y = 2.0f / (top - bottom);
-    m[3].y = -(top + bottom) / (top - bottom);
-    m[2].z = -2.0f / (farp - nearp);
-    m[3].z = -(farp + nearp) / (farp - nearp);
+    m[0].x = 2.0f / height;
+    m[1].y = 2.0f / width;
+    m[2].z = 1.0f / (farp - nearp);
+
+    m[3].x = offsetx;
+    m[3].y = offsety;
+    m[3].z = -nearp * m[2].z;
+    //m[3].w = 1.f;
     return m;
+}
+
+
+static mat4 invLookAt(const vec3& _origin, const vec3& up, const vec3& lookat)
+{
+    vec3 _z = normalize(lookat);
+    vec3 _x = normalize(up.cross(_z));
+    vec3 _y = _z.cross(_x);
+
+    vec3 t(_x.dot(_origin) * -1, _y.dot(_origin) * -1, _z.dot(_origin) * -1);
+    mat4 _objectToCameraMatrix;
+    _objectToCameraMatrix.x = vec4(_x, t.x);
+    _objectToCameraMatrix.y = vec4(_y, t.y);
+    _objectToCameraMatrix.z = vec4(_z, t.z);
+    _objectToCameraMatrix.w = vec4(0, 0, 0, 1);
+    return _objectToCameraMatrix;
 }
 
 // http://stackoverflow.com/questions/1148309/inverting-a-4x4-matrix

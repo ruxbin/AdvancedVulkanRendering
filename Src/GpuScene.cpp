@@ -3,6 +3,8 @@
 #include "ObjLoader.h"
 #include "VulkanSetup.h"
 #include "ThirdParty/lzfse.h"
+#include "Shadow.h"
+
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -865,6 +867,9 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         nullptr, &deferredLightingPipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
     }
+
+
+
 
 
     vkDestroyShaderModule(device.getLogicalDevice(), fragShaderModule, nullptr);
@@ -2021,7 +2026,7 @@ void GpuScene::CreateGBuffers() {
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex =
-            findMemoryType(memRequirements.memoryTypeBits,
+            device.findMemoryType(memRequirements.memoryTypeBits,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         VkDeviceMemory textureImageMemory;
@@ -2085,7 +2090,7 @@ void GpuScene::CreateDepthTexture()
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocInfo.memoryTypeIndex = device.findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VkDeviceMemory textureImageMemory;
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
@@ -2204,7 +2209,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2243,7 +2248,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(
+    allocInfo.memoryTypeIndex = device.findMemoryType(
         memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2308,7 +2313,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2344,7 +2349,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
             VkMemoryAllocateInfo allocInfo{};
             allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             allocInfo.allocationSize = memRequirements.size;
-            allocInfo.memoryTypeIndex = findMemoryType(
+            allocInfo.memoryTypeIndex = device.findMemoryType(
                 memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2452,7 +2457,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2488,7 +2493,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2527,7 +2532,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(
+        allocInfo.memoryTypeIndex = device.findMemoryType(
             memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2564,7 +2569,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex =
-            findMemoryType(memRequirements.memoryTypeBits,
+            device.findMemoryType(memRequirements.memoryTypeBits,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2596,7 +2601,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex =
-            findMemoryType(memRequirements.memoryTypeBits,
+            device.findMemoryType(memRequirements.memoryTypeBits,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2628,7 +2633,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex =
-            findMemoryType(memRequirements.memoryTypeBits,
+            device.findMemoryType(memRequirements.memoryTypeBits,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2662,7 +2667,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex =
-            findMemoryType(memRequirements.memoryTypeBits,
+            device.findMemoryType(memRequirements.memoryTypeBits,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2697,7 +2702,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
         allocInfo.memoryTypeIndex =
-            findMemoryType(memRequirements.memoryTypeBits,
+            device.findMemoryType(memRequirements.memoryTypeBits,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -2740,6 +2745,8 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     createGraphicsPipeline(deviceref.getMainRenderPass());
     createRenderOccludersPipeline(occluderZPass);
     createComputePipeline();
+
+    _shadow = new Shadow(1024);
 }
 
 void GpuScene::CreateForwardLightingPass()
@@ -3162,6 +3169,9 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 #ifndef USE_CPU_ENCODE_DRAWPARAM
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 #endif
+    {
+        _shadow->RenderShadowMap(commandBuffer, *this, device);
+    }
     
 
     {
@@ -3851,7 +3861,7 @@ std::pair<VkImageView, VkDeviceMemory> GpuScene::createTexture(const std::string
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocInfo.memoryTypeIndex = device.findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VkDeviceMemory textureImageMemory;
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
@@ -3917,7 +3927,7 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocInfo.memoryTypeIndex = device.findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VkDeviceMemory textureImageMemory;
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {

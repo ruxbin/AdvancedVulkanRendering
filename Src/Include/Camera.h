@@ -15,6 +15,8 @@ private:
     vec3 _z;//forward & backword --f/g
     void updateCameraMatrix();
     Frustum _frustum;
+    float _near;
+    float _far;
 public:
    
     Camera(float fov, float n, float f, vec3 origin, float aspect, vec3 lookat, vec3 right);
@@ -34,5 +36,9 @@ public:
     void RotateY(float angle);
     const Frustum& getFrustum()const { return _frustum; }
 
+    float Near() { return _near; }
+    float Far() { return _far; }
+
+    vec3 _frustumCorners[8];
 };
 

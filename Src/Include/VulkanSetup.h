@@ -48,7 +48,7 @@ VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
 VkImage getWindowDepthImage()const { return depthImage; }
 uint32_t getSwapChainImageCount() const {return swapChainImages.size();}
 uint32_t findMemoryType(uint32_t typeFilter,
-                            VkMemoryPropertyFlags properties) {
+                            VkMemoryPropertyFlags properties) const {
       VkPhysicalDeviceMemoryProperties memProperties;
       vkGetPhysicalDeviceMemoryProperties(getPhysicalDevice(),
                                           &memProperties);

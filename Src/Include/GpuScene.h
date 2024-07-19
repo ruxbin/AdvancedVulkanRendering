@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <filesystem>
 
+class Shadow;
+
 struct AAPLTextureData
 {
   std::string _path;
@@ -284,6 +286,7 @@ private:
   VkPipelineLayout drawOccluderPipelineLayout;
   VkPipeline drawOccluderPipeline;
 
+  Shadow* _shadow;
 
   std::filesystem::path _rootPath;
 
@@ -433,25 +436,8 @@ private:
     void CreateForwardLightingPass();
     void CreateForwardLightingFrameBuffer(uint32_t count);
 
-    struct uniformBufferData {
-      mat4 projectionMatrix;
-      mat4 viewMatrix;
-      mat4 invViewMatrix;
-      mat4 invViewProjectionMatrix;
-    };
 
-    struct FrameConstants {
-        alignas(16) vec3 sunDirection;
-        alignas(16) vec3 sunColor;
-        float wetness;
-        float emissiveScale;
-    };
-
-    struct FrameData
-    {
-        FrameConstants frameConstants;
-        uniformBufferData camConstants;
-    };
+    
 
     struct gpuCullParams{
         alignas(16) uint32_t totalChunks;
