@@ -346,7 +346,7 @@ void Shadow::InitRHI(const VulkanDevice& device,const GpuScene& gpuScene)
     depthStencilState.depthWriteEnable = VK_TRUE;
     depthStencilState.depthTestEnable = VK_TRUE;
     depthStencilState.stencilTestEnable = VK_FALSE;
-    depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
+    depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencilState.depthBoundsTestEnable = VK_FALSE;
 
     VkGraphicsPipelineCreateInfo drawclusterForwardPipelineInfo{};
@@ -428,7 +428,6 @@ void Shadow::RenderShadowMap(VkCommandBuffer& commandBuffer,const GpuScene& gpuS
 	for(int i=0;i<SHADOW_CASCADE_COUNT;++i)
 	{
 		//update projection matrix
-		//TODO: dynamic offset
 	void* data1;
     vkMapMemory(device.getLogicalDevice(), gpuScene.uniformBufferMemory, 0, sizeof(FrameData), 0,
         &data1);
@@ -467,7 +466,8 @@ void Shadow::RenderShadowMap(VkCommandBuffer& commandBuffer,const GpuScene& gpuS
     vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
         VK_INDEX_TYPE_UINT32);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _shadowPassPipeline);
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, gpuScene.drawclusterPipelineLayout, 0, 1, &gpuScene.applDescriptorSet, 0, nullptr);
+    uint32_t dynamic_offset = sizeof(mat4)*2*i;
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, gpuScene.drawclusterPipelineLayout, 0, 1, &gpuScene.applDescriptorSet, 1, &dynamic_offset);
 
 
     for (int i=0;i<gpuScene.applMesh->_opaqueChunkCount;++i)

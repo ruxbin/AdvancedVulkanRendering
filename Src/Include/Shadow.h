@@ -9,6 +9,7 @@
 //VK_FORMAT_R32_SFLOAT won't work
 #define SHADOW_FORMAT VK_FORMAT_D32_SFLOAT_S8_UINT
 
+class GpuScene;
 
 class Shadow
 {
@@ -34,4 +35,5 @@ public:
 	void CreateShadowSlices(const VulkanDevice&);
 	void RenderShadowMap(VkCommandBuffer&,const GpuScene&,const VulkanDevice&);
 	void UpdateShadowMatrices(const GpuScene&);
+	friend class GpuScene;
 };

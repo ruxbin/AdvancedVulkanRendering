@@ -1159,7 +1159,7 @@ void GpuScene::init_deferredlighting_descriptors()
     frameDataBinding.binding = 6;
     frameDataBinding.descriptorCount = 1;
     // it's a uniform buffer binding
-    frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     frameDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 
@@ -1184,7 +1184,7 @@ void GpuScene::init_deferredlighting_descriptors()
     // create a descriptor pool that will hold 10 uniform buffers
     std::vector<VkDescriptorPoolSize> sizes = {
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3},
         {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
     };
 
@@ -1232,7 +1232,7 @@ void GpuScene::init_deferredlighting_descriptors()
     setWrite.descriptorCount = 1;
     setWrite.dstArrayElement = 0;
     // and the type is uniform buffer
-    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     setWrite.pBufferInfo = &binfo;
 
 
@@ -1532,7 +1532,7 @@ void GpuScene::init_appl_descriptors()
     uniformBufferBinding.binding = 0;
     uniformBufferBinding.descriptorCount = 1;
     // it's a uniform buffer binding
-    uniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniformBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 
     // we use it from the vertex shader
     uniformBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1602,7 +1602,7 @@ void GpuScene::init_appl_descriptors()
         &applSetLayout);
 
     std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 10},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,4096} };
@@ -1654,7 +1654,7 @@ void GpuScene::init_appl_descriptors()
     uniformWrite.descriptorCount = 1;
     uniformWrite.dstArrayElement = 0;
     // and the type is uniform buffer
-    uniformWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniformWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     uniformWrite.pBufferInfo = &unibinfo;
 
 
@@ -1774,7 +1774,7 @@ void GpuScene::init_descriptorsV2()
     camBufferBinding.binding = 0;
     camBufferBinding.descriptorCount = 1;
     // it's a uniform buffer binding
-    camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 
     // we use it from the vertex shader
     camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1800,7 +1800,7 @@ void GpuScene::init_descriptorsV2()
     // other code ....
     // create a descriptor pool that will hold 10 uniform buffers
     std::vector<VkDescriptorPoolSize> sizes = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
     };
 
     VkDescriptorPoolCreateInfo pool_info = {};
@@ -1847,7 +1847,7 @@ void GpuScene::init_descriptorsV2()
     setWrite.descriptorCount = 1;
     setWrite.dstArrayElement = 0;
     // and the type is uniform buffer
-    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     setWrite.pBufferInfo = &binfo;
 
     //vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
@@ -1867,7 +1867,7 @@ void GpuScene::init_descriptors(VkImageView currentImage) {
     camBufferBinding.binding = 0;
     camBufferBinding.descriptorCount = 1;
     // it's a uniform buffer binding
-    camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 
     // we use it from the vertex shader
     camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1898,7 +1898,7 @@ void GpuScene::init_descriptors(VkImageView currentImage) {
     // other code ....
     // create a descriptor pool that will hold 10 uniform buffers
     std::vector<VkDescriptorPoolSize> sizes = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,10} };
 
     VkDescriptorPoolCreateInfo pool_info = {};
@@ -1945,7 +1945,7 @@ void GpuScene::init_descriptors(VkImageView currentImage) {
     setWrite.descriptorCount = 1;
     setWrite.dstArrayElement = 0;
     // and the type is uniform buffer
-    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     setWrite.pBufferInfo = &binfo;
 
     //vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
@@ -3132,6 +3132,51 @@ void GpuScene::DrawOccluders()
 
 void GpuScene::recordCommandBuffer(int imageIndex) {
 
+	_shadow->UpdateShadowMatrices(*this);
+	{
+	void* data1;
+    	vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(FrameData), 0,
+        	&data1);
+	for(int i=0;i<SHADOW_CASCADE_COUNT;++i)
+	{
+		memcpy(data1, transpose(_shadow->_shadowProjectionMatrices[i]).value_ptr(),(size_t)sizeof(mat4));
+		data1 = ((mat4*)data1)+1;
+    		memcpy(data1, transpose(_shadow->_shadowViewMatrices[i]).value_ptr(), (size_t)sizeof(mat4));
+		data1 = ((mat4*)data1)+1;
+	}
+    	memcpy(data1, transpose(maincamera->getProjectMatrix()).value_ptr(),
+        	(size_t)sizeof(mat4));
+	data1 = ((mat4*)data1)+1;
+    	memcpy(data1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
+
+	data1 = ((mat4*)data1)+1;
+
+    	memcpy(data1, transpose(maincamera->getInvViewMatrix()).value_ptr(), (size_t)sizeof(mat4));
+
+	data1 = ((mat4*)data1)+1;
+
+    	memcpy(data1, transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(), (size_t)sizeof(mat4));
+	data1 = ((mat4*)data1)+1;
+
+    	memcpy(data1, &frameConstants, sizeof(FrameConstants));
+	vkUnmapMemory(device.getLogicalDevice(),uniformBufferMemory);
+
+  	//spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
+  	vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(gpuCullParams), 0, &data1);
+  	memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
+  	//memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
+  	//offsetof isn't working as expected
+  	memcpy((char*)data1 + 16, &maincamera->getFrustum(), sizeof(Frustum));
+
+  	vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+
+  	uint32_t startIndex = 0;
+  	vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0, sizeof(uint32_t), 0, &data1);
+  	memcpy((uint32_t*)data1	, &startIndex, sizeof(uint32_t));
+  	vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemory);
+
+   	}
+
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -3172,6 +3217,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     {
         _shadow->RenderShadowMap(commandBuffer, *this, device);
     }
+    
     
 
     {
@@ -3269,8 +3315,8 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	vkCmdBeginRenderPass(commandBuffer,&forwardPassInfo,VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 drawclusterForwardPipeline);
-
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+	uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 1, &dynamic_offset);
 
             if (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount + applMesh->_transparentChunkCount != applMesh->_chunkCount)
                 spdlog::error("chunk count error {} {}", applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount + applMesh->_transparentChunkCount, applMesh->_chunkCount);
@@ -3322,7 +3368,8 @@ void GpuScene::DrawChunk(const AAPLMeshChunk& chunk)
     vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     //if the descriptor set data isn't change we can omit this?
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+    uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 1, &dynamic_offset);
     //if the constant isn't changed we can omit this?
     //mat4 scaleM = scale(modelScale);
     //mat4 withScale = transpose(maincamera->getObjectToCamera()) * scaleM;
@@ -3358,7 +3405,10 @@ void GpuScene::DrawChunksBasePass() {
 #else
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+    
+    uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
+
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 1, &dynamic_offset);
 
 
     vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipeline);
@@ -3409,7 +3459,10 @@ void GpuScene::DrawChunks()
     vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     //if the descriptor set data isn't change we can omit this?
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 0, nullptr);
+
+    uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
+
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 1, &dynamic_offset);
     constexpr int beginindex = 0;
     constexpr int indexClamp = 0xffffff;
     uint32_t occluded = 0;
@@ -3466,35 +3519,7 @@ void GpuScene::Draw() {
     vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(), UINT64_MAX, imageAvailableSemaphore,
         VK_NULL_HANDLE, &imageIndex);
 
-    void* data1;
-    vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(FrameData), 0,
-        &data1);
-    memcpy(data1, &frameConstants, sizeof(FrameConstants));
-    void* data = ((char*)data1) + sizeof(FrameConstants);
-    memcpy(data, transpose(maincamera->getProjectMatrix()).value_ptr(),
-        (size_t)sizeof(mat4));
-    memcpy(((mat4*)data) + 1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
-
-    memcpy(((mat4*)data) + 2, transpose(maincamera->getInvViewMatrix()).value_ptr(), (size_t)sizeof(mat4));
-
-    memcpy(((mat4*)data) + 3, transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(), (size_t)sizeof(mat4));
-    vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
-
-  //spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
-  vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(gpuCullParams), 0, &data);
-  memcpy(data, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
-  //memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
-  //offsetof isn't working as expected
-  memcpy((char*)data + 16, &maincamera->getFrustum(), sizeof(Frustum));
-
-  vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
-
-  uint32_t startIndex = 0;
-  vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0, sizeof(uint32_t), 0, &data);
-  memcpy((uint32_t*)data, &startIndex, sizeof(uint32_t));
-  vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemory);
-
-  vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
+      vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
 
   recordCommandBuffer( imageIndex);
 

@@ -44,11 +44,20 @@ struct PerObjPush
 
 
 struct uniformBufferData {
+	mat4 shadowProjectionMatrix0;
+    	mat4 shadowViewMatrix0;
+
+	mat4 shadowProjectionMatrix1;
+    	mat4 shadowViewMatrix1;
+
+	mat4 shadowProjectionMatrix2;
+    	mat4 shadowViewMatrix2;
+
     mat4 projectionMatrix;
     mat4 viewMatrix;
     mat4 invViewMatrix;
     mat4 invViewProjectionMatrix;
-};
+    };
 
 struct FrameConstants {
     alignas(16) vec3 sunDirection;
@@ -60,6 +69,6 @@ struct FrameConstants {
 
 struct FrameData
 {
-    FrameConstants frameConstants;
     uniformBufferData camConstants;
+    FrameConstants frameConstants;
 };

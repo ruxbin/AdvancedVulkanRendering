@@ -13,8 +13,8 @@
 [[vk::binding(6,0)]] 
 cbuffer frameData
 {
-    AAPLFrameConstants frameConstants;
     CameraParamsBuffer cameraParams;
+    AAPLFrameConstants frameConstants;
 }
 
 struct VSOutput

@@ -44,9 +44,8 @@ struct AAPLShaderMaterial
 [[vk::binding(0,0)]]
 cbuffer cam
 {
-    //CameraParamsBuffer ub;
-    AAPLFrameConstants frameConstants;
     CameraParamsBuffer cameraParams;
+    AAPLFrameConstants frameConstants;
 }
 [[vk::binding(1,0)]] StructuredBuffer<AAPLShaderMaterial> materials;
 [[vk::binding(2,0)]] SamplerState _LinearRepeatSampler;
