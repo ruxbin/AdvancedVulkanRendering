@@ -1218,7 +1218,7 @@ void GpuScene::init_deferredlighting_descriptors()
     // at 0 offset
     binfo.offset = 0;
     // of the size of a camera data struct
-    binfo.range = sizeof(FrameData);
+    binfo.range = sizeof(FrameConstants)+sizeof(mat4)*4;
 
     VkWriteDescriptorSet setWrite = {};
     setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1640,7 +1640,7 @@ void GpuScene::init_appl_descriptors()
     // at 0 offset
     unibinfo.offset = 0;
     // of the size of a camera data struct
-    unibinfo.range = sizeof(FrameData);
+    unibinfo.range = sizeof(FrameConstants)+sizeof(mat4)*4;
 
     VkWriteDescriptorSet uniformWrite = {};
     uniformWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1833,7 +1833,7 @@ void GpuScene::init_descriptorsV2()
     // at 0 offset
     binfo.offset = 0;
     // of the size of a camera data struct
-    binfo.range = sizeof(FrameData);
+    binfo.range = sizeof(FrameConstants)+sizeof(mat4)*4;
 
     VkWriteDescriptorSet setWrite = {};
     setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1931,7 +1931,7 @@ void GpuScene::init_descriptors(VkImageView currentImage) {
     // at 0 offset
     binfo.offset = 0;
     // of the size of a camera data struct
-    binfo.range = sizeof(FrameData);
+    binfo.range = sizeof(FrameConstants)+sizeof(mat4)*4;
 
     VkWriteDescriptorSet setWrite = {};
     setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -3122,8 +3122,10 @@ void GpuScene::DrawOccluders()
     vkCmdBindIndexBuffer(commandBuffer, _occludersIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     //mat4 objtocamera = transpose(maincamera->getObjectToCamera());
+	
+    uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
 
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor, 1, &dynamic_offset);
 
     //vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
     vkCmdDrawIndexed(commandBuffer, sceneFile["occluder_indices"].size(), 1, 0, 0, 0);
@@ -3274,6 +3276,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
     //deferred lighting pass
     {
+	uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
         std::array<VkClearValue, 1> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
         
@@ -3294,7 +3297,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
-            0, nullptr);
+            1, &dynamic_offset);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
         vkCmdEndRenderPass(commandBuffer);
@@ -3315,7 +3318,6 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	vkCmdBeginRenderPass(commandBuffer,&forwardPassInfo,VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 drawclusterForwardPipeline);
-	uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 1, &dynamic_offset);
 
             if (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount + applMesh->_transparentChunkCount != applMesh->_chunkCount)
