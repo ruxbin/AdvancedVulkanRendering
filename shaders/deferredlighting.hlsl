@@ -13,9 +13,21 @@
 [[vk::binding(6,0)]] 
 cbuffer frameData
 {
-    CameraParamsBuffer cameraParams;
+    CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
+
+[[vk::binding(7,0)]] Texture2DArray<float> shadowMaps;
+[[vk::binding(8,0)]] SamplerComparisonState shadowSampler;//TODO : initializer 
+//{
+   // sampler state
+//    Filter = COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+//    AddressU = MIRROR;
+//    AddressV = MIRROR;
+
+   // sampler comparison state
+//    ComparisonFunc = LESS;
+//};
 
 struct VSOutput
 {
@@ -26,7 +38,7 @@ struct VSOutput
 
 
 
-float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBuffer cameraParams)
+float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBufferFull cameraParams)
 {
     float4 ndc;
     ndc.xy = texCoord.xy * 2 - 1;
@@ -35,12 +47,45 @@ float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBuffer
     ndc.w = 1;
 
     float4 worldPosition = mul(cameraParams.invViewProjectionMatrix, ndc);
-    worldPosition.xyz /= worldPosition.w;
+    worldPosition /= worldPosition.w;
     return  worldPosition;
 }
 
 
+float evaluateCascadeShadows(CameraParamsBufferFull cameraParams,
+                                    float4 worldPosition,
+                                    bool useFilter)//TODO: output cascade index for debug
+{
+    float shadow = 0;
+    for (int cascadeIndex = 0; cascadeIndex < SHADOW_CASCADE_COUNT; cascadeIndex++)
+    {
+        float4x4 finalMatrix = mul(cameraParams.shadowMatrix[cascadeIndex].shadowProjectionMatrix, cameraParams.shadowMatrix[cascadeIndex].shadowViewMatrix);
+        float4 lightSpacePos = mul(finalMatrix, worldPosition);
+        lightSpacePos /= lightSpacePos.w;
 
+        if (all(lightSpacePos.xyz < 1.0) && all(lightSpacePos.xyz > float3(-1, -1, 0)))
+        {
+            shadow = 0.0f;
+            float lightSpaceDepth = lightSpacePos.z - 0.0001f;
+            float3 shadowUv = float3(lightSpacePos.xy * float2(0.5, 0.5) + 0.5, cascadeIndex);
+
+            if (!useFilter)
+                return shadowMaps.SampleCmpLevelZero(shadowSampler, shadowUv, lightSpaceDepth);
+
+            for (int j = -1; j <= 1; ++j)
+            {
+                for (int i = -1; i <= 1; ++i)
+                {
+                    shadow += shadowMaps.SampleCmpLevelZero(shadowSampler, shadowUv, lightSpaceDepth, int2(i, j));
+                }
+            }
+            shadow /= 9;
+            break;
+        }
+
+    }
+    return shadow;
+}
 
 
 
@@ -81,8 +126,9 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     float depth = inDepth.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
     float4 worldPosition = worldPositionForTexcoord(input.TextureUV, depth, cameraParams);
     
+    float shadow = evaluateCascadeShadows(cameraParams, worldPosition, false);
     
-    half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams);
+    half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow;
     
     return half4(result, 1.f);
     

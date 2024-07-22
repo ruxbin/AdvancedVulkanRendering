@@ -21,10 +21,12 @@ private:
 	VkImage _shadowMaps;
 	std::array<VkImageView,SHADOW_CASCADE_COUNT> _shadowSliceViews;
 	std::array<VkFramebuffer,SHADOW_CASCADE_COUNT> _shadowFrameBuffers;
+	VkImageView _shadowSliceViewFull;
 	VkRenderPass _shadowPass;
 	VkPipelineLayout _shadowPassPipelineLayout;
 	VkPipeline _shadowPassPipeline;
 	VkPipeline _shadowPassPipelineAlphaMask;
+	VkSampler _shadowMapSampler;
 	void InitRHI(const VulkanDevice&,const GpuScene&);
 public:
 	Shadow(uint32_t shadowResolution) : _shadowResolution(shadowResolution)

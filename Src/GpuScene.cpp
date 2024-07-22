@@ -1162,9 +1162,22 @@ void GpuScene::init_deferredlighting_descriptors()
     frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     frameDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    VkDescriptorSetLayoutBinding shadowMapsBinding = {};
+    shadowMapsBinding.binding = 7;
+    shadowMapsBinding.descriptorCount = 1;
+    shadowMapsBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    shadowMapsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding shadowMapsSamplerBinding = {};
+    shadowMapsSamplerBinding.binding = 8;
+    shadowMapsSamplerBinding.descriptorCount = 1;
+    shadowMapsSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    shadowMapsSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 
-    VkDescriptorSetLayoutBinding bindings[] = { albedoBinding, normalBinding, emessiveBinding, f0RoughnessBinding,depthBinding, nearestClampSamplerBinding,frameDataBinding };
+
+    VkDescriptorSetLayoutBinding bindings[] = { albedoBinding, normalBinding, emessiveBinding, f0RoughnessBinding,
+        depthBinding, nearestClampSamplerBinding,frameDataBinding,shadowMapsBinding,shadowMapsSamplerBinding };
 
     VkDescriptorSetLayoutCreateInfo setinfo = {};
     setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1183,7 +1196,7 @@ void GpuScene::init_deferredlighting_descriptors()
     // other code ....
     // create a descriptor pool that will hold 10 uniform buffers
     std::vector<VkDescriptorPoolSize> sizes = {
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3},
         {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
     };
@@ -1218,7 +1231,7 @@ void GpuScene::init_deferredlighting_descriptors()
     // at 0 offset
     binfo.offset = 0;
     // of the size of a camera data struct
-    binfo.range = sizeof(FrameConstants)+sizeof(mat4)*4;
+    binfo.range = sizeof(FrameData);
 
     VkWriteDescriptorSet setWrite = {};
     setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -3143,24 +3156,18 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	{
 		memcpy(data1, transpose(_shadow->_shadowProjectionMatrices[i]).value_ptr(),(size_t)sizeof(mat4));
 		data1 = ((mat4*)data1)+1;
-    		memcpy(data1, transpose(_shadow->_shadowViewMatrices[i]).value_ptr(), (size_t)sizeof(mat4));
+    	memcpy(data1, transpose(_shadow->_shadowViewMatrices[i]).value_ptr(), (size_t)sizeof(mat4));
 		data1 = ((mat4*)data1)+1;
 	}
-    	memcpy(data1, transpose(maincamera->getProjectMatrix()).value_ptr(),
-        	(size_t)sizeof(mat4));
+    memcpy(data1, transpose(maincamera->getProjectMatrix()).value_ptr(),(size_t)sizeof(mat4));
 	data1 = ((mat4*)data1)+1;
-    	memcpy(data1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
-
+    memcpy(data1, transpose(maincamera->getObjectToCamera()).value_ptr(), (size_t)sizeof(mat4));
 	data1 = ((mat4*)data1)+1;
-
-    	memcpy(data1, transpose(maincamera->getInvViewMatrix()).value_ptr(), (size_t)sizeof(mat4));
-
+    memcpy(data1, transpose(maincamera->getInvViewMatrix()).value_ptr(), (size_t)sizeof(mat4));
 	data1 = ((mat4*)data1)+1;
-
-    	memcpy(data1, transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(), (size_t)sizeof(mat4));
+    memcpy(data1, transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(), (size_t)sizeof(mat4));
 	data1 = ((mat4*)data1)+1;
-
-    	memcpy(data1, &frameConstants, sizeof(FrameConstants));
+    memcpy(data1, &frameConstants, sizeof(FrameConstants));
 	vkUnmapMemory(device.getLogicalDevice(),uniformBufferMemory);
 
   	//spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
@@ -3276,7 +3283,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
     //deferred lighting pass
     {
-	uint32_t dynamic_offset = sizeof(mat4)*2*SHADOW_CASCADE_COUNT;
+	    uint32_t dynamic_offset = 0;
         std::array<VkClearValue, 1> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
         
@@ -3305,17 +3312,18 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
         //forward pass
         {
+            dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
 		
-	VkRenderPassBeginInfo forwardPassInfo{};
-        forwardPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        forwardPassInfo.renderPass = _forwardLightingPass;
-        forwardPassInfo.framebuffer = _forwardFrameBuffer[imageIndex];
-        forwardPassInfo.renderArea.offset = { 0, 0 };
-        forwardPassInfo.renderArea.extent = device.getSwapChainExtent();
-        forwardPassInfo.clearValueCount = 0;//static_cast<uint32_t>(clearValues.size());
-        //forwardPassInfo.pClearValues = clearValues.data();
+	        VkRenderPassBeginInfo forwardPassInfo{};
+            forwardPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            forwardPassInfo.renderPass = _forwardLightingPass;
+            forwardPassInfo.framebuffer = _forwardFrameBuffer[imageIndex];
+            forwardPassInfo.renderArea.offset = { 0, 0 };
+            forwardPassInfo.renderArea.extent = device.getSwapChainExtent();
+            forwardPassInfo.clearValueCount = 0;//static_cast<uint32_t>(clearValues.size());
+            //forwardPassInfo.pClearValues = clearValues.data();
 
-	vkCmdBeginRenderPass(commandBuffer,&forwardPassInfo,VK_SUBPASS_CONTENTS_INLINE);
+	        vkCmdBeginRenderPass(commandBuffer,&forwardPassInfo,VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 drawclusterForwardPipeline);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawclusterPipelineLayout, 0, 1, &applDescriptorSet, 1, &dynamic_offset);
@@ -3340,7 +3348,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
                 vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1, m_Chunks[i].indexBegin, 0, 0);
             }
 
-	vkCmdEndRenderPass(commandBuffer);
+	        vkCmdEndRenderPass(commandBuffer);
         }
     }
 

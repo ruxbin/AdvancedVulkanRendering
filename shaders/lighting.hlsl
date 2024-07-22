@@ -53,7 +53,7 @@ half3 lightingShader(AAPLPixelSurfaceData surfaceData,
                              float depth,
                              float4 worldPosition,
                              AAPLFrameConstants frameData,
-                             CameraParamsBuffer cameraParams
+                             CameraParamsBufferFull cameraParams
                             )
 {
     //tocamera should use the second one!!

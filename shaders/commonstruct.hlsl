@@ -63,4 +63,22 @@ struct CameraParamsBuffer
     float4x4 invViewProjectionMatrix;
 };
 
+#define SHADOW_CASCADE_COUNT 3
+
+struct ShadowMatrix
+{
+    float4x4 shadowProjectionMatrix;
+    float4x4 shadowViewMatrix;
+};
+
+struct CameraParamsBufferFull
+{
+    ShadowMatrix shadowMatrix[SHADOW_CASCADE_COUNT];
+    
+    float4x4 projectionMatrix;
+    float4x4 viewMatrix;
+    float4x4 invViewMatrix;
+    float4x4 invViewProjectionMatrix;
+};
+
 #define M_PI_F 3.1415926f

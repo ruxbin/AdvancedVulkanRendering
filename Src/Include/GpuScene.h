@@ -229,6 +229,7 @@ private:
   //VkImageView currentImage;
   VkSampler textureSampler;
   VkSampler nearestClampSampler;
+
   //VkImage textureImage;
   //VkDeviceMemory textureImageMemory;
 
@@ -527,6 +528,7 @@ private:
             throw std::runtime_error("failed to create texture sampler!");
         }
     }
+
     void recordCommandBuffer(int frameindex);
     std::pair<VkImage, VkImageView> createTexture(const AAPLTextureData&);
 

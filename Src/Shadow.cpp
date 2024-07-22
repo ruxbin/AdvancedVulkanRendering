@@ -58,6 +58,20 @@ void Shadow::CreateShadowSlices(const VulkanDevice& device)
     		}
 	}
 
+    VkImageViewCreateInfo imageviewInfo{};
+    imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    imageviewInfo.image = _shadowMaps;
+    imageviewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+
+    imageviewInfo.format = SHADOW_FORMAT;
+    imageviewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    imageviewInfo.subresourceRange.baseMipLevel = 0;
+    imageviewInfo.subresourceRange.levelCount = 1;// texturedata._mipmapLevelCount;
+    imageviewInfo.subresourceRange.baseArrayLayer = 0;
+    imageviewInfo.subresourceRange.layerCount = SHADOW_CASCADE_COUNT;
+    if (vkCreateImageView(device.getLogicalDevice(), &imageviewInfo, nullptr, &_shadowSliceViewFull) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create texture image view!");
+    }
 }
 
 void Shadow::UpdateShadowMatrices(const GpuScene& gpuScene)
@@ -135,6 +149,62 @@ void Shadow::UpdateShadowMatrices(const GpuScene& gpuScene)
 void Shadow::InitRHI(const VulkanDevice& device,const GpuScene& gpuScene)
 {
 	CreateShadowSlices(device);
+
+    {
+       
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+       
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_TRUE;
+        samplerInfo.compareOp = VK_COMPARE_OP_LESS;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+        if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &_shadowMapSampler) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create texture sampler!");
+        }
+    }
+
+    {
+        VkDescriptorImageInfo imageinfo{};
+        imageinfo.imageView = _shadowSliceViewFull;
+        imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet setWriteTexture = {};
+        setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        setWriteTexture.pNext = nullptr;
+        setWriteTexture.dstBinding = 7;
+        setWriteTexture.dstSet = gpuScene.deferredLightingDescriptorSet;
+        setWriteTexture.dstArrayElement = 0;
+        setWriteTexture.descriptorCount = 1;
+        setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        setWriteTexture.pImageInfo = &imageinfo;
+
+        VkDescriptorImageInfo samplerinfo;
+        samplerinfo.sampler = _shadowMapSampler;
+        VkWriteDescriptorSet setSampler = {};
+        setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        setSampler.dstBinding = 8;
+        setSampler.pNext = nullptr;
+        setSampler.dstSet = gpuScene.deferredLightingDescriptorSet;
+        setSampler.dstArrayElement = 0;
+        setSampler.descriptorCount = 1;
+        setSampler.pImageInfo = &samplerinfo;
+        setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+
+
+        std::array< VkWriteDescriptorSet, 2> writes = { setWriteTexture ,setSampler };
+
+        vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+    }
+
 	VkAttachmentDescription shadowDepthAttachment = {};
 	shadowDepthAttachment.format = SHADOW_FORMAT;
 	shadowDepthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -322,7 +392,7 @@ void Shadow::InitRHI(const VulkanDevice& device,const GpuScene& gpuScene)
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -427,19 +497,6 @@ void Shadow::RenderShadowMap(VkCommandBuffer& commandBuffer,const GpuScene& gpuS
 
 	for(int i=0;i<SHADOW_CASCADE_COUNT;++i)
 	{
-		//update projection matrix
-	void* data1;
-    vkMapMemory(device.getLogicalDevice(), gpuScene.uniformBufferMemory, 0, sizeof(FrameData), 0,
-        &data1);
- 
-    void* data = ((char*)data1) + sizeof(FrameConstants);
-    memcpy(data, transpose(_shadowProjectionMatrices[i]).value_ptr(),
-        (size_t)sizeof(mat4));
-    memcpy(((mat4*)data) + 1, transpose(_shadowViewMatrices[i]).value_ptr(), (size_t)sizeof(mat4));
-
-    	vkUnmapMemory(device.getLogicalDevice(), gpuScene.uniformBufferMemory);
-   
-
         std::array<VkClearValue, 1> clearValues{};
 
         clearValues[0].depthStencil = { 1.0f, 0 };
