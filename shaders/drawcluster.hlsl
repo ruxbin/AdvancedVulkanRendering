@@ -44,7 +44,7 @@ struct AAPLShaderMaterial
 [[vk::binding(0,0)]]
 cbuffer cam
 {
-    CameraParamsBuffer cameraParams;
+    CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 [[vk::binding(1,0)]] StructuredBuffer<AAPLShaderMaterial> materials;
@@ -103,14 +103,14 @@ struct PSOutput
 VSOutput RenderSceneVS( VSInput input)
 {
     VSOutput Output;
-    float4x4 finalMatrix = mul(cameraParams.projectionMatrix, cameraParams.viewMatrix);
+    float4x4 finalMatrix = mul(cameraParams.shadowMatrix[0].shadowProjectionMatrix, cameraParams.shadowMatrix[0].shadowViewMatrix);
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
     Output.drawcallid = input.drawcallid;
 
 
-    Output.viewDir = normalize(float3(cameraParams.invViewMatrix._m03, cameraParams.invViewMatrix._m13, cameraParams.invViewMatrix._m23) - input.position);
+    Output.viewDir = normalize(float3(cameraParams.shadowMatrix[1].shadowProjectionMatrix._m03, cameraParams.shadowMatrix[1].shadowProjectionMatrix._m13, cameraParams.shadowMatrix[1].shadowProjectionMatrix._m23) - input.position);
     Output.wsPosition = float4(input.position, 1);
 
 	Output.normal = normalize(input.normal);
