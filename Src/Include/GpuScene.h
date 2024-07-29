@@ -6,6 +6,7 @@
 #include "Camera.h"
 #include "spdlog/spdlog.h"
 #include "nlohmann/json.hpp"
+#include "Light.h"
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -14,6 +15,7 @@
 #include <filesystem>
 
 class Shadow;
+
 
 struct AAPLTextureData
 {
@@ -288,6 +290,7 @@ private:
   VkPipeline drawOccluderPipeline;
 
   Shadow* _shadow;
+  std::vector< PointLight> _pointLights;
 
   std::filesystem::path _rootPath;
 
@@ -560,8 +563,9 @@ private:
         vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
     }
     friend class Shadow;
-
-    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f };
+    friend class PointLight;
+    friend class SpotLight;
+    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f,2.f };
 };
 
 template<>

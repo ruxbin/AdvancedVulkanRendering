@@ -64,6 +64,7 @@ struct FrameConstants {
     alignas(16) vec3 sunColor;
     float wetness;
     float emissiveScale;
+    float localLightIntensity;
 };
 
 
@@ -72,3 +73,5 @@ struct FrameData
     uniformBufferData camConstants;
     FrameConstants frameConstants;
 };
+
+#define M_PI_F 3.1415926535897932f

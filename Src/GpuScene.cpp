@@ -4,7 +4,7 @@
 #include "VulkanSetup.h"
 #include "ThirdParty/lzfse.h"
 #include "Shadow.h"
-
+#include "Light.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -16,7 +16,7 @@
 #include <cstddef>
 
 #define USE_CPU_ENCODE_DRAWPARAM
-
+#define LIGHT_FOR_TRANSPARENT_FLAG          (0x00000001)
 
 //TODO: move to common.cpp
 std::vector<char> readFile(const std::string &filename) {
@@ -2760,6 +2760,59 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     createComputePipeline();
 
     _shadow = new Shadow(1024);
+    //create point light
+    {
+        size_t pointlightCount = sceneFile["point_lights"].size();
+        for (int i = 0; i < pointlightCount; i++)
+        {
+            float posx = sceneFile["point_lights"][i]["position_x"].template get<float>();
+            float posy = sceneFile["point_lights"][i]["position_y"].template get<float>();
+            float posz = sceneFile["point_lights"][i]["position_z"].template get<float>();
+            float color_r = sceneFile["point_lights"][i]["color_r"].template get<float>();
+            float color_g = sceneFile["point_lights"][i]["color_g"].template get<float>();
+            float color_b = sceneFile["point_lights"][i]["color_b"].template get<float>();
+            float radius = sceneFile["point_lights"][i]["sqrt_radius"].template get<float>();
+            uint32_t flags = sceneFile["point_lights"][i]["for_transparent"].template get<bool>()? LIGHT_FOR_TRANSPARENT_FLAG : 0;
+            PointLight::pointLightData.emplace_back(PointLightData(posx,posy,posz,radius,color_r,color_g,color_b,flags));
+            _pointLights.emplace_back(PointLight(i * sizeof(PointLightData), &PointLight::pointLightData.back()));
+        }
+        
+        VkBufferCreateInfo pointLightBufferInfo{};
+        pointLightBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        pointLightBufferInfo.size = pointlightCount * sizeof(PointLightData);
+        pointLightBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        pointLightBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        pointLightBufferInfo.flags = 0;
+        if (vkCreateBuffer(device.getLogicalDevice(), &pointLightBufferInfo, nullptr,
+            &PointLight::pointLightDynamicUniformBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create pointLight buffer!");
+        }
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device.getLogicalDevice(), PointLight::pointLightDynamicUniformBuffer,
+            &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex =
+            device.findMemoryType(memRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkDeviceMemory pointLightBufferMemory;
+        if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+            &pointLightBufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate pointLight buffer memory!");
+        }
+        vkBindBufferMemory(device.getLogicalDevice(), PointLight::pointLightDynamicUniformBuffer,
+            pointLightBufferMemory, 0);
+        void* data;
+        vkMapMemory(device.getLogicalDevice(), pointLightBufferMemory, 0, pointLightBufferInfo.size, 0, &data);
+        std::memcpy(data, (void*)PointLight::pointLightData.data(), pointLightBufferInfo.size);
+        vkUnmapMemory(device.getLogicalDevice(), pointLightBufferMemory);
+
+
+        PointLight::InitRHI(device, *this);
+    }
 }
 
 void GpuScene::CreateForwardLightingPass()
@@ -3306,6 +3359,13 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
             1, &dynamic_offset);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+        {
+            //point light
+            PointLight::CommonDrawSetup(commandBuffer);
+            for (auto& pl : _pointLights)
+                pl.Draw(commandBuffer, *this);
+        }
 
         vkCmdEndRenderPass(commandBuffer);
 
