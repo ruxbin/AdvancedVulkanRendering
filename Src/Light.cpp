@@ -16,8 +16,8 @@ VkDescriptorSet PointLight::drawPointLightDescriptorSet=nullptr;
 
 std::vector<PointLightData> PointLight::pointLightData;
 
-constexpr uint32_t SPHERE_SLICE = 20;
-constexpr uint32_t SPHERE_SLICE_2 = SPHERE_SLICE * 2;
+constexpr uint32_t SPHERE_SLICE = 15;
+constexpr uint32_t SPHERE_SLICE_2 = 32;
 constexpr uint32_t SPHERE_INDEX_COUNT = SPHERE_SLICE * SPHERE_SLICE_2 * 6;
 void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
 {
@@ -25,6 +25,7 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
 	{
         constexpr float deltaPI = M_PI_F / SPHERE_SLICE;
         std::vector<vec3> sphereVertices;
+        std::vector<uint16_t> sphereIndices;
         for (int i = 0; i < SPHERE_SLICE + 1; ++i)
         {
             vec3 vertex(0, sinf(i * deltaPI), cosf(i * deltaPI));
@@ -38,10 +39,92 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
             //mat4 rotateY = rotateY(angle);
             for (int j = 0; j < SPHERE_SLICE + 1; ++j)
             {
-                vec4 vertex = rotateY(angle) * vec4(sphereVertices[j], 1);
+                vec4 vertex = rotateZ(angle) * vec4(sphereVertices[j], 1);
                 sphereVertices.push_back(vertex.xyz());
             }
         }
+
+        for (int i = 0; i < SPHERE_SLICE_2; i++)
+        {
+            int i_1 = (i + 1) % SPHERE_SLICE_2;
+            for (int j = 0; j < SPHERE_SLICE; j++)
+            {
+                int j_1 = j + 1;
+                uint16_t primitive_index0 = i * (SPHERE_SLICE + 1)+j;
+                uint16_t primitive_index1 = i_1 * (SPHERE_SLICE + 1) + j;
+                uint16_t primitive_index2 = i * (SPHERE_SLICE + 1) + j_1;
+                uint16_t primitive_index3 = i_1 * (SPHERE_SLICE + 1) + j_1;
+                //clock wise
+                sphereIndices.push_back(primitive_index0);
+                sphereIndices.push_back(primitive_index2);
+                sphereIndices.push_back(primitive_index1);
+
+                sphereIndices.push_back(primitive_index1);
+                sphereIndices.push_back(primitive_index2);
+                sphereIndices.push_back(primitive_index3);
+            }
+        }
+
+        VkBufferCreateInfo pointLightVertexBufferInfo{};
+        pointLightVertexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        pointLightVertexBufferInfo.size = sphereVertices.size() * sizeof(vec3);
+        pointLightVertexBufferInfo.usage =  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        pointLightVertexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        pointLightVertexBufferInfo.flags = 0;
+        if (vkCreateBuffer(device.getLogicalDevice(), &pointLightVertexBufferInfo, nullptr,
+            &sphereBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create sphere vertex buffer!");
+        }
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device.getLogicalDevice(), sphereBuffer,
+            &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex =
+            device.findMemoryType(memRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkDeviceMemory sphereBufferMemory;
+        if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+            &sphereBufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate pointLight buffer memory!");
+        }
+        vkBindBufferMemory(device.getLogicalDevice(), sphereBuffer,
+            sphereBufferMemory, 0);
+        void* data;
+        vkMapMemory(device.getLogicalDevice(), sphereBufferMemory, 0, pointLightVertexBufferInfo.size, 0, &data);
+        std::memcpy(data, (void*)sphereVertices.data(), pointLightVertexBufferInfo.size);
+        vkUnmapMemory(device.getLogicalDevice(), sphereBufferMemory);
+
+
+        
+        pointLightVertexBufferInfo.size = sphereIndices.size() * sizeof(uint16_t);
+        pointLightVertexBufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        pointLightVertexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        pointLightVertexBufferInfo.flags = 0;
+        if (vkCreateBuffer(device.getLogicalDevice(), &pointLightVertexBufferInfo, nullptr,
+            &sphereIndexBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create sphere index buffer!");
+        }
+        vkGetBufferMemoryRequirements(device.getLogicalDevice(), sphereIndexBuffer,
+            &memRequirements);
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex =
+            device.findMemoryType(memRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkDeviceMemory sphereIndexBufferMemory;
+        if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+            &sphereIndexBufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate pointLight index buffer memory!");
+        }
+        vkBindBufferMemory(device.getLogicalDevice(), sphereIndexBuffer,
+            sphereIndexBufferMemory, 0);
+        vkMapMemory(device.getLogicalDevice(), sphereIndexBufferMemory, 0, pointLightVertexBufferInfo.size, 0, &data);
+        std::memcpy(data, (void*)sphereIndices.data(), pointLightVertexBufferInfo.size);
+        vkUnmapMemory(device.getLogicalDevice(), sphereIndexBufferMemory);
 	}
 
 	if (!PointLight::drawPointLightPipelineLayout)
@@ -179,7 +262,7 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
         // at 0 offset
         binfo1.offset = 0;
         // of the size of a camera data struct
-        binfo1.range = sizeof(FrameData);
+        binfo1.range = sizeof(PointLightData);
 
         VkWriteDescriptorSet setWrite1 = {};
         setWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -239,8 +322,8 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
         }
         
         VkDescriptorImageInfo depthImageInfo{};
-        depthImageInfo.imageView = device.getWindowDepthImageView();
-        depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+        depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
         VkWriteDescriptorSet setWriteDepth;
         setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         setWriteDepth.pNext = nullptr;
@@ -353,7 +436,7 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;                   //draw the backface of the sphere
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;                   //draw the backface of the sphere
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -363,7 +446,7 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
         rasterizer1.rasterizerDiscardEnable = VK_FALSE;
         rasterizer1.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer1.lineWidth = 1.0f;
-        rasterizer1.cullMode = VK_CULL_MODE_FRONT_BIT;
+        rasterizer1.cullMode = VK_CULL_MODE_BACK_BIT;
         rasterizer1.frontFace = VK_FRONT_FACE_CLOCKWISE;                 //stencil pass
         rasterizer1.depthBiasEnable = VK_FALSE;
 
@@ -471,6 +554,11 @@ void PointLight::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene)
         pointLightingPipelineInfoStencil.subpass = 0;
         pointLightingPipelineInfoStencil.basePipelineHandle = VK_NULL_HANDLE;
         pointLightingPipelineInfoStencil.pDepthStencilState = &depthStencilState1;
+
+        if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pointLightingPipelineInfoStencil,
+            nullptr, &PointLight::drawPointLightPipelineStencil) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
+        }
 	}
 }
 
@@ -485,7 +573,6 @@ void PointLight::CommonDrawSetup(VkCommandBuffer& commandBuffer)
         vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, sphereIndexBuffer, 0,
         VK_INDEX_TYPE_UINT16);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPointLightPipeline);
 
 }
 
@@ -493,9 +580,15 @@ void PointLight::Draw(VkCommandBuffer& commandBuffer,const GpuScene& gpuScene)
 {
 	//draw the stencil buffer
 	//mark the invalid area stencil 1
-	//lighting
-    
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPointLightPipelineStencil);
+    //pDynamicOffsets[1] is 32, but must be a multiple of device limit minUniformBufferOffsetAlignment 64
+    //Each element of pDynamicOffsets which corresponds to a descriptor binding with type VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC must be a multiple 
+    // of VkPhysicalDeviceLimits::minUniformBufferOffsetAlignment
+    uint32_t dynamicoffsets[2] = { 0,_dynamicOffset };
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPointLightPipelineLayout, 0, 1, &drawPointLightDescriptorSet, 2, dynamicoffsets);
+    vkCmdDrawIndexed(commandBuffer, SPHERE_INDEX_COUNT, 1, 0, 0, 0);
 
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPointLightPipelineLayout, 0, 1, &drawPointLightDescriptorSet, 1, &_dynamicOffset);
+    //lighting
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPointLightPipeline);
     vkCmdDrawIndexed(commandBuffer, SPHERE_INDEX_COUNT, 1, 0, 0, 0);
 }

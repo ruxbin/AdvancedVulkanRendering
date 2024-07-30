@@ -1,5 +1,13 @@
 #pragma once
 #include "Matrix.h"
+#ifdef _WIN32
+#define VK_USE_PLATFORM_WIN32_KHR
+#endif
+#ifdef __gnu_linux__
+#define VK_USE_PLATFORM_XLIB_KHR
+#endif
+#include "vulkan/vulkan.h"
+
 #include <vector>
 #include <cstdlib>
 #include <cstddef>
@@ -75,3 +83,8 @@ struct FrameData
 };
 
 #define M_PI_F 3.1415926535897932f
+
+inline bool hasStencilComponent(VkFormat format) {
+    return format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+        format == VK_FORMAT_D24_UNORM_S8_UINT;
+}

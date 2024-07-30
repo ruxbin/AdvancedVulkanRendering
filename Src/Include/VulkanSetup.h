@@ -42,6 +42,7 @@ VkSwapchainKHR getSwapChain() const {return swapChain;}
 VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
 VkImageView getWindowDepthImageView()const{return depthImageView;}
+VkImageView getWindowDepthOnlyImageView()const { return depthOnlyImageView; }
 VkFormat getWindowDepthFormat()const{return depthFormat;}
 VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
 VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
@@ -82,6 +83,7 @@ private:
   VkImage depthImage;
   VkDeviceMemory depthImageMemory;
   VkImageView depthImageView;
+  VkImageView depthOnlyImageView;
 
   VkCommandPool commandPool;
 
@@ -309,7 +311,7 @@ VkFormat depthFormat;
   }
 
   VkFormat findDepthFormat() {
-    return findSupportedFormat({VK_FORMAT_D32_SFLOAT,
+    return findSupportedFormat({
                                 VK_FORMAT_D32_SFLOAT_S8_UINT,
                                 VK_FORMAT_D24_UNORM_S8_UINT},
                                VK_IMAGE_TILING_OPTIMAL,
@@ -329,7 +331,7 @@ VkFormat depthFormat;
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     createInfo.format = depthFormat;
 
-    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT| VK_IMAGE_ASPECT_STENCIL_BIT;
     createInfo.subresourceRange.baseMipLevel = 0;
     createInfo.subresourceRange.levelCount = 1;
     createInfo.subresourceRange.baseArrayLayer = 0;
@@ -340,8 +342,18 @@ VkFormat depthFormat;
       throw std::runtime_error("failed to create depthimage views!");
     }
 
+    //stencilImageView
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (vkCreateImageView(device, &createInfo, nullptr, &depthOnlyImageView) !=
+        VK_SUCCESS) {
+        throw std::runtime_error("failed to create depthimage stencil views!");
+    }
+
+
     transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED,
                           VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+
   }
 
   void createImage(uint32_t width, uint32_t height, VkFormat format,

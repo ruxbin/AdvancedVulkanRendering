@@ -14,7 +14,8 @@ public:
 	//virtual void InitRHI(const VulkanDevice&, const GpuScene&)=0;
 };
 
-struct PointLightData
+//PointLightData is stored in the dynmaic uniform buffer, it requires that offset should be 64 bytes aligned when binding the descriptorset
+struct alignas(64) PointLightData
 {
 	vec4 posSqrRadius;	// Position in XYZ, radius squared in W.
 	vec3 color;			// RGB color of light.

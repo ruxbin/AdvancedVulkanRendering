@@ -32,6 +32,7 @@ struct VSInput
 struct VSOutput
 {
     float4 Position : SV_POSITION;
+    float2 uv : TEXCOORD0;
 };
 
 
@@ -39,15 +40,18 @@ VSOutput RenderSceneVS(VSInput input)
 {
     VSOutput Output;
     float radius = sqrt(posSqrRadius.w);
-    float4x4 objectToWorldMatrix = {    radius, 0,  0,  0,
-                                        0,  radius, 0,  0,
-                                        0,  0,  radius, 0,
-                                        posSqrRadius.x, posSqrRadius.y, posSqrRadius.z, 1
+    float4x4 objectToWorldMatrix =
+    {
+        radius, 0, 0, posSqrRadius.x,
+        0, radius, 0, posSqrRadius.y,
+        0, 0, radius, posSqrRadius.z,
+        0, 0, 0, 1
             
-        };//row-major
+      };//row-major
     float4x4 finalMatrix = mul(cameraParams.projectionMatrix, cameraParams.viewMatrix);
     
     Output.Position = mul(finalMatrix, mul(objectToWorldMatrix, float4(input.position, 1.0)));
+        Output.uv = Output.Position.xy / Output.Position.w * 0.5 + 0.5;
     return Output;
 }
 
@@ -103,7 +107,7 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     half4 emissiveSample;
     half4 F0RoughnessSample;
     
-    float2 uv = input.Position.xy / input.Position.w;
+    float2 uv = input.uv;
     
     albedoSample = albedoeTex.SampleLevel(_NearestClampSampler, uv, 0);
     normalSample = normalTex.SampleLevel(_NearestClampSampler, uv, 0);

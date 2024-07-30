@@ -1291,8 +1291,8 @@ void GpuScene::init_deferredlighting_descriptors()
     }
     //need transform layout?--yes!
     VkDescriptorImageInfo depthImageInfo{};
-    depthImageInfo.imageView = device.getWindowDepthImageView();
-    depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+    depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
     VkWriteDescriptorSet setWriteDepth;
     setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     setWriteDepth.pNext = nullptr;
@@ -2763,6 +2763,8 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     //create point light
     {
         size_t pointlightCount = sceneFile["point_lights"].size();
+        PointLight::pointLightData.reserve(pointlightCount);
+        _pointLights.reserve(pointlightCount);
         for (int i = 0; i < pointlightCount; i++)
         {
             float posx = sceneFile["point_lights"][i]["position_x"].template get<float>();
@@ -2780,7 +2782,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
         VkBufferCreateInfo pointLightBufferInfo{};
         pointLightBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         pointLightBufferInfo.size = pointlightCount * sizeof(PointLightData);
-        pointLightBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        pointLightBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         pointLightBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         pointLightBufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &pointLightBufferInfo, nullptr,
@@ -2838,7 +2840,7 @@ void GpuScene::CreateForwardLightingPass()
     deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     deferredLightingDepthAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     deferredLightingDepthAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    deferredLightingDepthAttachments.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    deferredLightingDepthAttachments.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     deferredLightingDepthAttachments.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 
@@ -2894,17 +2896,35 @@ void GpuScene::CreateDeferredLightingPass()
     deferredLightingAttachments.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+
+    VkAttachmentDescription deferredLightingDepthAttachments = {};
+
+    deferredLightingDepthAttachments.format = device.getWindowDepthFormat();
+    deferredLightingDepthAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
+    deferredLightingDepthAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    deferredLightingDepthAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    deferredLightingDepthAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    deferredLightingDepthAttachments.initialLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    deferredLightingDepthAttachments.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+
 	
     
     VkAttachmentReference deferredLightingAttachmentRefs{};
     deferredLightingAttachmentRefs.attachment = 0;
     deferredLightingAttachmentRefs.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentReference deferredLightingDepthStencilAttachmentRefs{};
+    deferredLightingDepthStencilAttachmentRefs.attachment = 1;
+    deferredLightingDepthStencilAttachmentRefs.layout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+
    
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &deferredLightingAttachmentRefs;
+    subpass.pDepthStencilAttachment = &deferredLightingDepthStencilAttachmentRefs;
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -2914,7 +2934,7 @@ void GpuScene::CreateDeferredLightingPass()
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    std::array<VkAttachmentDescription, 1> attachments = { deferredLightingAttachments};
+    std::array<VkAttachmentDescription, 2> attachments = { deferredLightingAttachments, deferredLightingDepthAttachments };
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -3075,8 +3095,9 @@ void GpuScene::CreateDeferredLightingFrameBuffer(uint32_t count) {
 	_deferredFrameBuffer.resize(count);
     for (int i = 0; i < count; i++)
     {
-        std::array<VkImageView, 1> attachments = {
+        std::array<VkImageView, 2> attachments = {
             device.getSwapChainImageView(i),
+            device.getWindowDepthImageView()
         };
 
         VkFramebufferCreateInfo framebufferInfo{};
@@ -3329,7 +3350,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         //TODO: test with subpass dependency
         //transition the image layout
         //notice:换成device的transitionImageLayout会报错,validation layer 关于barrier只在同一个commandbuffer中记录imageview的layout，跨commandbuffer会报错~
-        transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
         for (int i = 0; i < 4; i++)
             transitionImageLayout(_gbuffers[i], _gbufferFormat[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
@@ -3337,8 +3358,11 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     //deferred lighting pass
     {
 	    uint32_t dynamic_offset = 0;
-        std::array<VkClearValue, 1> clearValues{};
+        std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
+        clearValues[1].depthStencil.depth = 0;
+        clearValues[1].depthStencil.stencil = 0;
+        //don't clear depth stencil
         
         VkRenderPassBeginInfo blitPassInfo{};
         blitPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -3372,6 +3396,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
         //forward pass
         {
+
             dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
 		
 	        VkRenderPassBeginInfo forwardPassInfo{};
@@ -3382,6 +3407,16 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             forwardPassInfo.renderArea.extent = device.getSwapChainExtent();
             forwardPassInfo.clearValueCount = 0;//static_cast<uint32_t>(clearValues.size());
             //forwardPassInfo.pClearValues = clearValues.data();
+            VkBuffer vertexBuffers[] = { applVertexBuffer, applNormalBuffer,
+                            applTangentBuffer, applUVBuffer,
+                            applInstanceBuffer };
+            VkDeviceSize offsets[] = { 0, 0, 0, 0, 0 };
+
+            vkCmdBindVertexBuffers(commandBuffer, 0,
+                sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
+                vertexBuffers, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0,
+                VK_INDEX_TYPE_UINT32);
 
 	        vkCmdBeginRenderPass(commandBuffer,&forwardPassInfo,VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
