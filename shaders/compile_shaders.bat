@@ -11,3 +11,5 @@ G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneForwardPS -Fo drawcluster.forward.ps.spv
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T vs_6_0 deferredlighting.hlsl -fspv-debug=vulkan-with-source -E AAPLSimpleTexVertexOutFSQuadVertexShader -Fo deferredlighting.vs.spv
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T ps_6_0 deferredlighting.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredlighting.ps.spv
+G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T ps_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredPointLighting.ps.spv
+G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T vs_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo deferredPointLighting.vs.spv

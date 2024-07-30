@@ -53,6 +53,7 @@ struct AAPLFrameConstants
     float3 sunColor;
     float wetness;
     float emissiveScale;
+    float localLightIntensity;
 };
 
 struct CameraParamsBuffer
@@ -81,4 +82,18 @@ struct CameraParamsBufferFull
     float4x4 invViewProjectionMatrix;
 };
 
-#define M_PI_F 3.1415926f
+#define M_PI_F 3.1415926535897932f
+
+
+float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBufferFull cameraParams)
+{
+    float4 ndc;
+    ndc.xy = texCoord.xy * 2 - 1;
+    //ndc.y *= -1;
+    ndc.z = depth;
+    ndc.w = 1;
+
+    float4 worldPosition = mul(cameraParams.invViewProjectionMatrix, ndc);
+    worldPosition /= worldPosition.w;
+    return worldPosition;
+}

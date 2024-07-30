@@ -6,6 +6,7 @@
 #include "Camera.h"
 #include "spdlog/spdlog.h"
 #include "nlohmann/json.hpp"
+#include "Light.h"
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -14,6 +15,7 @@
 #include <filesystem>
 
 class Shadow;
+
 
 struct AAPLTextureData
 {
@@ -288,6 +290,7 @@ private:
   VkPipeline drawOccluderPipeline;
 
   Shadow* _shadow;
+  std::vector< PointLight> _pointLights;
 
   std::filesystem::path _rootPath;
 
@@ -362,12 +365,13 @@ private:
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
 
-        if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+
+
+        if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL ) {
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 
-            //if (hasStencilComponent(format)) {
-            //    barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-            //}
+           
+            
         }
         else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -376,6 +380,11 @@ private:
         {
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         }
+
+        if (hasStencilComponent(format)) {
+            barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        }
+        
 
         VkPipelineStageFlags sourceStage;
         VkPipelineStageFlags destinationStage;
@@ -412,6 +421,13 @@ private:
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
             sourceStage = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;   //TODO：VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT？？
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL)
+        {
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
         else {
@@ -560,8 +576,9 @@ private:
         vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
     }
     friend class Shadow;
-
-    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f };
+    friend class PointLight;
+    friend class SpotLight;
+    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f,2.f };
 };
 
 template<>

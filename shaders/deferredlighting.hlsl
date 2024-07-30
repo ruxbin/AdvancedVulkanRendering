@@ -38,18 +38,7 @@ struct VSOutput
 
 
 
-float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBufferFull cameraParams)
-{
-    float4 ndc;
-    ndc.xy = texCoord.xy * 2 - 1;
-    //ndc.y *= -1;
-    ndc.z =depth;
-    ndc.w = 1;
 
-    float4 worldPosition = mul(cameraParams.invViewProjectionMatrix, ndc);
-    worldPosition /= worldPosition.w;
-    return  worldPosition;
-}
 
 
 float evaluateCascadeShadows(CameraParamsBufferFull cameraParams,
