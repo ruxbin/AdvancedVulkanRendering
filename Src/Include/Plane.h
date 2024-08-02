@@ -75,4 +75,14 @@ public:
 		return maxD > 0;
 	}
 	//TODO:SIMD version
+
+
+	bool IsInside(const PointLightData* const pointlight)const
+	{
+		float d1 = normal.dot(pointlight->posSqrRadius.xyz()) - w;
+		if (d1<0 && (d1 * d1)>pointlight->posSqrRadius.w)
+			return false;
+		else
+			return true;
+	}
 };

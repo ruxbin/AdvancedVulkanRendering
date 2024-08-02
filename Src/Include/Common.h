@@ -88,3 +88,34 @@ inline bool hasStencilComponent(VkFormat format) {
     return format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
         format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
+
+
+//PointLightData is stored in the dynmaic uniform buffer, it requires that offset should be 64 bytes aligned when binding the descriptorset
+struct alignas(64) PointLightData
+{
+    vec4 posSqrRadius;	// Position in XYZ, radius squared in W.
+    vec3 color;			// RGB color of light.
+    uint32_t flags;		// Optional flags. May include `LIGHT_FOR_TRANSPARENT_FLAG`.
+    PointLightData(float x, float y, float z, float radius, float r, float g, float b, uint32_t f)
+    {
+        posSqrRadius = vec4(x, y, z, radius);
+        color = vec3(r, g, b);
+        flags = f;
+    }
+};
+
+
+#define SPOT_LIGHT_INNER_SCALE (0.8f)
+
+struct alignas(64) SpotLightData
+{
+    vec4    boundingSphere;     // Bounding sphere for quick visibility test.
+    vec4    posAndHeight;       // Position in XYZ and height of spot in W.
+    vec4    colorAndInnerAngle; // RGB color of light.
+    vec4    dirAndOuterAngle;   // Direction in XYZ, cone angle in W.
+    mat4  viewProjMatrix;     // View projection matrix to light space.
+    uint32_t            flags;              // Optional flags. May include `LIGHT_FOR_TRANSPARENT_FLAG`.
+    SpotLightData(const vec4& bs,const vec4& ph,const vec4&ci,const vec4&da,uint32_t f) :
+        boundingSphere(bs),posAndHeight(ph),colorAndInnerAngle(ci),dirAndOuterAngle(da),flags(f){}
+};
+
