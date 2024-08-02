@@ -2815,6 +2815,42 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
 
         PointLight::InitRHI(device, *this);
     }
+
+    //spot light
+    {
+        size_t spotlightCount = sceneFile["spot_lights"].size();
+        SpotLight::spotLightData.reserve(spotlightCount);
+        _spotLights.reserve(spotlightCount);
+        for (int i = 0; i < spotlightCount; i++)
+        {
+            float posx = sceneFile["spot_lights"][i]["position_x"].template get<float>();
+            float posy = sceneFile["spot_lights"][i]["position_y"].template get<float>();
+            float posz = sceneFile["spot_lights"][i]["position_z"].template get<float>();
+            float color_r = sceneFile["spot_lights"][i]["color_r"].template get<float>();
+            float color_g = sceneFile["spot_lights"][i]["color_g"].template get<float>();
+            float color_b = sceneFile["spot_lights"][i]["color_b"].template get<float>();
+            float coneRad = sceneFile["spot_lights"][i]["coneRad"].template get<float>();
+            float height = sceneFile["spot_lights"][i]["height"].template get<float>();
+            float direction_x = sceneFile["spot_lights"][i]["direction_x"].template get<float>();
+            float direction_y = sceneFile["spot_lights"][i]["direction_y"].template get<float>();
+            float direction_z = sceneFile["spot_lights"][i]["direction_z"].template get<float>();
+            uint32_t flags = sceneFile["spot_lights"][i]["for_transparent"].template get<bool>() ? LIGHT_FOR_TRANSPARENT_FLAG : 0;
+
+            vec4 boundingSphere;
+            if (coneRad > M_PI_F / 4.0f)
+            {
+                float R = height * tanf(coneRad);
+                boundingSphere = vec4(vec3(posx, posy, posz) + vec3(direction_x, direction_y, direction_z)*height,R);
+            }
+            else
+            {
+                float R = height / (2 * cos(coneRad) * cos(coneRad));
+                boundingSphere = vec4(vec3(posx, posy, posz) + vec3(direction_x, direction_y, direction_z) * R, R);
+            }
+            SpotLight::spotLightData.emplace_back(SpotLightData(boundingSphere, vec4(posx,posy,posz,height),vec4(color_r,color_g,color_b, coneRad * SPOT_LIGHT_INNER_SCALE),vec4(direction_x,direction_y,direction_z,coneRad), flags));
+            _spotLights.emplace_back(SpotLight(i * sizeof(SpotLightData), &SpotLight::spotLightData.back()));
+        }
+    }
 }
 
 void GpuScene::CreateForwardLightingPass()
@@ -3388,7 +3424,11 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             //point light
             PointLight::CommonDrawSetup(commandBuffer);
             for (auto& pl : _pointLights)
+            {
+                if (maincamera->getFrustum().FrustumCull(pl.getPointLightData()))
+                    continue;
                 pl.Draw(commandBuffer, *this);
+            }
         }
 
         vkCmdEndRenderPass(commandBuffer);
@@ -4099,7 +4139,10 @@ std::pair<VkImage, VkImageView> GpuScene::createTexture(const AAPLTextureData& t
     imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     imageviewInfo.image = textureImage;
     imageviewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-
+    imageviewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
     imageviewInfo.format = mapFromApple((MTLPixelFormat)(texturedata._pixelFormat));;
     imageviewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     imageviewInfo.subresourceRange.baseMipLevel = 0;

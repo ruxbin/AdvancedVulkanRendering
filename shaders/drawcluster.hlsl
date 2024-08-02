@@ -44,7 +44,7 @@ struct AAPLShaderMaterial
 [[vk::binding(0,0)]]
 cbuffer cam
 {
-    CameraParamsBuffer cameraParams;
+    CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 [[vk::binding(1,0)]] StructuredBuffer<AAPLShaderMaterial> materials;
@@ -103,14 +103,15 @@ struct PSOutput
 VSOutput RenderSceneVS( VSInput input)
 {
     VSOutput Output;
-    float4x4 finalMatrix = mul(cameraParams.projectionMatrix, cameraParams.viewMatrix);
+    float4x4 finalMatrix = mul(cameraParams.shadowMatrix[0].shadowProjectionMatrix, cameraParams.shadowMatrix[0].shadowViewMatrix);
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
     Output.drawcallid = input.drawcallid;
 
+    float4x4 invViewMatrix = cameraParams.shadowMatrix[1].shadowProjectionMatrix;
 
-    Output.viewDir = normalize(float3(cameraParams.invViewMatrix._m03, cameraParams.invViewMatrix._m13, cameraParams.invViewMatrix._m23) - input.position);
+    Output.viewDir = normalize(float3(invViewMatrix._m03, invViewMatrix._m13, invViewMatrix._m23) - input.position);
     Output.wsPosition = float4(input.position, 1);
 
 	Output.normal = normalize(input.normal);
@@ -127,20 +128,20 @@ PSOutput RenderSceneBasePass(VSOutput input)
     uint chunkindex = chunkIndex[input.drawcallid];
     uint materialIndex = meshChunks[chunkindex].materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
-    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+    half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 	half4 materialData = half4(0,0,0,0);
 	half4 emissive = 0;
 
 	if(material.hasMetallicRoughness>0)
-        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+        materialData = _Textures[material.roughness_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 
 	if(material.hasEmissive>0)
-        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+        emissive = _Textures[material.emissive_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 
 	half3 geonormal = normalize(input.normal);
 	half3 geotan = normalize(input.tangent);
 	half3 geobinormal = normalize(cross(geotan,geonormal));
-    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 0);
+    half4 texnormal = _Textures[material.normal_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 	texnormal.xy = 2*texnormal.xy-1;
 	
 	texnormal.z = sqrt(saturate(1.0f - dot(texnormal.xy, texnormal.xy)));
@@ -167,20 +168,20 @@ PSOutput RenderSceneBasePS(VSOutput input)
     
     uint materialIndex = pushConstants.materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
-    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
     half4 materialData = half4(0, 0, 0, 0);
     half4 emissive = 0;
 
     if (material.hasMetallicRoughness > 0)
-        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+        materialData = _Textures[material.roughness_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 
     if (material.hasEmissive > 0)
-        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+        emissive = _Textures[material.emissive_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 
     half3 geonormal = normalize(input.normal);
     half3 geotan = normalize(input.tangent);
     half3 geobinormal = normalize(cross(geotan, geonormal));
-    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    half4 texnormal = _Textures[material.normal_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
     texnormal.xy = 2 * texnormal.xy - 1;
     half dotproduct = dot(texnormal.xy, texnormal.xy);
     half oneminusdotproduct = saturate(1.0f - dotproduct);
@@ -216,7 +217,7 @@ void RenderSceneDepthOnly(VSOutput input)
     
     uint materialIndex = pushConstants.materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
-    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
    
     if (specAlphaMask)
     {
@@ -230,20 +231,20 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
 {
     uint materialIndex = pushConstants.materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
-    half4 baseColor = _Textures[material.albedo_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
     half4 materialData = half4(0, 0, 0, 0);
     half4 emissive = 0;
 
     if (material.hasMetallicRoughness > 0)
-        materialData = _Textures[material.roughness_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+        materialData = _Textures[material.roughness_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 
     if (material.hasEmissive > 0)
-        emissive = _Textures[material.emissive_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+        emissive = _Textures[material.emissive_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
 
     half3 geonormal = normalize(input.normal);
     half3 geotan = normalize(input.tangent);
     half3 geobinormal = normalize(cross(geotan, geonormal));
-    half4 texnormal = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler, input.TextureUV, 10);
+    half4 texnormal = _Textures[material.normal_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
     texnormal.xy = 2 * texnormal.xy - 1;
     half dotproduct = dot(texnormal.xy, texnormal.xy);
     half oneminusdotproduct = saturate(1.0f - dotproduct);

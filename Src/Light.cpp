@@ -15,6 +15,7 @@ VkDescriptorSetLayout PointLight::drawPointLightDescriptorSetLayout = nullptr;
 VkDescriptorSet PointLight::drawPointLightDescriptorSet=nullptr;
 
 std::vector<PointLightData> PointLight::pointLightData;
+std::vector<SpotLightData> SpotLight::spotLightData;
 
 constexpr uint32_t SPHERE_SLICE = 15;
 constexpr uint32_t SPHERE_SLICE_2 = 32;

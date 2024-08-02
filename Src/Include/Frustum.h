@@ -22,6 +22,16 @@ public:
 		return false;
 	}
 
+	bool FrustumCull(const PointLightData* const pointlight) const
+	{
+		for (int i = 0; i < NUM_PLANES; i++)
+		{
+			if (!borders[i].IsInside(pointlight))
+				return true;
+		}
+		return false;
+	}
+
 	Frustum(const std::initializer_list<std::initializer_list<vec3>>& borderPts)
 	{
 		if (borderPts.size() != 6)
