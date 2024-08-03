@@ -182,6 +182,8 @@ PSOutput RenderSceneBasePS(VSOutput input)
     half3 geotan = normalize(input.tangent);
     half3 geobinormal = normalize(cross(geotan, geonormal));
     half4 texnormal = _Textures[material.normal_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+    //half4 texnormalmip = _Textures[material.normal_texture_index].SampleLevel(_LinearRepeatSampler,input.TextureUV,3.5);
+    //texnormalmip = abs(texnormal-texnormalmip);
     texnormal.xy = 2 * texnormal.xy - 1;
     half dotproduct = dot(texnormal.xy, texnormal.xy);
     half oneminusdotproduct = saturate(1.0f - dotproduct);
@@ -206,7 +208,9 @@ PSOutput RenderSceneBasePS(VSOutput input)
     output.albedo = half4(surfaceData.albedo, surfaceData.alpha);
     output.normals = half4(surfaceData.normal, 0.0f);
     output.emissive = half4(surfaceData.emissive, 0.0f);
+//output.emissive = texnormalmip;
     output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
+//output.F0Roughness = half4(ddx(input.TextureUV),ddy(input.TextureUV));
     return output;
 }
 
