@@ -1,15 +1,21 @@
 #pragma once
 #include "Matrix.h"
+#include "Common.h"
 #include "VulkanSetup.h"
 #include "vulkan/vulkan.h"
 #include "Camera.h"
 #include "spdlog/spdlog.h"
 #include "nlohmann/json.hpp"
+#include "Light.h"
 #include <stdexcept>
 #include <string_view>
 #include <vector>
 #include <utility>
 #include <stdio.h>
+#include <filesystem>
+
+class Shadow;
+
 
 struct AAPLTextureData
 {
@@ -56,29 +62,8 @@ struct AAPLMeshData
   ~AAPLMeshData();
 };
 
-struct AAPLBoundingBox3
-{
-    alignas(16) vec3 min;
-    alignas(16) vec3 max;
-};
 
-struct AAPLSphere
-{
-    vec4 data;//xyz center, w radius
-};
 
-struct AAPLMeshChunk
-{
-    AAPLBoundingBox3 boundingBox;
-    vec4 normalDistribution;
-    vec4 cluterMean;
-
-    AAPLSphere boundingSphere;
-
-    unsigned int materialIndex;
-    unsigned int indexBegin;
-    unsigned int indexCount;
-};
 
 
 struct alignas(16) AAPLShaderMaterial
@@ -151,11 +136,33 @@ private:
 
 
   VkDescriptorSetLayout applSetLayout;
-  VkDescriptorPool applEescriptorPool;
+  VkDescriptorPool applDescriptorPool;
   VkDescriptorSet applDescriptorSet;
+
+
+  VkDescriptorSetLayout gpuCullSetLayout;
+  VkDescriptorPool gpuCullDescriptorPool;
+  VkDescriptorSet gpuCullDescriptorSet;
+
+
+  VkDescriptorSetLayout deferredLightingSetLayout;
+  VkDescriptorPool deferredLightingDescriptorPool;
+  VkDescriptorSet deferredLightingDescriptorSet;
 
   VkBuffer uniformBuffer;
   VkDeviceMemory uniformBufferMemory;
+
+  VkBuffer drawParamsBuffer;
+  VkDeviceMemory drawParamsBufferMemory;
+  VkBuffer cullParamsBuffer;
+  VkDeviceMemory cullParamsBufferMemory;
+  VkBuffer meshChunksBuffer;
+  VkDeviceMemory meshChunksBufferMemory;
+  VkBuffer writeIndexBuffer;
+  VkDeviceMemory writeIndexBufferMemory;
+  VkBuffer chunkIndicesBuffer;
+  VkDeviceMemory chunkIndicesBufferMemory;
+
 
   VkBuffer vertexBuffer;
   VkDeviceMemory vertexBufferMemory;
@@ -189,6 +196,9 @@ private:
   VkBuffer applUVBuffer;
   VkDeviceMemory applUVBufferMemory;
 
+  VkBuffer applInstanceBuffer;
+  VkDeviceMemory applInstanceBufferMemory;
+
   VkBuffer applIndexBuffer;
   VkDeviceMemory applIndexMemory;
 
@@ -197,7 +207,17 @@ private:
 
   VkPipelineLayout drawclusterPipelineLayout;
   VkPipeline drawclusterPipeline;
+  VkPipeline drawclusterPipelineAlphaMask;
 
+  VkPipelineLayout encodeDrawBufferPipelineLayout;
+  VkPipeline encodeDrawBufferPipeline;
+
+	VkPipelineLayout drawclusterBasePipelineLayout;
+  	VkPipeline drawclusterBasePipeline;
+    VkPipeline drawclusterForwardPipeline;
+
+    VkPipelineLayout deferredLightingPipelineLayout;
+    VkPipeline deferredLightingPipeline;
 
   VkBuffer occluderVertexBuffer;
   VkDeviceMemory occluderVertexBufferMemory;
@@ -210,6 +230,8 @@ private:
 
   //VkImageView currentImage;
   VkSampler textureSampler;
+  VkSampler nearestClampSampler;
+
   //VkImage textureImage;
   //VkDeviceMemory textureImageMemory;
 
@@ -221,8 +243,59 @@ private:
 
   nlohmann::json sceneFile;
 
-  VkShaderModule createShaderModule(const std::vector<char> &code);
-  void createGraphicsPipeline(VkRenderPass renderPass);
+  VkRenderPass occluderZPass;
+
+  VkImage            _depthTexture;
+  VkImage            _depthPyramidTexture;
+  VkImageView           _depthTextureView;
+  VkFramebuffer         _depthFrameBuffer;
+  VkFormat		_depthFormat=VK_FORMAT_D32_SFLOAT_S8_UINT;
+  VkBuffer		_occludersVertBuffer;
+  VkBuffer		_occludersIndexBuffer;
+  VkDeviceMemory	_occludersBufferMemory;
+  VkDeviceMemory	_occludersIndexBufferMemory;
+
+
+	
+  VkImage            	_gbufferAlbedoAlpha;
+  VkImage		_gbufferNormals;
+  VkImage		_gbufferEmissive;
+  VkImage		_gbufferF0Roughness;
+  VkImageView           _gbufferAlbedoAlphaTextureView;
+  VkImageView		_gbufferNormalsTextureView;
+  VkImageView		_gbufferEmissiveTextureView;
+  VkImageView		_gbufferF0RoughnessTextureView;
+  VkFormat		_gbufferFormat[4] = {	
+                        VK_FORMAT_B8G8R8A8_SRGB,
+	  					VK_FORMAT_R16G16B16A16_SFLOAT,
+                        VK_FORMAT_B8G8R8A8_SRGB,
+                        VK_FORMAT_B8G8R8A8_SRGB
+  						};
+  VkImage		_gbuffers[4];
+  VkImageView		_gbuffersView[4];
+  VkFramebuffer         _basePassFrameBuffer;
+  VkRenderPass		_basePass;
+
+  std::vector<VkFramebuffer>     _deferredFrameBuffer;
+  VkRenderPass      _deferredLightingPass;
+
+  std::vector<VkFramebuffer>	_forwardFrameBuffer;
+  VkRenderPass		_forwardLightingPass;
+
+    void createGraphicsPipeline(VkRenderPass renderPass);
+  void createComputePipeline();
+
+
+  VkPipelineLayout drawOccluderPipelineLayout;
+  VkPipeline drawOccluderPipeline;
+
+  Shadow* _shadow;
+  std::vector< PointLight> _pointLights;
+  std::vector< SpotLight> _spotLights;
+
+  std::filesystem::path _rootPath;
+
+  void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffer(VkCommandPool commandPool) {
     VkCommandBufferAllocateInfo allocInfo{};
@@ -240,11 +313,19 @@ private:
     void createSyncObjects();
 
   public:
-    GpuScene(std::string_view& scenefile, std::string_view &filepath, const VulkanDevice &deviceref);
+    GpuScene(std::filesystem::path& root, const VulkanDevice &deviceref);
     GpuScene() = delete;
     GpuScene(const GpuScene &) = delete;
     void Draw();
+	const std::filesystem::path& RootPath()const{return _rootPath;} 
+	
 
+	VkShaderModule createShaderModule(const std::vector<char> &code)const;
+
+	const VkPipelineLayout& getDrawClusterPipelineLayout()const{return drawclusterPipelineLayout;}
+
+	const VkPipeline& getDrawClusterPipeline()const{return drawclusterPipeline;}
+	const VkPipeline& getDrawClusterPipelineAlphaMask()const{return drawclusterPipelineAlphaMask;}
 
     Camera* GetMainCamera() { return maincamera; }
     void init_descriptors(VkImageView);
@@ -252,42 +333,143 @@ private:
     void init_descriptorsV2();
 
     void init_appl_descriptors();
+
+    void init_drawparams_descriptors();
+
+    void init_deferredlighting_descriptors();
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
 
-    void CreateTextures();
+    void DrawChunksBasePass();
+
+        void CreateTextures();
 
     void updateSamplerInDescriptors(VkImageView currentImage);
 
     void ConfigureMaterial(const AAPLMaterial&, AAPLShaderMaterial&);
 
-    struct uniformBufferData {
-      mat4 projectionMatrix;
-      mat4 viewMatrix;
+
+    void transitionImageLayout(VkImage image, VkFormat format,
+        VkImageLayout oldLayout,
+        VkImageLayout newLayout)
+    {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+
+
+        if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL ) {
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+
+           
+            
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
+        else
+        {
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        }
+
+        if (hasStencilComponent(format)) {
+            barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        }
+        
+
+        VkPipelineStageFlags sourceStage;
+        VkPipelineStageFlags destinationStage;
+
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+            newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+            newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+            (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+                newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        }
+        else if ((oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        {
+            barrier.srcAccessMask = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            sourceStage = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;   //TODO：VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT？？
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL)
+        {
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else {
+            throw std::invalid_argument("unsupported layout transition!");
+        }
+
+        vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
+            nullptr, 0, nullptr, 1, &barrier);
+        
+    }
+	
+    void CreateDepthTexture();
+    void DrawOccluders();
+    void CreateOccluderZPass();
+    void CreateOccluderZPassFrameBuffer();
+    void CreateZdepthView();
+
+    void CreateGBuffers();
+    void CreateBasePassFrameBuffer();
+    void CreateDeferredLightingFrameBuffer(uint32_t count);
+    void CreateDeferredBasePass();
+    void CreateDeferredLightingPass();
+    void CreateForwardLightingPass();
+    void CreateForwardLightingFrameBuffer(uint32_t count);
+
+
+    
+
+    struct gpuCullParams{
+        alignas(16) uint32_t totalChunks;
+	    Frustum frustum;
     };
 
-    uint32_t findMemoryType(uint32_t typeFilter,
-                            VkMemoryPropertyFlags properties) {
-      VkPhysicalDeviceMemoryProperties memProperties;
-      vkGetPhysicalDeviceMemoryProperties(device.getPhysicalDevice(),
-                                          &memProperties);
-      for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((typeFilter & (1 << i)) &&
-            (memProperties.memoryTypes[i].propertyFlags & properties) ==
-                properties) {
-          return i;
-        }
-      }
-
-      throw std::runtime_error("failed to find suitable memory type!");
-    }
+    
 
     void* loadMipTexture(const AAPLTextureData& texturedata,int,unsigned int&);
 
     void createUniformBuffer() {
       VkBufferCreateInfo bufferInfo{};
       bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-      bufferInfo.size = sizeof(uniformBufferData);
+      bufferInfo.size = sizeof(FrameData);
       bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
       bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       bufferInfo.flags = 0;
@@ -303,7 +485,7 @@ private:
       allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
       allocInfo.allocationSize = memRequirements.size;
       allocInfo.memoryTypeIndex =
-          findMemoryType(memRequirements.memoryTypeBits,
+          device.findMemoryType(memRequirements.memoryTypeBits,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -313,6 +495,31 @@ private:
       }
       vkBindBufferMemory(device.getLogicalDevice(), uniformBuffer,
                          uniformBufferMemory, 0);
+    }
+
+
+    void createNearestClampSampler()
+    {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device.getPhysicalDevice(), &properties);
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        //samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        //samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+        if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &nearestClampSampler) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create nearest clamp sampler!");
+        }
     }
 
     void createTextureSampler()
@@ -326,21 +533,21 @@ private:
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.anisotropyEnable = VK_TRUE;
+        samplerInfo.anisotropyEnable = VK_FALSE;
         samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
         samplerInfo.compareEnable = VK_FALSE;
         samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.minLod = 0;
+	samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 
         if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
             throw std::runtime_error("failed to create texture sampler!");
         }
     }
 
-    void createVertexBuffer();
-    void createIndexBuffer();
     void recordCommandBuffer(int frameindex);
     std::pair<VkImage, VkImageView> createTexture(const AAPLTextureData&);
 
@@ -363,7 +570,7 @@ private:
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+        allocInfo.memoryTypeIndex = device.findMemoryType(memRequirements.memoryTypeBits, properties);
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate buffer memory!");
@@ -371,8 +578,10 @@ private:
 
         vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
     }
-
-
+    friend class Shadow;
+    friend class PointLight;
+    friend class SpotLight;
+    FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f,1.f };
 };
 
 template<>

@@ -41,12 +41,35 @@ VkFramebuffer getSwapChainFrameBuffer(int i) const {return swapChainFramebuffers
 VkSwapchainKHR getSwapChain() const {return swapChain;}
 VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
+VkImageView getWindowDepthImageView()const{return depthImageView;}
+VkImageView getWindowDepthOnlyImageView()const { return depthOnlyImageView; }
+VkFormat getWindowDepthFormat()const{return depthFormat;}
+VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
+VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
+VkImage getWindowDepthImage()const { return depthImage; }
+uint32_t getSwapChainImageCount() const {return swapChainImages.size();}
+uint32_t findMemoryType(uint32_t typeFilter,
+                            VkMemoryPropertyFlags properties) const {
+      VkPhysicalDeviceMemoryProperties memProperties;
+      vkGetPhysicalDeviceMemoryProperties(getPhysicalDevice(),
+                                          &memProperties);
+      for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & properties) ==
+                properties) {
+          return i;
+        }
+      }
+
+      throw std::runtime_error("failed to find suitable memory type!");
+    }
 private:
   constexpr std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
   VkDevice device;
   VkQueue graphicsQueue;
   VkQueue presentQueue;
+  VkQueue computeQueue;
   VkSurfaceKHR wsiSurface;
   VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 
@@ -60,6 +83,7 @@ private:
   VkImage depthImage;
   VkDeviceMemory depthImageMemory;
   VkImageView depthImageView;
+  VkImageView depthOnlyImageView;
 
   VkCommandPool commandPool;
 
@@ -81,7 +105,11 @@ VkDebugUtilsMessengerEXT debugMessenger;
   };
   constexpr static const char *const deviceExtensionNames[] = {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-  VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME };
+  VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME ,
+VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME,
+VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME  // supress validation error pCreateInfos[0].pStages[0] SPIR-V Extension SPV_KHR_non_semantic_info was declared, but one of the following requirements is required
+//VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+  };
   constexpr static const char *const validationLayers[] = {
       
 #ifdef _WIN32
@@ -103,9 +131,10 @@ VkDebugUtilsMessengerEXT debugMessenger;
   struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
     std::optional<uint32_t> presentFamily;
+    std::optional<uint32_t> computeFamily;
 
     bool isComplete() {
-      return graphicsFamily.has_value() && presentFamily.has_value();
+      return graphicsFamily.has_value() && presentFamily.has_value() && computeFamily.has_value();
     }
   };
 
@@ -196,6 +225,11 @@ VkDebugUtilsMessengerEXT debugMessenger;
         indices.graphicsFamily = i;
       }
 
+      if(queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT)
+      {
+	      indices.computeFamily = i;
+      }
+
       VkBool32 presentSupport = false;
       vkGetPhysicalDeviceSurfaceSupportKHR(device, i, wsiSurface,
                                            &presentSupport);
@@ -213,7 +247,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
 
     return indices;
   }
-
+VkFormat depthFormat;
   void createSwapChain();
   void createImageViews();
   void createFramebuffers();
@@ -277,7 +311,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
   }
 
   VkFormat findDepthFormat() {
-    return findSupportedFormat({VK_FORMAT_D32_SFLOAT,
+    return findSupportedFormat({
                                 VK_FORMAT_D32_SFLOAT_S8_UINT,
                                 VK_FORMAT_D24_UNORM_S8_UINT},
                                VK_IMAGE_TILING_OPTIMAL,
@@ -285,10 +319,10 @@ VkDebugUtilsMessengerEXT debugMessenger;
   }
 
   void CreateDepthResource() {
-    VkFormat depthFormat = findDepthFormat();
+    depthFormat = findDepthFormat();
     createImage(
         swapChainExtent.width, swapChainExtent.height, depthFormat,
-        VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
     // depthImageView = createImageView(depthImage, depthFormat);
     VkImageViewCreateInfo createInfo{};
@@ -297,7 +331,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     createInfo.format = depthFormat;
 
-    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT| VK_IMAGE_ASPECT_STENCIL_BIT;
     createInfo.subresourceRange.baseMipLevel = 0;
     createInfo.subresourceRange.levelCount = 1;
     createInfo.subresourceRange.baseArrayLayer = 0;
@@ -308,8 +342,18 @@ VkDebugUtilsMessengerEXT debugMessenger;
       throw std::runtime_error("failed to create depthimage views!");
     }
 
+    //stencilImageView
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (vkCreateImageView(device, &createInfo, nullptr, &depthOnlyImageView) !=
+        VK_SUCCESS) {
+        throw std::runtime_error("failed to create depthimage stencil views!");
+    }
+
+
     transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED,
                           VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+
   }
 
   void createImage(uint32_t width, uint32_t height, VkFormat format,
@@ -352,7 +396,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
     vkBindImageMemory(device, image, imageMemory, 0);
   }
 
-  uint32_t findMemoryType(uint32_t typeFilter,
+  /*uint32_t findMemoryType(uint32_t typeFilter,
                           VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -365,18 +409,19 @@ VkDebugUtilsMessengerEXT debugMessenger;
     }
 
     throw std::runtime_error("failed to find suitable memory type!");
-  }
+  }*/
 
   VkCommandBuffer beginSingleTimeCommands()const;
   void endSingleTimeCommands(VkCommandBuffer commandBuffer)const;
   void createRenderPass();
 
+
   public:
 
       void transitionImageLayout(VkImage image, VkFormat format,
-          VkImageLayout oldLayout, VkImageLayout newLayout) const;
+          VkImageLayout oldLayout, VkImageLayout newLayout,uint32_t mipcount=1) const;
 
-      void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)const {
+      void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height,uint32_t miplevel=0)const {
           VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
           VkBufferImageCopy region{};
@@ -384,7 +429,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
           region.bufferRowLength = 0;
           region.bufferImageHeight = 0;
           region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-          region.imageSubresource.mipLevel = 0;
+          region.imageSubresource.mipLevel = miplevel;
           region.imageSubresource.baseArrayLayer = 0;
           region.imageSubresource.layerCount = 1;
           region.imageOffset = { 0, 0, 0 };

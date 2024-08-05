@@ -5,6 +5,7 @@
 #include "GpuScene.h"
 #include <string_view>
 #include <chrono>
+#include <filesystem>
 
 int main(int nargs, char ** args) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -19,10 +20,27 @@ int main(int nargs, char ** args) {
         spdlog::error("SDL create window failed");
     }
 
+    
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    while (!std::filesystem::exists(currentPath / "shaders"))
+    {
+        if (currentPath != currentPath.parent_path())
+            currentPath = currentPath.parent_path();
+        else
+            break;
+    }
+    if (!std::filesystem::exists(currentPath / "shaders"))
+    {
+        spdlog::error("failed to locate shaders");
+        return 1;
+    }
+        
+
     VulkanDevice vk(window);
 
-    std::string_view scenePath = "/home/songjiang/SOURCE/GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
-    GpuScene gpuScene(scenePath, vk);
+
+    //std::string_view scenePath = "../GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
+    GpuScene gpuScene(currentPath, vk);
     //GpuScene gpuScene(std::string_view("useless"), vk); //TODO: why error?
 
     SDL_Event e; 
@@ -33,7 +51,7 @@ int main(int nargs, char ** args) {
     float currentZDegree = 0;
     float currentYDegree = 0;
     constexpr float rotateSpeed = 0.1f;
-    constexpr float moveSpeed = 3.f;
+    constexpr float moveSpeed = 0.5f;
     while (quit == false) { 
         while (SDL_PollEvent(&e)) {
             
@@ -46,13 +64,13 @@ int main(int nargs, char ** args) {
                     
                    
                 case SDL_SCANCODE_A://a
-                    gpuScene.GetMainCamera()->MoveLeft(moveSpeed);
+                    gpuScene.GetMainCamera()->MoveRight(moveSpeed);
                     break;
                 case SDL_SCANCODE_E://e
                     gpuScene.GetMainCamera()->MoveDown(moveSpeed);
                     break;
                 case SDL_SCANCODE_D://d
-                    gpuScene.GetMainCamera()->MoveRight(moveSpeed);
+                    gpuScene.GetMainCamera()->MoveLeft(moveSpeed);
                     break;
                 case SDL_SCANCODE_Q://q
                     gpuScene.GetMainCamera()->MoveUp(moveSpeed);
@@ -102,7 +120,7 @@ int main(int nargs, char ** args) {
             {
                 
                 
-                if (std::chrono::system_clock::now() - lastTime > std::chrono::milliseconds(100))
+                if (std::chrono::system_clock::now() - lastTime > std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
                 {
                     gpuScene.Draw();
                     lastTime = std::chrono::system_clock::now();
