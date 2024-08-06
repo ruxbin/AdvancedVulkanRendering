@@ -230,16 +230,24 @@ void VulkanDevice::createLogicalDevice() {
     queueCreateInfos.push_back(queueCreateInfo);
   }
 
-
-  VkPhysicalDeviceDescriptorIndexingFeatures indexing_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT, nullptr };
-  VkPhysicalDeviceFeatures2 device_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &indexing_features };
-  vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features);
+  //The Vulkan spec states: If the pNext chain includes a VkPhysicalDeviceVulkan12Features structure, then it must not include a VkPhysicalDevice8BitStorageFeatures, VkPhysicalDeviceShaderAtomicInt64Features, VkPhysicalDeviceShaderFloat16Int8Features, VkPhysicalDeviceDescriptorIndexingFeatures, VkPhysicalDeviceScalarBlockLayoutFeatures, VkPhysicalDeviceImagelessFramebufferFeatures, VkPhysicalDeviceUniformBufferStandardLayoutFeatures, VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures, VkPhysicalDeviceSeparateDepthStencilLayoutsFeatures, VkPhysicalDeviceHostQueryResetFeatures, VkPhysicalDeviceTimelineSemaphoreFeatures, VkPhysicalDeviceBufferDeviceAddressFeatures, or VkPhysicalDeviceVulkanMemoryModelFeatures structure
+  //VkPhysicalDeviceDescriptorIndexingFeatures indexing_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT, nullptr };
+  //VkPhysicalDeviceFeatures2 device_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &indexing_features };
+  //vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features);
 
   VkPhysicalDeviceSynchronization2Features synchron2_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,nullptr };
   VkPhysicalDeviceFeatures2 device_features1{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &synchron2_features };
   vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features1);
 
-  bool bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
+  VkPhysicalDeviceVulkan11Features storagebuffer16bit{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,nullptr };
+  VkPhysicalDeviceFeatures2 device_features3{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &storagebuffer16bit };
+  vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features3);
+
+  VkPhysicalDeviceVulkan12Features float16_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,nullptr };
+  VkPhysicalDeviceFeatures2 device_features2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &float16_features };
+  vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features2);
+
+  //bool bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
 
   // Enable all features: just pass the physical features 2 struct.
   VkPhysicalDeviceFeatures2 physical_features2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
@@ -266,14 +274,16 @@ void VulkanDevice::createLogicalDevice() {
   }
   createInfo.pNext = &physical_features2;
 
-  physical_features2.pNext = &synchron2_features;
-  if (bindless_supported) {
+  physical_features2.pNext = &float16_features;
+  float16_features.pNext = &synchron2_features;
+  synchron2_features.pNext = &storagebuffer16bit;
+  //if (bindless_supported) {
       // This should be already set to VK_TRUE, as we queried before.
-      indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
-      indexing_features.runtimeDescriptorArray = VK_TRUE;
+  //    indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
+  //    indexing_features.runtimeDescriptorArray = VK_TRUE;
 
-      synchron2_features.pNext = &indexing_features;
-  }
+  //    synchron2_features.pNext = &indexing_features;
+  //}
 
   if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=
       VK_SUCCESS) {

@@ -16,7 +16,6 @@
 
 class Shadow;
 
-
 struct AAPLTextureData
 {
   std::string _path;
@@ -295,6 +294,8 @@ private:
 
   std::filesystem::path _rootPath;
 
+  LightCuller* _lightCuller = nullptr;
+
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffer(VkCommandPool commandPool) {
@@ -457,7 +458,7 @@ private:
 
     
 
-    struct gpuCullParams{
+    struct GPUCullParams{
         alignas(16) uint32_t totalChunks;
 	    Frustum frustum;
     };
@@ -581,6 +582,7 @@ private:
     friend class Shadow;
     friend class PointLight;
     friend class SpotLight;
+    friend class LightCuller;
     FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f,1.f };
 };
 

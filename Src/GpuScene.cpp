@@ -1422,7 +1422,7 @@ void GpuScene::init_drawparams_descriptors()
     cullParamsBufferInfo.buffer = cullParamsBuffer;
     // at 0 offset
     cullParamsBufferInfo.offset = 0;
-    cullParamsBufferInfo.range = sizeof(gpuCullParams);
+    cullParamsBufferInfo.range = sizeof(GPUCullParams);
 
     VkWriteDescriptorSet cullParamsWrite = {};
     cullParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2598,7 +2598,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     {
         VkBufferCreateInfo cullParamsBufferInfo{};
         cullParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        cullParamsBufferInfo.size = sizeof(gpuCullParams);
+        cullParamsBufferInfo.size = sizeof(GPUCullParams);
         cullParamsBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         cullParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         cullParamsBufferInfo.flags = 0;
@@ -3281,7 +3281,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	vkUnmapMemory(device.getLogicalDevice(),uniformBufferMemory);
 
   	//spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
-  	vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(gpuCullParams), 0, &data1);
+  	vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(GPUCullParams), 0, &data1);
   	memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
   	//memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
   	//offsetof isn't working as expected
@@ -3366,7 +3366,15 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
         vkCmdEndRenderPass(commandBuffer);
     }
-
+    {
+        
+        if (!_lightCuller)
+        {
+            _lightCuller = new LightCuller();
+            _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
+        }
+        _lightCuller->ClusterLightForScreen(commandBuffer, device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
+    }
     //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
     //VkBuffer vertexBuffers[] = {vertexBuffer};
     //VkDeviceSize offsets[] = {0};

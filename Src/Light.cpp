@@ -593,3 +593,404 @@ void PointLight::Draw(VkCommandBuffer& commandBuffer,const GpuScene& gpuScene)
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPointLightPipeline);
     vkCmdDrawIndexed(commandBuffer, SPHERE_INDEX_COUNT, 1, 0, 0, 0);
 }
+
+
+void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt)
+{
+    //results buffer & descriptors
+    VkBufferCreateInfo pointlightCullingDataBufferInfo{};
+    pointlightCullingDataBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    pointlightCullingDataBufferInfo.size = gpuScene._pointLights.size() * sizeof(vec4);
+    pointlightCullingDataBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;//TODO: change to uniform buffer
+    pointlightCullingDataBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    pointlightCullingDataBufferInfo.flags = 0;
+    if (vkCreateBuffer(device.getLogicalDevice(), &pointlightCullingDataBufferInfo, nullptr,
+        &_pointLightCullingDataBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create sphere vertex buffer!");
+    }
+    VkMemoryRequirements memRequirements0;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _pointLightCullingDataBuffer,
+        &memRequirements0);
+
+    VkMemoryAllocateInfo allocInfo0{};
+    allocInfo0.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo0.allocationSize = memRequirements0.size;
+    allocInfo0.memoryTypeIndex =
+        device.findMemoryType(memRequirements0.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory pointlightCullingDataBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo0, nullptr,
+        &pointlightCullingDataBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate pointLight buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _pointLightCullingDataBuffer,
+        pointlightCullingDataBufferMemory, 0);
+
+    vec4* data;
+    vkMapMemory(device.getLogicalDevice(), pointlightCullingDataBufferMemory, 0, pointlightCullingDataBufferInfo.size,
+        0, (void**)&data);
+    for (int i = 0; i < gpuScene._pointLights.size(); ++i)
+    {
+        *data++ = vec4(gpuScene._pointLights[i]._pointLightData->posSqrRadius.xyz(), sqrtf(gpuScene._pointLights[i]._pointLightData->posSqrRadius.w));
+    }
+
+    vkUnmapMemory(device.getLogicalDevice(), pointlightCullingDataBufferMemory);
+
+
+    VkBufferCreateInfo xzRangeBufferInfo{};
+    xzRangeBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    xzRangeBufferInfo.size = gpuScene._pointLights.size() * sizeof(uint16_t)*4;
+    xzRangeBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    xzRangeBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    xzRangeBufferInfo.flags = 0;
+    if (vkCreateBuffer(device.getLogicalDevice(), &xzRangeBufferInfo, nullptr,
+        &_xzRangeBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create sphere vertex buffer!");
+    }
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _xzRangeBuffer,
+        &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo1{};
+    allocInfo1.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo1.allocationSize = memRequirements.size;
+    allocInfo1.memoryTypeIndex =
+        device.findMemoryType(memRequirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory xzRangeBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo1, nullptr,
+        &xzRangeBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate pointLight buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _xzRangeBuffer,
+        xzRangeBufferMemory, 0);
+
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE -1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE;
+    imageInfo.extent.height = (screen_heigt+ DEFAULT_LIGHT_CULLING_TILE_SIZE -1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1; // texturedata._mipmapLevelCount;
+    imageInfo.arrayLayers = 1;
+    imageInfo.tiling =
+        VK_IMAGE_TILING_OPTIMAL; // TODO: switch to linear with
+    // initiallayout=preinitialized?
+    imageInfo.initialLayout =
+        VK_IMAGE_LAYOUT_UNDEFINED; // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    imageInfo.format =
+        VK_FORMAT_R8_UINT; // TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't
+    // need stencil currently anyway
+    imageInfo.usage =
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.flags = 0; // Optional
+
+    if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+        &_xzDebugImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create depth rt!");
+    }
+    VkMemoryRequirements memRequirements1;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _xzDebugImage,
+        &memRequirements1);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements1.size;
+    allocInfo.memoryTypeIndex =
+        device.findMemoryType(memRequirements1.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkDeviceMemory textureImageMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+        &textureImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate image memory!");
+    }
+
+    vkBindImageMemory(device.getLogicalDevice(), _xzDebugImage,
+        textureImageMemory, 0);
+
+    VkImageViewCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    createInfo.image = _xzDebugImage;
+    createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    createInfo.format = VK_FORMAT_R8_UINT;//TODO: could be different with value specified in VkImageCreateInfo?
+    createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    createInfo.subresourceRange.baseMipLevel = 0;
+    createInfo.subresourceRange.levelCount = 1;
+    createInfo.subresourceRange.baseArrayLayer = 0;
+    createInfo.subresourceRange.layerCount = 1;
+    createInfo.flags = VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
+    
+
+    if (vkCreateImageView(device.getLogicalDevice(), &createInfo, nullptr,
+        &_xzDebugImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create xzdebug image views!");
+    }
+
+    //----------descriptors--------
+
+    VkDescriptorSetLayoutBinding frameDataBinding = {};
+    frameDataBinding.binding = 0;
+    frameDataBinding.descriptorCount = 1;
+    // it's a uniform buffer binding
+    frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    frameDataBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutBinding cullParamsBinding = {};
+    cullParamsBinding.binding = 1;
+    cullParamsBinding.descriptorCount = 1;
+    cullParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    cullParamsBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutBinding pointLightCullingDataBinding = {};
+    pointLightCullingDataBinding.binding = 2;
+    pointLightCullingDataBinding.descriptorCount = 1;
+    pointLightCullingDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pointLightCullingDataBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutBinding depthTextureBinding = {};
+    depthTextureBinding.binding = 3;
+    depthTextureBinding.descriptorCount = 1;
+    depthTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    depthTextureBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutBinding xzRangeBinding = {};
+    xzRangeBinding.binding = 4;
+    xzRangeBinding.descriptorCount = 1;
+    xzRangeBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    xzRangeBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutBinding debugViewBinding = {};
+    debugViewBinding.binding = 5;
+    debugViewBinding.descriptorCount = 1;
+    debugViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    debugViewBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+
+
+    VkDescriptorSetLayoutBinding bindings[] = { frameDataBinding, cullParamsBinding, pointLightCullingDataBinding ,depthTextureBinding,xzRangeBinding,debugViewBinding };
+
+    constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
+
+    VkDescriptorSetLayoutCreateInfo setinfo = {};
+    setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    //setinfo.pNext = &flag_info;
+    setinfo.pNext = nullptr;
+
+    setinfo.bindingCount = bindingcount;
+    setinfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    // point to the camera buffer binding
+    setinfo.pBindings = bindings;
+
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
+        &coarseCullSetLayout);
+
+    std::vector<VkDescriptorPoolSize> sizes = {
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1 },
+    };
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
+    pool_info.maxSets = 10;
+    pool_info.poolSizeCount = (uint32_t)sizes.size();
+    pool_info.pPoolSizes = sizes.data();
+
+    vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
+        &coarseCullDescriptorPool);
+
+    VkDescriptorSetAllocateInfo descAllocInfo = {};
+    descAllocInfo.pNext = nullptr;
+    descAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    // using the pool we just set
+    descAllocInfo.descriptorPool = coarseCullDescriptorPool;
+    // only 1 descriptor
+    descAllocInfo.descriptorSetCount = 1;
+    // using the global data layout
+    descAllocInfo.pSetLayouts = &coarseCullSetLayout;
+
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &descAllocInfo,
+        &coarseCullDescriptorSet);
+
+    VkDescriptorBufferInfo binfo;
+    // it will be the camera buffer
+    binfo.buffer = gpuScene.uniformBuffer;
+    // at 0 offset
+    binfo.offset = 0;
+    // of the size of a camera data struct
+    binfo.range = sizeof(FrameData);
+
+    VkWriteDescriptorSet setWrite = {};
+    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite.dstBinding = 0;
+    // of the global descriptor
+    setWrite.dstSet = coarseCullDescriptorSet;
+
+    setWrite.descriptorCount = 1;
+    setWrite.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    setWrite.pBufferInfo = &binfo;
+
+
+    VkDescriptorBufferInfo binfo1;
+    // it will be the camera buffer
+    binfo1.buffer = gpuScene.cullParamsBuffer;
+    // at 0 offset
+    binfo1.offset = 0;
+    // of the size of a camera data struct
+    binfo1.range = sizeof(GpuScene::GPUCullParams);
+
+    VkWriteDescriptorSet setWrite1 = {};
+    setWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite1.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite1.dstBinding = 1;
+    // of the global descriptor
+    setWrite1.dstSet = coarseCullDescriptorSet;
+
+    setWrite1.descriptorCount = 1;
+    setWrite1.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite1.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite1.pBufferInfo = &binfo1;
+
+
+    VkDescriptorBufferInfo binfo2;
+    // it will be the camera buffer
+    binfo2.buffer = _pointLightCullingDataBuffer;
+    // at 0 offset
+    binfo2.offset = 0;
+    // of the size of a camera data struct
+    binfo2.range = gpuScene._pointLights.size() * sizeof(vec4);
+
+    VkWriteDescriptorSet setWrite2 = {};
+    setWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite2.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite2.dstBinding = 2;
+    // of the global descriptor
+    setWrite2.dstSet = coarseCullDescriptorSet;
+
+    setWrite2.descriptorCount = 1;
+    setWrite2.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWrite2.pBufferInfo = &binfo2;
+
+
+
+    VkDescriptorImageInfo depthImageInfo{};
+    depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+    depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    VkWriteDescriptorSet setWriteDepth;
+    setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteDepth.pNext = nullptr;
+    setWriteDepth.dstBinding = 3;
+    setWriteDepth.dstSet = coarseCullDescriptorSet;
+    setWriteDepth.dstArrayElement = 0;
+    setWriteDepth.descriptorCount = 1;
+    setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setWriteDepth.pImageInfo = &depthImageInfo;
+
+
+    VkDescriptorBufferInfo binfo4;
+    // it will be the camera buffer
+    binfo4.buffer = _xzRangeBuffer;
+    // at 0 offset
+    binfo4.offset = 0;
+    // of the size of a camera data struct
+    binfo4.range = gpuScene._pointLights.size() * sizeof(uint16_t)*4;
+    VkWriteDescriptorSet setWrite4 = {};
+    setWrite4.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite4.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite4.dstBinding = 4;
+    // of the global descriptor
+    setWrite4.dstSet = coarseCullDescriptorSet;
+
+    setWrite4.descriptorCount = 1;
+    setWrite4.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite4.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWrite4.pBufferInfo = &binfo4;
+
+    VkDescriptorImageInfo debugImageInfo{};
+    debugImageInfo.imageView = _xzDebugImageView;
+    debugImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet setWriteDebug;
+    setWriteDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteDebug.pNext = nullptr;
+    setWriteDebug.dstBinding = 5;
+    setWriteDebug.dstSet = coarseCullDescriptorSet;
+    setWriteDebug.dstArrayElement = 0;
+    setWriteDebug.descriptorCount = 1;
+    setWriteDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    setWriteDebug.pImageInfo = &debugImageInfo;
+
+    std::array< VkWriteDescriptorSet, 6> writes = { setWrite,setWrite1,setWrite2,setWrite4,setWriteDebug,setWriteDepth };
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+
+
+    //pipeline related
+    auto computeShaderCode = readFile((gpuScene.RootPath() / "shaders/CoarseCull.cs.spv").generic_string());
+    VkShaderModule computeShaderModule = gpuScene.createShaderModule(computeShaderCode);
+    VkPipelineShaderStageCreateInfo computeStageInfo{};
+    computeStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    computeStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    computeStageInfo.module = computeShaderModule;
+    computeStageInfo.pName = "CoarseCull";
+
+
+    VkPipelineLayoutCreateInfo coarseCullPipelineLayoutInfo{};
+    coarseCullPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    coarseCullPipelineLayoutInfo.setLayoutCount = 1;
+    coarseCullPipelineLayoutInfo.pSetLayouts = &coarseCullSetLayout;
+    coarseCullPipelineLayoutInfo.pushConstantRangeCount = 0;
+
+    if (vkCreatePipelineLayout(device.getLogicalDevice(), &coarseCullPipelineLayoutInfo,
+        nullptr, &coarseCullPipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster pipeline layout!");
+    }
+    VkComputePipelineCreateInfo computePipelineCreateInfo{};
+    computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    computePipelineCreateInfo.layout = coarseCullPipelineLayout;
+    computePipelineCreateInfo.stage = computeStageInfo;
+    computePipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+
+    vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &coarseCullPipeline);
+}
+
+void LightCuller::ClusterLightForScreen(VkCommandBuffer& commandBuffer, const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt)
+{
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipeline);
+    uint32_t dynamicoffsets[1] = { 0 };
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipelineLayout, 0, 1, &coarseCullDescriptorSet, 1, dynamicoffsets);
+    // the descriptor (VkDescriptorSet 0x5b0fb50000002faf[], binding 5, index 0) has VkImageView 0x41586f0000002fac[] with format of VK_FORMAT_R8_UINT which is missing VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT in its features 
+    // (VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT|VK_FORMAT_FEATURE_2_BLIT_SRC_BIT|VK_FORMAT_FEATURE_2_BLIT_DST_BIT|VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT|VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT|VK_FORMAT_FEATURE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR|VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT|VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT|VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT). 
+    // The Vulkan spec states: If a VkImageView is accessed using atomic operations as a result of this command, then the image view's format features must contain VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT
+    vkCmdDispatch(commandBuffer, (gpuScene._pointLights.size()+127)/128, 1, 1);
+}
+
+LightCuller::LightCuller()
+{
+    
+}

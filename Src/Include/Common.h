@@ -105,6 +105,8 @@ struct alignas(64) PointLightData
 };
 
 
+
+
 #define SPOT_LIGHT_INNER_SCALE (0.8f)
 
 struct alignas(64) SpotLightData
