@@ -289,6 +289,21 @@ void VulkanDevice::createLogicalDevice() {
       VK_SUCCESS) {
     throw std::runtime_error("failed to create logical device!");
   }
+VkPhysicalDeviceImageFormatInfo2 physicalDeviceImageFormatInfo;
+physicalDeviceImageFormatInfo.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+physicalDeviceImageFormatInfo.pNext = nullptr;
+physicalDeviceImageFormatInfo.format = VK_FORMAT_R8_UINT;
+physicalDeviceImageFormatInfo.type = VK_IMAGE_TYPE_2D;
+physicalDeviceImageFormatInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+physicalDeviceImageFormatInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+physicalDeviceImageFormatInfo.flags = 0;
+
+VkFormatProperties2 imageFormatProperties;
+imageFormatProperties.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+VkFormatProperties3 imageFormatProperties3;
+imageFormatProperties3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+imageFormatProperties.pNext = &imageFormatProperties3;
+vkGetPhysicalDeviceFormatProperties2(physicalDevice,VK_FORMAT_R8_UINT,&imageFormatProperties);
 
   vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
   vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);

@@ -3373,6 +3373,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             _lightCuller = new LightCuller();
             _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
         }
+//	transitionImageLayout(_lightCuller->GetXZDebugImage(),VK_FORMAT_R8_UINT,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
         _lightCuller->ClusterLightForScreen(commandBuffer, device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
     }
     //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);

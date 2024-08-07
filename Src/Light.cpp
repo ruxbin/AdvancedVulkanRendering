@@ -726,8 +726,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     createInfo.subresourceRange.levelCount = 1;
     createInfo.subresourceRange.baseArrayLayer = 0;
     createInfo.subresourceRange.layerCount = 1;
-    createInfo.flags = VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
-    
+    createInfo.flags = 0;
 
     if (vkCreateImageView(device.getLogicalDevice(), &createInfo, nullptr,
         &_xzDebugImageView) != VK_SUCCESS) {

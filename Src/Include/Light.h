@@ -80,6 +80,7 @@ public:
 	void ClusterLightForScreen(VkCommandBuffer&, const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
 	void InitRHI(const VulkanDevice& , const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
 	LightCuller();
+	VkImage GetXZDebugImage(){return _xzDebugImage;}
 private:
 
 	VkBuffer            _pointLightCullingDataBuffer;
