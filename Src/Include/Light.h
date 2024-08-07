@@ -95,4 +95,5 @@ private:
 
 	VkPipelineLayout coarseCullPipelineLayout;
 	VkPipeline coarseCullPipeline;
+	VkPipeline clearDebugViewPipeline;
 };

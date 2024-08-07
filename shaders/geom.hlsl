@@ -105,8 +105,8 @@ AAPLBox2D getBoundingBox(float3 center,
     //  Y is negated from the original code to match space of culling.
 float maxX = project(x.upper, projMatrix).x;
 float minX = project(x.lower, projMatrix).x;
-float minY = -project(y.upper, projMatrix).y;
-float maxY = -project(y.lower, projMatrix).y;
+float minY = project(y.upper, projMatrix).y;
+float maxY = project(y.lower, projMatrix).y;
     AAPLBox2D res;
     res.x = float2(minX, maxX);
     res.y = float2(minY, maxY);

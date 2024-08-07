@@ -681,8 +681,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     imageInfo.initialLayout =
         VK_IMAGE_LAYOUT_UNDEFINED; // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     imageInfo.format =
-        VK_FORMAT_R8_UINT; // TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we don't
-    // need stencil currently anyway
+        VK_FORMAT_R32_UINT; // atomic operations only support 32bit format
     imageInfo.usage =
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -716,7 +715,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     createInfo.image = _xzDebugImage;
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    createInfo.format = VK_FORMAT_R8_UINT;//TODO: could be different with value specified in VkImageCreateInfo?
+    createInfo.format = VK_FORMAT_R32_UINT;//TODO: could be different with value specified in VkImageCreateInfo?
     createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
     createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -959,6 +958,15 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     computeStageInfo.pName = "CoarseCull";
 
 
+    auto clearDebugViewShaderCode = readFile((gpuScene.RootPath() / "shaders/ClearDebugView.cs.spv").generic_string());
+    VkShaderModule clearDebugViewModule = gpuScene.createShaderModule(clearDebugViewShaderCode);
+    VkPipelineShaderStageCreateInfo clearDebugViewStageInfo{};
+    clearDebugViewStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    clearDebugViewStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    clearDebugViewStageInfo.module = clearDebugViewModule;
+    clearDebugViewStageInfo.pName = "ClearDebugView";
+
+
     VkPipelineLayoutCreateInfo coarseCullPipelineLayoutInfo{};
     coarseCullPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     coarseCullPipelineLayoutInfo.setLayoutCount = 1;
@@ -975,14 +983,24 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     computePipelineCreateInfo.stage = computeStageInfo;
     computePipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
 
+    VkComputePipelineCreateInfo clearDebugViewPipelineCreateInfo{};
+    clearDebugViewPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    clearDebugViewPipelineCreateInfo.layout = coarseCullPipelineLayout;
+    clearDebugViewPipelineCreateInfo.stage = clearDebugViewStageInfo;
+    clearDebugViewPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+
     vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &coarseCullPipeline);
+    vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &clearDebugViewPipelineCreateInfo, nullptr, &clearDebugViewPipeline);
 }
 
 void LightCuller::ClusterLightForScreen(VkCommandBuffer& commandBuffer, const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt)
 {
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipeline);
     uint32_t dynamicoffsets[1] = { 0 };
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipelineLayout, 0, 1, &coarseCullDescriptorSet, 1, dynamicoffsets);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, clearDebugViewPipeline);
+    vkCmdDispatch(commandBuffer, (screen_width+ DEFAULT_LIGHT_CULLING_TILE_SIZE-1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt+ DEFAULT_LIGHT_CULLING_TILE_SIZE-1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);
+    
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipeline);
     // the descriptor (VkDescriptorSet 0x5b0fb50000002faf[], binding 5, index 0) has VkImageView 0x41586f0000002fac[] with format of VK_FORMAT_R8_UINT which is missing VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT in its features 
     // (VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT|VK_FORMAT_FEATURE_2_BLIT_SRC_BIT|VK_FORMAT_FEATURE_2_BLIT_DST_BIT|VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT|VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT|VK_FORMAT_FEATURE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR|VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT|VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT|VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT). 
     // The Vulkan spec states: If a VkImageView is accessed using atomic operations as a result of this command, then the image view's format features must contain VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT

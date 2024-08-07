@@ -432,6 +432,14 @@ private:
             sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL)
+        {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        }
         else {
             throw std::invalid_argument("unsupported layout transition!");
         }
@@ -459,7 +467,10 @@ private:
     
 
     struct GPUCullParams{
-        alignas(16) uint32_t totalChunks;
+        uint32_t totalChunks;
+        uint32_t totalPointLights;
+        uint32_t totalSpotLights;
+        uint32_t padding;
 	    Frustum frustum;
     };
 

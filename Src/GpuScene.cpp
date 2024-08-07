@@ -3259,6 +3259,9 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
 	_shadow->UpdateShadowMatrices(*this);
 	{
+        frameConstants.nearPlane = maincamera->Near();
+        frameConstants.farPlane = maincamera->Far();
+        frameConstants.physicalSize = vec2(device.getSwapChainExtent().width, device.getSwapChainExtent().height);
 	void* data1;
     	vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(FrameData), 0,
         	&data1);
@@ -3281,13 +3284,19 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	vkUnmapMemory(device.getLogicalDevice(),uniformBufferMemory);
 
   	//spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
-  	vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(GPUCullParams), 0, &data1);
-  	memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
-  	//memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
-  	//offsetof isn't working as expected
-  	memcpy((char*)data1 + 16, &maincamera->getFrustum(), sizeof(Frustum));
+    {
+        uint32_t totalPointLights = _pointLights.size();
+        uint32_t totalSpotLights = _spotLights.size();
+        vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(GPUCullParams), 0, &data1);
+        memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
+        memcpy((char*)data1 + 4, &totalPointLights, sizeof(uint32_t));
+        memcpy((char*)data1 + 8, &totalSpotLights, sizeof(uint32_t));
+        //memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
+        //offsetof isn't working as expected
+        memcpy((char*)data1 + 16, &maincamera->getFrustum(), sizeof(Frustum));
 
-  	vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+        vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+    }
 
   	uint32_t startIndex = 0;
   	vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0, sizeof(uint32_t), 0, &data1);
@@ -3373,7 +3382,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
             _lightCuller = new LightCuller();
             _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
         }
-//	transitionImageLayout(_lightCuller->GetXZDebugImage(),VK_FORMAT_R8_UINT,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
+	    transitionImageLayout(_lightCuller->GetXZDebugImage(), VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
         _lightCuller->ClusterLightForScreen(commandBuffer, device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
     }
     //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);

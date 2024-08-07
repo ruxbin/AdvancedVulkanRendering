@@ -55,6 +55,7 @@ struct AAPLFrameConstants
     float emissiveScale;
     float localLightIntensity;
     float nearPlane;
+    float farPlane;
     float2 physicalSize;
 };
 
@@ -153,7 +154,7 @@ bool IsInside(Plane p, AAPLBoundingBox3 aabb)
 bool IsInside(Plane p, AAPLPointLightCullingData sphere)
 {
     float d1 = dot(p.normal, sphere.posRadius.xyz) - p.w;
-    if (d1 < 0 && (d1 * d1) > sphere.posRadius.w)
+    if (d1 < 0 && ((d1 * d1) > sphere.posRadius.w * sphere.posRadius.w))
         return false;
     else
         return true;

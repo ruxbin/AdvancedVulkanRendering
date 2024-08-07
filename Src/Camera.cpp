@@ -67,6 +67,10 @@ void Camera::updateCameraMatrix()
 	//mat4 viewproj = transpose(_projectionMatrix)*transpose(_objectToCameraMatrix)*transpose(transM);
 	mat4 viewproj = transpose(_projectionMatrix) * transpose(_objectToCameraMatrix);
 
+	mat4 invProj = transpose(inverse(_projectionMatrix));
+	//let's debug here
+	spdlog::error("{} {} {} {}",invProj.w.x, invProj.w.y, invProj.w.z, invProj.w.w);
+
 	mat4 viewprojmatrix = _objectToCameraMatrix* _projectionMatrix;
 	_invViewProjectionMatrix = inverse(viewprojmatrix);
 	

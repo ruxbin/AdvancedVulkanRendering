@@ -5,8 +5,10 @@
 
 [[vk::binding(0,0)]] RWStructuredBuffer<DrawIndexedIndirectCommand> drawParams;
 [[vk::binding(1,0)]] cbuffer cullParams {
-uint totalChunks;
-Frustum frustum;
+    uint totalChunks;
+    uint totalPointLights;
+    uint totalSpotLights;
+    Frustum frustum;
 }
 
 [[vk::binding(2,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks;

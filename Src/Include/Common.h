@@ -73,6 +73,9 @@ struct FrameConstants {
     float wetness;
     float emissiveScale;
     float localLightIntensity;
+    float nearPlane;
+    float farPlane;
+    alignas(16) vec2 physicalSize;
 };
 
 

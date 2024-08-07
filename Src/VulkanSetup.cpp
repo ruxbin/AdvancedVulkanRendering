@@ -302,8 +302,13 @@ VkFormatProperties2 imageFormatProperties;
 imageFormatProperties.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
 VkFormatProperties3 imageFormatProperties3;
 imageFormatProperties3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+imageFormatProperties3.pNext = nullptr;
 imageFormatProperties.pNext = &imageFormatProperties3;
-vkGetPhysicalDeviceFormatProperties2(physicalDevice,VK_FORMAT_R8_UINT,&imageFormatProperties);
+vkGetPhysicalDeviceFormatProperties2(physicalDevice, VK_FORMAT_R32_UINT,&imageFormatProperties);
+if ((imageFormatProperties.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT)!=0)
+{
+    spdlog::error("atomic operation not supported by this hardware!!!");
+}
 
   vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
   vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
