@@ -217,13 +217,16 @@ void ClearDebugView(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID)
         lightDebug[tid.xy] = 0;
 }
 
-[numthreads(16, 16, 1)]
+
+#define CLEAR_WIDTH 8
+#define CLEAR_HEIGHT 8
+[numthreads(CLEAR_WIDTH, CLEAR_HEIGHT, 1)]
 void ClearLightIndices(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
 {
     uint2 tileDims = ceil(float2(frameConstants.physicalSize) / gLightCullingTileSize);
     
     uint outputIndex = (gid.x + gid.y * tileDims.x) * MAX_LIGHTS_PER_TILE;
-    for (int i = gtid.x + gtid.y * 16; i < MAX_LIGHTS_PER_TILE; i += 16 * 16)
-        lightIndices[i] = 0;
+    for (int i = gtid.x + gtid.y * CLEAR_WIDTH; i < MAX_LIGHTS_PER_TILE; i += CLEAR_WIDTH * CLEAR_HEIGHT)
+        lightIndices[i+outputIndex] = 0;
 
 }
