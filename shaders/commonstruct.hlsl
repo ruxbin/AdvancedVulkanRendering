@@ -194,3 +194,9 @@ bool FrustumCull(Frustum frustum, AAPLPointLightCullingData sphere)
 //variable 'gLightCullingTileSize' will be placed in $Globals so initializer ignored
 //const uint gLightCullingTileSize = 32;
 #define gLightCullingTileSize 32
+
+#define MAX_LIGHTS_PER_TILE                 (64)
+
+#define MAX_LIGHTS_PER_CLUSTER              (16)
+
+#define LIGHT_CLUSTER_DEPTH                 (64)

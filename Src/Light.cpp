@@ -667,11 +667,42 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
         xzRangeBufferMemory, 0);
 
 
+    uint32_t tileXCount = (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE;
+    uint32_t tileYCount = (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE;
+    VkBufferCreateInfo lightIndicesBufferInfo{};
+    lightIndicesBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    lightIndicesBufferInfo.size = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+    lightIndicesBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    lightIndicesBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    lightIndicesBufferInfo.flags = 0;
+    if (vkCreateBuffer(device.getLogicalDevice(), &lightIndicesBufferInfo, nullptr,
+        &_lightIndicesBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create sphere vertex buffer!");
+    }
+    VkMemoryRequirements lightindicesMemRequirements;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _lightIndicesBuffer,
+        &lightindicesMemRequirements);
+
+    VkMemoryAllocateInfo allocInfo2{};
+    allocInfo2.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo2.allocationSize = lightindicesMemRequirements.size;
+    allocInfo2.memoryTypeIndex =
+        device.findMemoryType(lightindicesMemRequirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory lightindicesBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo2, nullptr,
+        &lightindicesBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate pointLight buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesBuffer,
+        lightindicesBufferMemory, 0);
+
+
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE -1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE;
-    imageInfo.extent.height = (screen_heigt+ DEFAULT_LIGHT_CULLING_TILE_SIZE -1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE;
+    imageInfo.extent.width = tileXCount;
+    imageInfo.extent.height = tileYCount;
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1; // texturedata._mipmapLevelCount;
     imageInfo.arrayLayers = 1;
@@ -732,6 +763,74 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
         throw std::runtime_error("failed to create xzdebug image views!");
     }
 
+
+    {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = tileXCount;
+        imageInfo.extent.height = tileYCount;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1; // texturedata._mipmapLevelCount;
+        imageInfo.arrayLayers = 1;
+        imageInfo.tiling =
+            VK_IMAGE_TILING_OPTIMAL; // TODO: switch to linear with
+        // initiallayout=preinitialized?
+        imageInfo.initialLayout =
+            VK_IMAGE_LAYOUT_UNDEFINED; // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        imageInfo.format =
+            VK_FORMAT_R32G32B32A32_SFLOAT; // atomic operations only support 32bit format
+        imageInfo.usage =
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.flags = 0; // Optional
+
+        if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+            &_traditionalCullDebugImage) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create depth rt!");
+        }
+        VkMemoryRequirements memRequirements1;
+        vkGetImageMemoryRequirements(device.getLogicalDevice(), _traditionalCullDebugImage,
+            &memRequirements1);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements1.size;
+        allocInfo.memoryTypeIndex =
+            device.findMemoryType(memRequirements1.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        VkDeviceMemory textureImageMemory;
+        if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+            &textureImageMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate image memory!");
+        }
+
+        vkBindImageMemory(device.getLogicalDevice(), _traditionalCullDebugImage,
+            textureImageMemory, 0);
+
+        VkImageViewCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = _traditionalCullDebugImage;
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;//TODO: could be different with value specified in VkImageCreateInfo?
+        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+        createInfo.flags = 0;
+
+        if (vkCreateImageView(device.getLogicalDevice(), &createInfo, nullptr,
+            &_traditionalCullDebugImageView) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create xzdebug image views!");
+        }
+    }
+
     //----------descriptors--------
 
     VkDescriptorSetLayoutBinding frameDataBinding = {};
@@ -771,9 +870,19 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     debugViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     debugViewBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    VkDescriptorSetLayoutBinding lightIndicesBinding = {};
+    lightIndicesBinding.binding = 6;
+    lightIndicesBinding.descriptorCount = 1;
+    lightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    lightIndicesBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    VkDescriptorSetLayoutBinding traditionalViewBinding = {};
+    traditionalViewBinding.binding = 7;
+    traditionalViewBinding.descriptorCount = 1;
+    traditionalViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    traditionalViewBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    VkDescriptorSetLayoutBinding bindings[] = { frameDataBinding, cullParamsBinding, pointLightCullingDataBinding ,depthTextureBinding,xzRangeBinding,debugViewBinding };
+    VkDescriptorSetLayoutBinding bindings[] = { frameDataBinding, cullParamsBinding, pointLightCullingDataBinding ,depthTextureBinding,xzRangeBinding,debugViewBinding,lightIndicesBinding,traditionalViewBinding };
 
     constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
@@ -791,11 +900,11 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
         &coarseCullSetLayout);
 
     std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1 },
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2 },
     };
 
     VkDescriptorPoolCreateInfo pool_info = {};
@@ -943,7 +1052,40 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     setWriteDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     setWriteDebug.pImageInfo = &debugImageInfo;
 
-    std::array< VkWriteDescriptorSet, 6> writes = { setWrite,setWrite1,setWrite2,setWrite4,setWriteDebug,setWriteDepth };
+    VkDescriptorBufferInfo binfo6;
+    // it will be the camera buffer
+    binfo6.buffer = _lightIndicesBuffer;
+    // at 0 offset
+    binfo6.offset = 0;
+    // of the size of a camera data struct
+    binfo6.range = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+    VkWriteDescriptorSet setWrite6 = {};
+    setWrite6.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite6.pNext = nullptr;
+    setWrite6.dstBinding = 6;
+    // of the global descriptor
+    setWrite6.dstSet = coarseCullDescriptorSet;
+
+    setWrite6.descriptorCount = 1;
+    setWrite6.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite6.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWrite6.pBufferInfo = &binfo6;
+
+    VkDescriptorImageInfo tradtionalImageInfo{};
+    tradtionalImageInfo.imageView = _traditionalCullDebugImageView;
+    tradtionalImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet setTraditionalDebug;
+    setTraditionalDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setTraditionalDebug.pNext = nullptr;
+    setTraditionalDebug.dstBinding = 7;
+    setTraditionalDebug.dstSet = coarseCullDescriptorSet;
+    setTraditionalDebug.dstArrayElement = 0;
+    setTraditionalDebug.descriptorCount = 1;
+    setTraditionalDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    setTraditionalDebug.pImageInfo = &tradtionalImageInfo;
+
+    std::array< VkWriteDescriptorSet, 8> writes = { setWrite,setWrite1,setWrite2,setWrite4,setWriteDebug,setWriteDepth,setWrite6,setTraditionalDebug };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 
@@ -956,6 +1098,23 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     computeStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     computeStageInfo.module = computeShaderModule;
     computeStageInfo.pName = "CoarseCull";
+
+    auto traditionalCullingShaderCode = readFile((gpuScene.RootPath() / "shaders/TraditionalCull.cs.spv").generic_string());
+    VkShaderModule traditionalCullingShaderModule = gpuScene.createShaderModule(traditionalCullingShaderCode);
+    VkPipelineShaderStageCreateInfo traditionalCullingStageInfo{};
+    traditionalCullingStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    traditionalCullingStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    traditionalCullingStageInfo.module = traditionalCullingShaderModule;
+    traditionalCullingStageInfo.pName = "TraditionalCull";
+
+
+    auto clearIndicesShaderCode = readFile((gpuScene.RootPath() / "shaders/ClearIndices.cs.spv").generic_string());
+    VkShaderModule clearIndicesShaderModule = gpuScene.createShaderModule(clearIndicesShaderCode);
+    VkPipelineShaderStageCreateInfo clearIndicesStageInfo{};
+    clearIndicesStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    clearIndicesStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    clearIndicesStageInfo.module = clearIndicesShaderModule;
+    clearIndicesStageInfo.pName = "ClearLightIndices";
 
 
     auto clearDebugViewShaderCode = readFile((gpuScene.RootPath() / "shaders/ClearDebugView.cs.spv").generic_string());
@@ -989,8 +1148,22 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     clearDebugViewPipelineCreateInfo.stage = clearDebugViewStageInfo;
     clearDebugViewPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
 
+    VkComputePipelineCreateInfo traditionalCullPipelineCreateInfo{};
+    traditionalCullPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    traditionalCullPipelineCreateInfo.layout = coarseCullPipelineLayout;
+    traditionalCullPipelineCreateInfo.stage = traditionalCullingStageInfo;
+    traditionalCullPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+
+    VkComputePipelineCreateInfo clearIndicesPipelineCreateInfo{};
+    clearIndicesPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    clearIndicesPipelineCreateInfo.layout = coarseCullPipelineLayout;
+    clearIndicesPipelineCreateInfo.stage = clearIndicesStageInfo;
+    clearIndicesPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+
     vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &coarseCullPipeline);
     vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &clearDebugViewPipelineCreateInfo, nullptr, &clearDebugViewPipeline);
+    vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &traditionalCullPipelineCreateInfo, nullptr, &traditionalCullPipeline);
+    vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &clearIndicesPipelineCreateInfo, nullptr, &clearIndicesPipeline);
 }
 
 void LightCuller::ClusterLightForScreen(VkCommandBuffer& commandBuffer, const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt)
@@ -999,12 +1172,44 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer& commandBuffer, const Vu
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipelineLayout, 0, 1, &coarseCullDescriptorSet, 1, dynamicoffsets);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, clearDebugViewPipeline);
     vkCmdDispatch(commandBuffer, (screen_width+ DEFAULT_LIGHT_CULLING_TILE_SIZE-1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt+ DEFAULT_LIGHT_CULLING_TILE_SIZE-1)/ DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);
+    //synchronise
+    VkMemoryBarrier2 memoryBarrier = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+    .pNext = nullptr,
+    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+    .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
+    .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+    .dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR
+    };
+
+    VkDependencyInfo dependencyInfo = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext = nullptr,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &memoryBarrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
     
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, coarseCullPipeline);
     // the descriptor (VkDescriptorSet 0x5b0fb50000002faf[], binding 5, index 0) has VkImageView 0x41586f0000002fac[] with format of VK_FORMAT_R8_UINT which is missing VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT in its features 
     // (VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT|VK_FORMAT_FEATURE_2_BLIT_SRC_BIT|VK_FORMAT_FEATURE_2_BLIT_DST_BIT|VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT|VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT|VK_FORMAT_FEATURE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR|VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT|VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT|VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT). 
     // The Vulkan spec states: If a VkImageView is accessed using atomic operations as a result of this command, then the image view's format features must contain VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT
     vkCmdDispatch(commandBuffer, (gpuScene._pointLights.size()+127)/128, 1, 1);
+    //synchronise
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, clearDebugViewPipeline);
+    vkCmdDispatch(commandBuffer, (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);
+    //synchronise
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, clearIndicesPipeline);
+    vkCmdDispatch(commandBuffer, (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, traditionalCullPipeline);
+    vkCmdDispatch(commandBuffer, (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);
+
 }
 
 LightCuller::LightCuller()

@@ -81,13 +81,19 @@ public:
 	void InitRHI(const VulkanDevice& , const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
 	LightCuller();
 	VkImage GetXZDebugImage(){return _xzDebugImage;}
+	VkImage GetTraditionalDebugImage() { return _traditionalCullDebugImage; }
 private:
 
 	VkBuffer            _pointLightCullingDataBuffer;
 
 	VkBuffer            _xzRangeBuffer;
+	VkBuffer			_lightIndicesBuffer;
 	VkImage				_xzDebugImage;
 	VkImageView			_xzDebugImageView;
+
+	VkImage				_traditionalCullDebugImage;
+	VkImageView			_traditionalCullDebugImageView;
+
 
 	VkDescriptorSetLayout coarseCullSetLayout;
 	VkDescriptorPool coarseCullDescriptorPool;
@@ -96,4 +102,6 @@ private:
 	VkPipelineLayout coarseCullPipelineLayout;
 	VkPipeline coarseCullPipeline;
 	VkPipeline clearDebugViewPipeline;
+	VkPipeline traditionalCullPipeline;
+	VkPipeline clearIndicesPipeline;
 };
