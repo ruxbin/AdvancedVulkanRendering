@@ -49,6 +49,14 @@ Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 loo
 	updateCameraMatrix();
 }
 
+vec3 Camera::GetCameraDir() const
+{
+	    vec4 z(0,0,1,1);
+	    vec3 lookatpos = (transpose(_invViewMatrix)*z).xyz();
+
+	    return normalize(lookatpos - _origin);
+}
+
 void Camera::updateCameraMatrix()
 {
 	//mat4 transM = translate(_origin * -1.f);

@@ -28,6 +28,8 @@ StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world posi
 [[vk::binding(5,0)]] RWTexture2D<uint> lightDebug;            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
 [[vk::binding(6,0)]] RWStructuredBuffer<uint> lightIndices;
 [[vk::binding(7,0)]] RWTexture2D<float4> tradtionDebug;
+
+
 //calculate each light's xzrange
 [numthreads(128, 1, 1)]
 void CoarseCull(uint3 DTid : SV_DispatchThreadID)
@@ -59,10 +61,10 @@ void CoarseCull(uint3 DTid : SV_DispatchThreadID)
                     boxMin = saturate(boxMin * 0.5f + 0.5f);
                     boxMax = saturate(boxMax * 0.5f + 0.5f);
 
-                    result.x = (uint16_t)boxMin.x * tileDims.x;
-                    result.y = ceil(boxMax.x * tileDims.x) - result.x;
-                    result.z = (uint16_t)boxMin.y * tileDims.y;
-                    result.w = ceil(boxMax.y * tileDims.y) - result.z;
+                    result.x = (uint16_t)(boxMin.x * tileDims.x);
+                    result.y = (uint16_t)(ceil(boxMax.x * tileDims.x) - result.x);
+                    result.z = (uint16_t)(boxMin.y * tileDims.y);
+                    result.w = (uint16_t)(ceil(boxMax.y * tileDims.y) - result.z);
                 
                 
                 //debug purpose
@@ -127,13 +129,13 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     //cull against each tile frustum -- view space
     //1. calculate tile frustum with (near & far depth)
     uint2 basecoord = uint2(gid.x * gLightCullingTileSize + gtid.x *2, gid.y * gLightCullingTileSize + gtid.y*2);
-    basecoord = min(basecoord, uint2(frameConstants.physicalSize));
+    basecoord = min(basecoord, uint2(frameConstants.physicalSize)-1);
     uint2 basecoord1 = basecoord + uint2(1, 0);
-    basecoord1 = min(basecoord1, uint2(frameConstants.physicalSize));
+    basecoord1 = min(basecoord1, uint2(frameConstants.physicalSize)-1);
     uint2 basecoord2 = basecoord + uint2(1, 1);
-    basecoord2 = min(basecoord2, uint2(frameConstants.physicalSize));
+    basecoord2 = min(basecoord2, uint2(frameConstants.physicalSize)-1);
     uint2 basecoord3 = basecoord + uint2(0, 1);
-    basecoord3 = min(basecoord3, uint2(frameConstants.physicalSize));
+    basecoord3 = min(basecoord3, uint2(frameConstants.physicalSize)-1);
     float mindepth = inDepth.Load(uint3(basecoord, 0));
     float mindepth1 = inDepth.Load(uint3(basecoord1, 0));
     float mindepth2 = inDepth.Load(uint3(basecoord2, 0));
@@ -141,11 +143,13 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     minDepth[gtid.x][gtid.y] = min(min(mindepth, mindepth1), min(mindepth2, mindepth3));
     maxDepth[gtid.x][gtid.y] = max(max(mindepth, mindepth1), max(mindepth2, mindepth3));
    // if(gtid.xy==uint2(0,0))
+   float clampFar = frameConstants.farPlane;
+   float clampNear = 0;
     if(gtid.x==0 && gtid.y==0)
     {
         uint orgval = 0;
-        InterlockedExchange(nearZ, 0x7fffffff, orgval);
-        InterlockedExchange(farZ, 0x0, orgval);
+        InterlockedExchange(nearZ, asuint(clampFar), orgval);
+        InterlockedExchange(farZ, asuint(clampNear), orgval);
     }
     GroupMemoryBarrier();
     InterlockedMin(nearZ, asuint(minDepth[gtid.x][gtid.y]));
@@ -154,7 +158,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     //2. test each light
     float asfloatnearZ = asfloat(farZ); //because we use reverse z here
     float asfloatfarZ = asfloat(nearZ);
-    
+   
     float zNear = frameConstants.nearPlane * frameConstants.farPlane / (frameConstants.nearPlane - asfloatnearZ * (frameConstants.nearPlane - frameConstants.farPlane));
     float zFar = frameConstants.nearPlane * frameConstants.farPlane / (frameConstants.nearPlane - asfloatfarZ * (frameConstants.nearPlane - frameConstants.farPlane));
    
@@ -177,7 +181,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     
     uint xCluterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
     uint outputIndex = (gid.x + gid.y * xCluterCount) * MAX_LIGHTS_PER_TILE;
-    tradtionDebug[gid.xy] = float4(frustum.tileMinZ, frustum.tileMaxZ, 0, 0);
+    tradtionDebug[gid.xy] = float4(frustum.tileMinZ, frustum.tileMaxZ, asfloatnearZ, asfloatfarZ);
     for (int i = gtid.x+gtid.y*16; i < totalPointLights;i+=16*16)
     {
         float4 lightPosView = mul(cameraParams.viewMatrix, float4(pointLightCullingData[i].posRadius.xyz, 1));
