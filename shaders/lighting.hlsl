@@ -70,3 +70,52 @@ half3 lightingShader(AAPLPixelSurfaceData surfaceData,
 
     return result;
 }
+
+
+// Smoothes the attenuation due to distance for a point or spot light.
+inline float smoothDistanceAttenuation(float squaredDistance, float invSqrAttRadius)
+{
+    float factor = squaredDistance * invSqrAttRadius;
+    float smoothFactor = saturate(1.0 - factor * factor);
+    return smoothFactor * smoothFactor;
+}
+
+// Calculates the attenuation due to distance for a point or spot light.
+inline float getDistanceAttenuation(float3 unormalizedLightVector, float invSqrAttRadius)
+{
+    float sqrDist = dot(unormalizedLightVector, unormalizedLightVector);
+    float attenuation = 1.0 / max(sqrDist, 0.01 * 0.01);
+    attenuation *= smoothDistanceAttenuation(sqrDist, invSqrAttRadius);
+
+    return attenuation;
+}
+
+half3 lightingShaderPointSpot(AAPLPixelSurfaceData surfaceData,
+                             
+                             float depth,
+                             float4 worldPosition,
+                             AAPLFrameConstants frameData,
+                             CameraParamsBufferFull cameraParams,
+			     float4 posSqrRadius,
+			     float3 color
+                            )
+{
+    //tocamera should use the second one!!
+    //float3 tocamera = cameraParams.invViewMatrix[3].xyz - worldPosition.xyz;
+    float3 tocamera2 = float3(cameraParams.invViewMatrix._m03, cameraParams.invViewMatrix._m13, cameraParams.invViewMatrix._m23) - worldPosition.xyz;
+    half3 viewDir = (half3) normalize(tocamera2); //TODO:m03,m13,m23
+    float3 lightDirection = posSqrRadius.xyz - worldPosition.xyz;
+    if (dot(lightDirection, lightDirection) > posSqrRadius.w)
+        return 0;
+    float attenuation = getDistanceAttenuation(lightDirection, 1.0 / posSqrRadius.w);
+    half3 light = (half3) (color * M_PI_F) * attenuation * frameData.localLightIntensity;
+    
+    
+    half3 result = evaluateBRDF(surfaceData, viewDir, normalize(lightDirection)) * light;
+    
+    
+
+    return result;
+}
+
+

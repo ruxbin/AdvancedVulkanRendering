@@ -600,7 +600,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     //results buffer & descriptors
     VkBufferCreateInfo pointlightCullingDataBufferInfo{};
     pointlightCullingDataBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    pointlightCullingDataBufferInfo.size = gpuScene._pointLights.size() * sizeof(vec4);
+    pointlightCullingDataBufferInfo.size = gpuScene._pointLights.size() * sizeof(vec4)*2;
     pointlightCullingDataBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;//TODO: change to uniform buffer
     pointlightCullingDataBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     pointlightCullingDataBufferInfo.flags = 0;
@@ -633,6 +633,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     for (int i = 0; i < gpuScene._pointLights.size(); ++i)
     {
         *data++ = vec4(gpuScene._pointLights[i]._pointLightData->posSqrRadius.xyz(), sqrtf(gpuScene._pointLights[i]._pointLightData->posSqrRadius.w));
+	*data++ = vec4(gpuScene._pointLights[i]._pointLightData->color,0);
     }
 
     vkUnmapMemory(device.getLogicalDevice(), pointlightCullingDataBufferMemory);
@@ -984,7 +985,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     // at 0 offset
     binfo2.offset = 0;
     // of the size of a camera data struct
-    binfo2.range = gpuScene._pointLights.size() * sizeof(vec4);
+    binfo2.range = gpuScene._pointLights.size() * sizeof(vec4)*2;
 
     VkWriteDescriptorSet setWrite2 = {};
     setWrite2.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1000,6 +1001,22 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     // and the type is uniform buffer
     setWrite2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     setWrite2.pBufferInfo = &binfo2;
+
+
+    VkWriteDescriptorSet setWrite_Deferredlighting = {};
+    setWrite_Deferredlighting.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite_Deferredlighting.pNext = nullptr;
+
+    // we are going to write into binding number 0
+    setWrite_Deferredlighting.dstBinding = 9;
+    // of the global descriptor
+    setWrite_Deferredlighting.dstSet = gpuScene.deferredLightingDescriptorSet;
+
+    setWrite_Deferredlighting.descriptorCount = 1;
+    setWrite_Deferredlighting.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite_Deferredlighting.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWrite_Deferredlighting.pBufferInfo = &binfo2;
 
 
 
@@ -1072,6 +1089,20 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     setWrite6.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     setWrite6.pBufferInfo = &binfo6;
 
+    VkWriteDescriptorSet setWriteIndices_deferredlighting = {};
+    setWriteIndices_deferredlighting.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteIndices_deferredlighting.pNext = nullptr;
+    setWriteIndices_deferredlighting.dstBinding = 10;
+    // of the global descriptor
+    setWriteIndices_deferredlighting.dstSet = gpuScene.deferredLightingDescriptorSet;
+
+    setWriteIndices_deferredlighting.descriptorCount = 1;
+    setWriteIndices_deferredlighting.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWriteIndices_deferredlighting.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWriteIndices_deferredlighting.pBufferInfo = &binfo6;
+
+
     VkDescriptorImageInfo tradtionalImageInfo{};
     tradtionalImageInfo.imageView = _traditionalCullDebugImageView;
     tradtionalImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1089,6 +1120,9 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 
+    std::array< VkWriteDescriptorSet, 2> writes_deferredlighting = {setWriteIndices_deferredlighting,setWrite_Deferredlighting};
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(),writes_deferredlighting.size(),writes_deferredlighting.data(),0,nullptr);
 
     //pipeline related
     auto computeShaderCode = readFile((gpuScene.RootPath() / "shaders/CoarseCull.cs.spv").generic_string());

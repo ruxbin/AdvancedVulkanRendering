@@ -82,6 +82,7 @@ public:
 	LightCuller();
 	VkImage GetXZDebugImage(){return _xzDebugImage;}
 	VkImage GetTraditionalDebugImage() { return _traditionalCullDebugImage; }
+	VkBuffer GetPointLightCullingDataBuffer()const{return _pointLightCullingDataBuffer;}
 private:
 
 	VkBuffer            _pointLightCullingDataBuffer;

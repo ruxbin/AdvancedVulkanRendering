@@ -435,6 +435,22 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     deferredLightingPSShaderStageInfo.module = deferredLightingPSShaderModule;
     deferredLightingPSShaderStageInfo.pName = "DeferredLighting";
 
+    VkBool32 useClusterLighting = true;
+    VkSpecializationInfo specializationInfo_clusterlighting = {};
+    specializationInfo_clusterlighting.mapEntryCount = 1;
+    specializationInfo_clusterlighting.pMapEntries   = &mapEntry;
+    specializationInfo_clusterlighting.dataSize      = sizeof(VkBool32);
+    specializationInfo_clusterlighting.pData         = &useClusterLighting;
+ 
+    VkPipelineShaderStageCreateInfo deferredLightingPSShaderStageInfo_clusterlighting{};
+    deferredLightingPSShaderStageInfo_clusterlighting.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    deferredLightingPSShaderStageInfo_clusterlighting.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    deferredLightingPSShaderStageInfo_clusterlighting.module = deferredLightingPSShaderModule;
+    deferredLightingPSShaderStageInfo_clusterlighting.pName = "DeferredLighting";
+    deferredLightingPSShaderStageInfo_clusterlighting.pSpecializationInfo = &specializationInfo_clusterlighting;
+
+
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
                                                       fragShaderStageInfo };
     VkPipelineShaderStageCreateInfo eshaderStages[] = { evertShaderStageInfo,
@@ -456,6 +472,11 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     VkPipelineShaderStageCreateInfo deferredLightingPassStages[] = { deferredLightingVSShaderStageInfo,
                                                    deferredLightingPSShaderStageInfo };
+
+
+
+    VkPipelineShaderStageCreateInfo deferredLightingPassStages_clusterlighting[] = { deferredLightingVSShaderStageInfo,
+                                                   deferredLightingPSShaderStageInfo_clusterlighting };
 
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
@@ -869,6 +890,28 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     }
 
 
+    VkGraphicsPipelineCreateInfo deferredLightingPipelineInfo_clusterlighting{};
+    deferredLightingPipelineInfo_clusterlighting.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    deferredLightingPipelineInfo_clusterlighting.stageCount = 2;
+    deferredLightingPipelineInfo_clusterlighting.pStages = deferredLightingPassStages_clusterlighting;
+    deferredLightingPipelineInfo_clusterlighting.pVertexInputState = &edwardVertexInputInfo;//TODO: don't need that?
+    deferredLightingPipelineInfo_clusterlighting.pInputAssemblyState = &inputAssembly;
+    deferredLightingPipelineInfo_clusterlighting.pViewportState = &viewportState;
+    deferredLightingPipelineInfo_clusterlighting.pRasterizationState = &rasterizerBackFace;
+    deferredLightingPipelineInfo_clusterlighting.pMultisampleState = &multisampling;
+    deferredLightingPipelineInfo_clusterlighting.pColorBlendState = &colorBlending;
+    deferredLightingPipelineInfo_clusterlighting.layout = deferredLightingPipelineLayout;
+    deferredLightingPipelineInfo_clusterlighting.renderPass = _deferredLightingPass;
+    deferredLightingPipelineInfo_clusterlighting.subpass = 0;
+    deferredLightingPipelineInfo_clusterlighting.basePipelineHandle = VK_NULL_HANDLE;
+    deferredLightingPipelineInfo_clusterlighting.pDepthStencilState = &depthStencilStateDisable;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &deferredLightingPipelineInfo_clusterlighting,
+        nullptr, &deferredLightingPipeline_clusterlighting) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
+    }
+
+
 
 
 
@@ -1174,10 +1217,24 @@ void GpuScene::init_deferredlighting_descriptors()
     shadowMapsSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     shadowMapsSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+	
+    VkDescriptorSetLayoutBinding pointLightCullingDataBinding = {};
+    pointLightCullingDataBinding.binding = 9;
+    pointLightCullingDataBinding.descriptorCount = 1;
+    pointLightCullingDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pointLightCullingDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+    VkDescriptorSetLayoutBinding lightIndicesBinding = {};
+    lightIndicesBinding.binding = 10;
+    lightIndicesBinding.descriptorCount = 1;
+    lightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    lightIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
 
 
     VkDescriptorSetLayoutBinding bindings[] = { albedoBinding, normalBinding, emessiveBinding, f0RoughnessBinding,
-        depthBinding, nearestClampSamplerBinding,frameDataBinding,shadowMapsBinding,shadowMapsSamplerBinding };
+        depthBinding, nearestClampSamplerBinding,frameDataBinding,shadowMapsBinding,shadowMapsSamplerBinding, pointLightCullingDataBinding,lightIndicesBinding };
 
     VkDescriptorSetLayoutCreateInfo setinfo = {};
     setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1262,6 +1319,7 @@ void GpuScene::init_deferredlighting_descriptors()
     setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
 
+    
 
     std::array<VkDescriptorImageInfo, 4> imageinfo{};
     //imageinfo.resize(textures.size());
@@ -2193,9 +2251,9 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     vec3 camera_pos = vec3(sceneFile["camera_position"][0].template get<float>(), sceneFile["camera_position"][1].template get<float>(), sceneFile["camera_position"][2].template get<float>());
     vec3 camera_up = vec3(sceneFile["camera_up"][0].template get<float>(), sceneFile["camera_up"][1].template get<float>(), sceneFile["camera_up"][2].template get<float>());
     vec3 camera_dir = vec3(sceneFile["camera_direction"][0].template get<float>(), sceneFile["camera_direction"][1].template get<float>(), sceneFile["camera_direction"][2].template get<float>());
-    maincamera = new Camera(65 * 3.1414926f / 180.f, 0.1, 100, camera_pos,
+    maincamera = new Camera(65 * 3.1414926f / 180.f, 0.1, 100, vec3(-18.13222 ,-9.790142 ,9.340174),
         deviceref.getSwapChainExtent().width /
-        float(deviceref.getSwapChainExtent().height), camera_dir, camera_up * -1);
+        float(deviceref.getSwapChainExtent().height), vec3(0.8891189 ,0.009151466 ,-0.45758477), camera_up * -1);
 
     //maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 0),
     //    deviceref.getSwapChainExtent().width /
@@ -3413,7 +3471,30 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
     //deferred lighting pass
     {
-	    uint32_t dynamic_offset = 0;
+	if(useClusterLighting)
+	{
+	//wait for the lightindices to read
+		VkMemoryBarrier2 memoryBarrier = {
+    		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+    		.pNext = nullptr,
+    		.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+    		.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
+    		.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    		.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR
+    		};
+
+    		VkDependencyInfo dependencyInfo = {
+        	.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        	.pNext = nullptr,
+        	.memoryBarrierCount = 1,
+        	.pMemoryBarriers = &memoryBarrier,
+    		};
+    		
+		vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+    
+
+	}
+	uint32_t dynamic_offset = 0;
         std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
         clearValues[1].depthStencil.depth = 0;
@@ -3433,13 +3514,13 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         vkCmdBeginRenderPass(commandBuffer, &blitPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            deferredLightingPipeline);
+            useClusterLighting?deferredLightingPipeline_clusterlighting:deferredLightingPipeline);
         
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
             1, &dynamic_offset);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-
+	if(!useClusterLighting)
         {
             //point light
             PointLight::CommonDrawSetup(commandBuffer);

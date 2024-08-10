@@ -195,7 +195,8 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
         //if(gid.x>=xzRange.x && gid.x<xzRange.x+xzRange.y && 
         //    gid.y>=xzRange.z && gid.y<xzRange.z+xzRange.w)
         if (uint(gid.x - xzRange.x) < xzRange.y &&
-            uint(gid.y - xzRange.z) < xzRange.w && inFrustumMinZ && inFrustumMaxZ)
+            uint(gid.y - xzRange.z) < xzRange.w
+	    && inFrustumMinZ && inFrustumMaxZ)
         {
             if (intersectsFrustumTile(lightPosView.xyz, r, frustum, false))
             {

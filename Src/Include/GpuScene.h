@@ -217,6 +217,7 @@ private:
 
     VkPipelineLayout deferredLightingPipelineLayout;
     VkPipeline deferredLightingPipeline;
+    VkPipeline deferredLightingPipeline_clusterlighting;
 
   VkBuffer occluderVertexBuffer;
   VkDeviceMemory occluderVertexBufferMemory;
@@ -296,6 +297,8 @@ private:
 
   LightCuller* _lightCuller = nullptr;
 
+  bool useClusterLighting = false;
+
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffer(VkCommandPool commandPool) {
@@ -340,6 +343,10 @@ private:
     void init_deferredlighting_descriptors();
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
+    void TriggerClusterLighting()
+    {
+	    useClusterLighting = !useClusterLighting;
+    }
 
     void DrawChunksBasePass();
 

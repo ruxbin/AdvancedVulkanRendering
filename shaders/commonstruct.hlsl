@@ -94,6 +94,7 @@ struct AAPLPointLightCullingData
                                         // Sign of radius:
                                         //  positive - transparency affecting light
                                         //  negative - light does not affect transparency
+	float4 color;
 };
 
 #define M_PI_F 3.1415926535897932f

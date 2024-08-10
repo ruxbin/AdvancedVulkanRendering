@@ -82,6 +82,9 @@ int main(int nargs, char ** args) {
                 case SDL_SCANCODE_S://s
                     gpuScene.GetMainCamera()->MoveBackward(moveSpeed);
                     break;
+		case SDL_SCANCODE_C:
+		    gpuScene.TriggerClusterLighting();
+		    break;
                 default:
                     spdlog::info("keypressed {}\n", e.key.keysym.scancode);
                     break;
