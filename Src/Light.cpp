@@ -1211,9 +1211,9 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer& commandBuffer, const Vu
     .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
     .pNext = nullptr,
     .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
-    .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
+    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
     .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
-    .dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR
+    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
     };
 
     VkDependencyInfo dependencyInfo = {
@@ -1240,6 +1240,29 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer& commandBuffer, const Vu
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, clearIndicesPipeline);
     vkCmdDispatch(commandBuffer, (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+
+
+
+    {
+
+	VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+//VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;//TODO:try VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = device.getWindowDepthImage();
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+	barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
+    }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, traditionalCullPipeline);
     vkCmdDispatch(commandBuffer, (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) / DEFAULT_LIGHT_CULLING_TILE_SIZE, 1);

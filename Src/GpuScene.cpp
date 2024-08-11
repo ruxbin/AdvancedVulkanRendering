@@ -2251,9 +2251,9 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     vec3 camera_pos = vec3(sceneFile["camera_position"][0].template get<float>(), sceneFile["camera_position"][1].template get<float>(), sceneFile["camera_position"][2].template get<float>());
     vec3 camera_up = vec3(sceneFile["camera_up"][0].template get<float>(), sceneFile["camera_up"][1].template get<float>(), sceneFile["camera_up"][2].template get<float>());
     vec3 camera_dir = vec3(sceneFile["camera_direction"][0].template get<float>(), sceneFile["camera_direction"][1].template get<float>(), sceneFile["camera_direction"][2].template get<float>());
-    maincamera = new Camera(65 * 3.1414926f / 180.f, 0.1, 100, vec3(-18.13222 ,-9.790142 ,9.340174),
+    maincamera = new Camera(65 * 3.1414926f / 180.f, 0.1, 100, camera_pos,
         deviceref.getSwapChainExtent().width /
-        float(deviceref.getSwapChainExtent().height), vec3(0.8891189 ,0.009151466 ,-0.45758477), camera_up * -1);
+        float(deviceref.getSwapChainExtent().height), camera_dir, camera_up * -1);
 
     //maincamera = new Camera(90 * 3.1414926f / 180.f, 1, 100, vec3(0, 0, 0),
     //    deviceref.getSwapChainExtent().width /
@@ -3434,16 +3434,18 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         vkCmdEndRenderPass(commandBuffer);
     }
     {
-        
+        if(useClusterLighting)
+	{
         if (!_lightCuller)
         {
             _lightCuller = new LightCuller();
             _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
         }
-	    transitionImageLayout(_lightCuller->GetXZDebugImage(), VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
+	transitionImageLayout(_lightCuller->GetXZDebugImage(), VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
         transitionImageLayout(_lightCuller->GetTraditionalDebugImage(), VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-        transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);//read depth while write stencil in the point lighting pass
+        //transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);//read depth while write stencil in the point lighting pass
         _lightCuller->ClusterLightForScreen(commandBuffer, device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
+	}
     }
     //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
     //VkBuffer vertexBuffers[] = {vertexBuffer};
@@ -3467,6 +3469,30 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
        
         for (int i = 0; i < 4; i++)
             transitionImageLayout(_gbuffers[i], _gbufferFormat[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	if(useClusterLighting)
+	{
+		//don't need to write stencil anymore
+	VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = device.getWindowDepthImage();
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+	barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
+	}
+	else
+	{
+		transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);//read depth while write stencil in the point lighting pass
+	}
     }
 
     //deferred lighting pass
@@ -3478,7 +3504,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
     		.pNext = nullptr,
     		.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
-    		.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
+    		.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
     		.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
     		.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR
     		};

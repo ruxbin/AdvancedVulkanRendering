@@ -359,7 +359,7 @@ private:
 
     void transitionImageLayout(VkImage image, VkFormat format,
         VkImageLayout oldLayout,
-        VkImageLayout newLayout)
+        VkImageLayout newLayout)const
     {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

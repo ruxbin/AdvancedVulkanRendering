@@ -119,8 +119,6 @@ static bool intersectsFrustumTile( float3 lightPosView, float r, AAPLTileFrustum
     return (min_d <= r);// && isLightVisibleFine(light, boundingSphere);
 }
 
-groupshared float minDepth[16][16];
-groupshared float maxDepth[16][16];
 groupshared uint nearZ;
 groupshared uint farZ;
 [numthreads(16, 16, 1)]
@@ -140,27 +138,29 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     float mindepth1 = inDepth.Load(uint3(basecoord1, 0));
     float mindepth2 = inDepth.Load(uint3(basecoord2, 0));
     float mindepth3 = inDepth.Load(uint3(basecoord3, 0));
-    minDepth[gtid.x][gtid.y] = min(min(mindepth, mindepth1), min(mindepth2, mindepth3));
-    maxDepth[gtid.x][gtid.y] = max(max(mindepth, mindepth1), max(mindepth2, mindepth3));
+    float minDepth = min(min(mindepth, mindepth1), min(mindepth2, mindepth3));
+    float maxDepth = max(max(mindepth, mindepth1), max(mindepth2, mindepth3));
+    maxDepth = frameConstants.nearPlane*frameConstants.farPlane/(frameConstants.nearPlane - maxDepth*(frameConstants.nearPlane-frameConstants.farPlane));
+    minDepth = frameConstants.nearPlane*frameConstants.farPlane/(frameConstants.nearPlane - minDepth*(frameConstants.nearPlane-frameConstants.farPlane));
    // if(gtid.xy==uint2(0,0))
-   float clampFar = frameConstants.farPlane;
+   float clampFar = frameConstants.farPlane+1;
    float clampNear = 0;
-    if(gtid.x==0 && gtid.y==0)
+    //if(gtid.x==0 && gtid.y==0)
     {
         uint orgval = 0;
         InterlockedExchange(nearZ, asuint(clampFar), orgval);
         InterlockedExchange(farZ, asuint(clampNear), orgval);
     }
-    GroupMemoryBarrier();
-    InterlockedMin(nearZ, asuint(minDepth[gtid.x][gtid.y]));
-    InterlockedMax(farZ, asuint(maxDepth[gtid.x][gtid.y]));
-    GroupMemoryBarrier();
+    GroupMemoryBarrierWithGroupSync();
+    InterlockedMin(nearZ, asuint(maxDepth));
+    InterlockedMax(farZ, asuint(minDepth));
+    GroupMemoryBarrierWithGroupSync();
     //2. test each light
-    float asfloatnearZ = asfloat(farZ); //because we use reverse z here
-    float asfloatfarZ = asfloat(nearZ);
+    float asfloatnearZ = asfloat(nearZ); //because we use reverse z here
+    float asfloatfarZ = asfloat(farZ);
    
-    float zNear = frameConstants.nearPlane * frameConstants.farPlane / (frameConstants.nearPlane - asfloatnearZ * (frameConstants.nearPlane - frameConstants.farPlane));
-    float zFar = frameConstants.nearPlane * frameConstants.farPlane / (frameConstants.nearPlane - asfloatfarZ * (frameConstants.nearPlane - frameConstants.farPlane));
+    float zNear = asfloatnearZ;//frameConstants.nearPlane * frameConstants.farPlane / (frameConstants.nearPlane - asfloatnearZ * (frameConstants.nearPlane - frameConstants.farPlane));
+    float zFar = asfloatfarZ;//frameConstants.nearPlane * frameConstants.farPlane / (frameConstants.nearPlane - asfloatfarZ * (frameConstants.nearPlane - frameConstants.farPlane));
    
     float2 xS = (min(float2(gid.x, gid.x + 1) * gLightCullingTileSize, frameConstants.physicalSize.xx) / frameConstants.physicalSize.xx) * 2 - 1;
     float2 yS = (min(float2(gid.y, gid.y + 1) * gLightCullingTileSize, frameConstants.physicalSize.yy) / frameConstants.physicalSize.yy) * 2 - 1;
@@ -181,7 +181,8 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     
     uint xCluterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
     uint outputIndex = (gid.x + gid.y * xCluterCount) * MAX_LIGHTS_PER_TILE;
-    tradtionDebug[gid.xy] = float4(frustum.tileMinZ, frustum.tileMaxZ, asfloatnearZ, asfloatfarZ);
+    //if(gtid.x==0&&gtid.y==0)
+    //	tradtionDebug[gid.xy] = float4(frustum.tileMinZ, frustum.tileMaxZ, asfloatnearZ, asfloatfarZ);
     for (int i = gtid.x+gtid.y*16; i < totalPointLights;i+=16*16)
     {
         float4 lightPosView = mul(cameraParams.viewMatrix, float4(pointLightCullingData[i].posRadius.xyz, 1));
@@ -190,13 +191,17 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
         
         bool inFrustumMinZ = (lightPosView.z + r) > frustum.tileMinZ;
         bool inFrustumMaxZ = (lightPosView.z - r) < frustum.tileMaxZ;
-        
+     	//if(i==64)
+//	{
+//		tradtionDebug[gid.xy] = float4(lightPosView.z,r,frustum.tileMinZ,lightPosView.z+r+frustum.tileMinZ);
+//	}
         uint16_t4 xzRange = lightXZRange[i];
         //if(gid.x>=xzRange.x && gid.x<xzRange.x+xzRange.y && 
         //    gid.y>=xzRange.z && gid.y<xzRange.z+xzRange.w)
         if (uint(gid.x - xzRange.x) < xzRange.y &&
             uint(gid.y - xzRange.z) < xzRange.w
-	    && inFrustumMinZ && inFrustumMaxZ)
+	    && inFrustumMinZ
+	    && inFrustumMaxZ)
         {
             if (intersectsFrustumTile(lightPosView.xyz, r, frustum, false))
             {
