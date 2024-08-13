@@ -38,7 +38,9 @@ public:
 
     float Near() { return _near; }
     float Far() { return _far; }
-
+    const vec3& GetOrigin()const{return _origin;}
+    vec3 GetCameraDir() const;
+    
     vec3 _frustumCorners[8];
 };
 

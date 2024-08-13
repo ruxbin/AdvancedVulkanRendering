@@ -82,10 +82,16 @@ int main(int nargs, char ** args) {
                 case SDL_SCANCODE_S://s
                     gpuScene.GetMainCamera()->MoveBackward(moveSpeed);
                     break;
+		case SDL_SCANCODE_C:
+		    gpuScene.TriggerClusterLighting();
+		    break;
                 default:
                     spdlog::info("keypressed {}\n", e.key.keysym.scancode);
                     break;
                 }
+		spdlog::info("camerapos: {} {} {}",gpuScene.GetMainCamera()->GetOrigin().x,
+					gpuScene.GetMainCamera()->GetOrigin().y,
+					gpuScene.GetMainCamera()->GetOrigin().z);
             }
             else if (e.type == SDL_MOUSEMOTION)
             {
@@ -103,7 +109,9 @@ int main(int nargs, char ** args) {
                         gpuScene.GetMainCamera()->RotateZ(currentZDegree);
                     }
                     
-                    
+		    spdlog::info("cameradir: {} {} {}",gpuScene.GetMainCamera()->GetCameraDir().x,
+				    gpuScene.GetMainCamera()->GetCameraDir().y,
+				    gpuScene.GetMainCamera()->GetCameraDir().z); 
                 }
             }
             else if (e.type == SDL_MOUSEBUTTONDOWN)

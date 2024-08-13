@@ -73,6 +73,9 @@ struct FrameConstants {
     float wetness;
     float emissiveScale;
     float localLightIntensity;
+    float nearPlane;
+    float farPlane;
+    alignas(16) vec2 physicalSize;
 };
 
 
@@ -103,6 +106,8 @@ struct alignas(64) PointLightData
         flags = f;
     }
 };
+
+
 
 
 #define SPOT_LIGHT_INNER_SCALE (0.8f)

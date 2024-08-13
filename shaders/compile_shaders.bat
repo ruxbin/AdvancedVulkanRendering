@@ -13,3 +13,8 @@ G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T vs_6_0 deferredlighting.hlsl -
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T ps_6_0 deferredlighting.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredlighting.ps.spv
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T ps_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredPointLighting.ps.spv
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T vs_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo deferredPointLighting.vs.spv
+
+
+
+G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E CoarseCull -Fo CoarseCull.cs.spv
+G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E TraditionalCull -Fo TraditionalCull.cs.spv

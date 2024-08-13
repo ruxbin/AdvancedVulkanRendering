@@ -3,11 +3,11 @@
 
 
 
-[[vk::binding(0,0)]] Texture2D<half4> albedoeTex;
-[[vk::binding(1,0)]] Texture2D<half4> normalTex;
-[[vk::binding(2,0)]] Texture2D<half4> emissiveTex;
-[[vk::binding(3,0)]] Texture2D<half4> F0RoughnessTex;
-[[vk::binding(4,0)]] Texture2D<half> inDepth;
+[[vk::binding(0,0)]] Texture2D<float4> albedoeTex;
+[[vk::binding(1,0)]] Texture2D<float4> normalTex;
+[[vk::binding(2,0)]] Texture2D<float4> emissiveTex;
+[[vk::binding(3,0)]] Texture2D<float4> F0RoughnessTex;
+[[vk::binding(4,0)]] Texture2D<float> inDepth;
 [[vk::binding(5,0)]] SamplerState _NearestClampSampler;
 
 [[vk::binding(6,0)]] 
@@ -28,6 +28,9 @@ cbuffer frameData
    // sampler comparison state
 //    ComparisonFunc = LESS;
 //};
+[[vk::binding(9,0)]]
+StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world position
+[[vk::binding(10,0)]] StructuredBuffer<uint> lightIndices;
 
 struct VSOutput
 {
@@ -37,7 +40,7 @@ struct VSOutput
 };
 
 
-
+[[vk::constant_id(0)]] const bool  useClusterLighting  = false;
 
 
 
@@ -118,6 +121,23 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     float shadow = evaluateCascadeShadows(cameraParams, worldPosition, false);
     
     half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow;
+    if(useClusterLighting)
+    {
+	//get the cluster index
+	uint xClusterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
+ 
+	uint clusterindex = uint(input.Position.x/gLightCullingTileSize)+xClusterCount*uint(input.Position.y/gLightCullingTileSize);
+
+	//lighting
+	uint lightCount = lightIndices[clusterindex*MAX_LIGHTS_PER_TILE];
+	for(int lightindex = 0;lightindex<lightCount;++lightindex)
+	{
+		float lightradius = pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].posRadius.w;
+		float4 posRadiusSqr = float4(pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].posRadius.xyz,lightradius*lightradius);
+
+		result += lightingShaderPointSpot(surfaceData,depth,worldPosition,frameConstants,cameraParams,posRadiusSqr,pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].color.xyz);
+	}
+    }
     
     return half4(result, 1.f);
     

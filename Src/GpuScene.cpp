@@ -435,6 +435,22 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     deferredLightingPSShaderStageInfo.module = deferredLightingPSShaderModule;
     deferredLightingPSShaderStageInfo.pName = "DeferredLighting";
 
+    VkBool32 useClusterLighting = true;
+    VkSpecializationInfo specializationInfo_clusterlighting = {};
+    specializationInfo_clusterlighting.mapEntryCount = 1;
+    specializationInfo_clusterlighting.pMapEntries   = &mapEntry;
+    specializationInfo_clusterlighting.dataSize      = sizeof(VkBool32);
+    specializationInfo_clusterlighting.pData         = &useClusterLighting;
+ 
+    VkPipelineShaderStageCreateInfo deferredLightingPSShaderStageInfo_clusterlighting{};
+    deferredLightingPSShaderStageInfo_clusterlighting.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    deferredLightingPSShaderStageInfo_clusterlighting.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    deferredLightingPSShaderStageInfo_clusterlighting.module = deferredLightingPSShaderModule;
+    deferredLightingPSShaderStageInfo_clusterlighting.pName = "DeferredLighting";
+    deferredLightingPSShaderStageInfo_clusterlighting.pSpecializationInfo = &specializationInfo_clusterlighting;
+
+
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
                                                       fragShaderStageInfo };
     VkPipelineShaderStageCreateInfo eshaderStages[] = { evertShaderStageInfo,
@@ -456,6 +472,11 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
 
     VkPipelineShaderStageCreateInfo deferredLightingPassStages[] = { deferredLightingVSShaderStageInfo,
                                                    deferredLightingPSShaderStageInfo };
+
+
+
+    VkPipelineShaderStageCreateInfo deferredLightingPassStages_clusterlighting[] = { deferredLightingVSShaderStageInfo,
+                                                   deferredLightingPSShaderStageInfo_clusterlighting };
 
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
@@ -869,6 +890,28 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     }
 
 
+    VkGraphicsPipelineCreateInfo deferredLightingPipelineInfo_clusterlighting{};
+    deferredLightingPipelineInfo_clusterlighting.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    deferredLightingPipelineInfo_clusterlighting.stageCount = 2;
+    deferredLightingPipelineInfo_clusterlighting.pStages = deferredLightingPassStages_clusterlighting;
+    deferredLightingPipelineInfo_clusterlighting.pVertexInputState = &edwardVertexInputInfo;//TODO: don't need that?
+    deferredLightingPipelineInfo_clusterlighting.pInputAssemblyState = &inputAssembly;
+    deferredLightingPipelineInfo_clusterlighting.pViewportState = &viewportState;
+    deferredLightingPipelineInfo_clusterlighting.pRasterizationState = &rasterizerBackFace;
+    deferredLightingPipelineInfo_clusterlighting.pMultisampleState = &multisampling;
+    deferredLightingPipelineInfo_clusterlighting.pColorBlendState = &colorBlending;
+    deferredLightingPipelineInfo_clusterlighting.layout = deferredLightingPipelineLayout;
+    deferredLightingPipelineInfo_clusterlighting.renderPass = _deferredLightingPass;
+    deferredLightingPipelineInfo_clusterlighting.subpass = 0;
+    deferredLightingPipelineInfo_clusterlighting.basePipelineHandle = VK_NULL_HANDLE;
+    deferredLightingPipelineInfo_clusterlighting.pDepthStencilState = &depthStencilStateDisable;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &deferredLightingPipelineInfo_clusterlighting,
+        nullptr, &deferredLightingPipeline_clusterlighting) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawcluster base graphics pipeline!");
+    }
+
+
 
 
 
@@ -1174,10 +1217,24 @@ void GpuScene::init_deferredlighting_descriptors()
     shadowMapsSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     shadowMapsSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+	
+    VkDescriptorSetLayoutBinding pointLightCullingDataBinding = {};
+    pointLightCullingDataBinding.binding = 9;
+    pointLightCullingDataBinding.descriptorCount = 1;
+    pointLightCullingDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pointLightCullingDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+    VkDescriptorSetLayoutBinding lightIndicesBinding = {};
+    lightIndicesBinding.binding = 10;
+    lightIndicesBinding.descriptorCount = 1;
+    lightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    lightIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
 
 
     VkDescriptorSetLayoutBinding bindings[] = { albedoBinding, normalBinding, emessiveBinding, f0RoughnessBinding,
-        depthBinding, nearestClampSamplerBinding,frameDataBinding,shadowMapsBinding,shadowMapsSamplerBinding };
+        depthBinding, nearestClampSamplerBinding,frameDataBinding,shadowMapsBinding,shadowMapsSamplerBinding, pointLightCullingDataBinding,lightIndicesBinding };
 
     VkDescriptorSetLayoutCreateInfo setinfo = {};
     setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1262,6 +1319,7 @@ void GpuScene::init_deferredlighting_descriptors()
     setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
 
+    
 
     std::array<VkDescriptorImageInfo, 4> imageinfo{};
     //imageinfo.resize(textures.size());
@@ -1422,7 +1480,7 @@ void GpuScene::init_drawparams_descriptors()
     cullParamsBufferInfo.buffer = cullParamsBuffer;
     // at 0 offset
     cullParamsBufferInfo.offset = 0;
-    cullParamsBufferInfo.range = sizeof(gpuCullParams);
+    cullParamsBufferInfo.range = sizeof(GPUCullParams);
 
     VkWriteDescriptorSet cullParamsWrite = {};
     cullParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2600,7 +2658,7 @@ GpuScene::GpuScene(std::filesystem::path& root, const VulkanDevice& deviceref)
     {
         VkBufferCreateInfo cullParamsBufferInfo{};
         cullParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        cullParamsBufferInfo.size = sizeof(gpuCullParams);
+        cullParamsBufferInfo.size = sizeof(GPUCullParams);
         cullParamsBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         cullParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         cullParamsBufferInfo.flags = 0;
@@ -3261,6 +3319,9 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
 	_shadow->UpdateShadowMatrices(*this);
 	{
+        frameConstants.nearPlane = maincamera->Near();
+        frameConstants.farPlane = maincamera->Far();
+        frameConstants.physicalSize = vec2(device.getSwapChainExtent().width, device.getSwapChainExtent().height);
 	void* data1;
     	vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0, sizeof(FrameData), 0,
         	&data1);
@@ -3283,13 +3344,19 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 	vkUnmapMemory(device.getLogicalDevice(),uniformBufferMemory);
 
   	//spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams, frustum));
-  	vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(gpuCullParams), 0, &data1);
-  	memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
-  	//memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
-  	//offsetof isn't working as expected
-  	memcpy((char*)data1 + 16, &maincamera->getFrustum(), sizeof(Frustum));
+    {
+        uint32_t totalPointLights = _pointLights.size();
+        uint32_t totalSpotLights = _spotLights.size();
+        vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0, sizeof(GPUCullParams), 0, &data1);
+        memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
+        memcpy((char*)data1 + 4, &totalPointLights, sizeof(uint32_t));
+        memcpy((char*)data1 + 8, &totalSpotLights, sizeof(uint32_t));
+        //memcpy((char*)data+offsetof(gpuCullParams,frustum), &maincamera->getFrustum(), sizeof(Frustum));
+        //offsetof isn't working as expected
+        memcpy((char*)data1 + 16, &maincamera->getFrustum(), sizeof(Frustum));
 
-  	vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+        vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+    }
 
   	uint32_t startIndex = 0;
   	vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0, sizeof(uint32_t), 0, &data1);
@@ -3368,7 +3435,20 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
 
         vkCmdEndRenderPass(commandBuffer);
     }
-
+    {
+        if(useClusterLighting)
+	{
+        if (!_lightCuller)
+        {
+            _lightCuller = new LightCuller();
+            _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
+        }
+	transitionImageLayout(_lightCuller->GetXZDebugImage(), VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
+        transitionImageLayout(_lightCuller->GetTraditionalDebugImage(), VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        //transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);//read depth while write stencil in the point lighting pass
+        _lightCuller->ClusterLightForScreen(commandBuffer, device, *this, device.getSwapChainExtent().width, device.getSwapChainExtent().height);
+	}
+    }
     //vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS, egraphicsPipeline);
     //VkBuffer vertexBuffers[] = {vertexBuffer};
     //VkDeviceSize offsets[] = {0};
@@ -3388,14 +3468,61 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         //TODO: test with subpass dependency
         //transition the image layout
         //notice:换成device的transitionImageLayout会报错,validation layer 关于barrier只在同一个commandbuffer中记录imageview的layout，跨commandbuffer会报错~
-        transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
+       
         for (int i = 0; i < 4; i++)
             transitionImageLayout(_gbuffers[i], _gbufferFormat[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	if(useClusterLighting)
+	{
+		//don't need to write stencil anymore
+	VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = device.getWindowDepthImage();
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+	barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
+	}
+	else
+	{
+		transitionImageLayout(device.getWindowDepthImage(), device.getWindowDepthFormat(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);//read depth while write stencil in the point lighting pass
+	}
     }
 
     //deferred lighting pass
     {
-	    uint32_t dynamic_offset = 0;
+	if(useClusterLighting)
+	{
+	//wait for the lightindices to read
+		VkMemoryBarrier2 memoryBarrier = {
+    		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+    		.pNext = nullptr,
+    		.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+    		.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+    		.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    		.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR
+    		};
+
+    		VkDependencyInfo dependencyInfo = {
+        	.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        	.pNext = nullptr,
+        	.memoryBarrierCount = 1,
+        	.pMemoryBarriers = &memoryBarrier,
+    		};
+    		
+		vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+    
+
+	}
+	uint32_t dynamic_offset = 0;
         std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
         clearValues[1].depthStencil.depth = 0;
@@ -3415,13 +3542,13 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
         vkCmdBeginRenderPass(commandBuffer, &blitPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            deferredLightingPipeline);
+            useClusterLighting?deferredLightingPipeline_clusterlighting:deferredLightingPipeline);
         
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             deferredLightingPipelineLayout, 0, 1, &deferredLightingDescriptorSet,
             1, &dynamic_offset);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-
+	if(!useClusterLighting)
         {
             //point light
             PointLight::CommonDrawSetup(commandBuffer);

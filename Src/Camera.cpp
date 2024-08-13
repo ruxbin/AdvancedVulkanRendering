@@ -49,6 +49,14 @@ Camera::Camera(float fov, float n, float f,  vec3 origin, float aspect, vec3 loo
 	updateCameraMatrix();
 }
 
+vec3 Camera::GetCameraDir() const
+{
+	    vec4 z(0,0,1,1);
+	    vec3 lookatpos = (transpose(_invViewMatrix)*z).xyz();
+
+	    return normalize(lookatpos - _origin);
+}
+
 void Camera::updateCameraMatrix()
 {
 	//mat4 transM = translate(_origin * -1.f);
@@ -66,6 +74,10 @@ void Camera::updateCameraMatrix()
 	//mat4 viewproj = transpose(_objectToCameraMatrix * _projectionMatrix);
 	//mat4 viewproj = transpose(_projectionMatrix)*transpose(_objectToCameraMatrix)*transpose(transM);
 	mat4 viewproj = transpose(_projectionMatrix) * transpose(_objectToCameraMatrix);
+
+	mat4 invProj = transpose(inverse(_projectionMatrix));
+	//let's debug here
+	spdlog::error("{} {} {} {}",invProj.w.x, invProj.w.y, invProj.w.z, invProj.w.w);
 
 	mat4 viewprojmatrix = _objectToCameraMatrix* _projectionMatrix;
 	_invViewProjectionMatrix = inverse(viewprojmatrix);

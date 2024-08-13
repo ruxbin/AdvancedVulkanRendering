@@ -6,6 +6,7 @@
 #include <vector>
 
 class GpuScene;
+class LightCuller;
 
 class Light
 {
@@ -42,6 +43,8 @@ public:
 
 
 	static void CommonDrawSetup(VkCommandBuffer&);
+
+	friend class LightCuller;
 };
 
 
@@ -62,4 +65,44 @@ public:
 	SpotLight(uint32_t dynamic_offset, const SpotLightData* sld) : _dynamicOffset(dynamic_offset), _spotLightData(sld) {}
 
 	static std::vector<SpotLightData> spotLightData;
+};
+
+#   define DEFAULT_LIGHT_CULLING_TILE_SIZE  (32)
+#define LIGHT_CLUSTER_DEPTH (64)
+
+#define MAX_LIGHTS_PER_TILE                 (64)
+
+#define MAX_LIGHTS_PER_CLUSTER              (16)
+
+class LightCuller
+{
+public:
+	void ClusterLightForScreen(VkCommandBuffer&, const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
+	void InitRHI(const VulkanDevice& , const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
+	LightCuller();
+	VkImage GetXZDebugImage(){return _xzDebugImage;}
+	VkImage GetTraditionalDebugImage() { return _traditionalCullDebugImage; }
+	VkBuffer GetPointLightCullingDataBuffer()const{return _pointLightCullingDataBuffer;}
+private:
+
+	VkBuffer            _pointLightCullingDataBuffer;
+
+	VkBuffer            _xzRangeBuffer;
+	VkBuffer			_lightIndicesBuffer;
+	VkImage				_xzDebugImage;
+	VkImageView			_xzDebugImageView;
+
+	VkImage				_traditionalCullDebugImage;
+	VkImageView			_traditionalCullDebugImageView;
+
+
+	VkDescriptorSetLayout coarseCullSetLayout;
+	VkDescriptorPool coarseCullDescriptorPool;
+	VkDescriptorSet coarseCullDescriptorSet;
+
+	VkPipelineLayout coarseCullPipelineLayout;
+	VkPipeline coarseCullPipeline;
+	VkPipeline clearDebugViewPipeline;
+	VkPipeline traditionalCullPipeline;
+	VkPipeline clearIndicesPipeline;
 };

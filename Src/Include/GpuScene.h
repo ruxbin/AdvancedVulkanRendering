@@ -16,7 +16,6 @@
 
 class Shadow;
 
-
 struct AAPLTextureData
 {
   std::string _path;
@@ -218,6 +217,7 @@ private:
 
     VkPipelineLayout deferredLightingPipelineLayout;
     VkPipeline deferredLightingPipeline;
+    VkPipeline deferredLightingPipeline_clusterlighting;
 
   VkBuffer occluderVertexBuffer;
   VkDeviceMemory occluderVertexBufferMemory;
@@ -295,6 +295,10 @@ private:
 
   std::filesystem::path _rootPath;
 
+  LightCuller* _lightCuller = nullptr;
+
+  bool useClusterLighting = false;
+
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffer(VkCommandPool commandPool) {
@@ -339,6 +343,10 @@ private:
     void init_deferredlighting_descriptors();
     void DrawChunk(const AAPLMeshChunk&);
     void DrawChunks();
+    void TriggerClusterLighting()
+    {
+	    useClusterLighting = !useClusterLighting;
+    }
 
     void DrawChunksBasePass();
 
@@ -351,7 +359,7 @@ private:
 
     void transitionImageLayout(VkImage image, VkFormat format,
         VkImageLayout oldLayout,
-        VkImageLayout newLayout)
+        VkImageLayout newLayout)const
     {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -431,6 +439,14 @@ private:
             sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL)
+        {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        }
         else {
             throw std::invalid_argument("unsupported layout transition!");
         }
@@ -457,8 +473,11 @@ private:
 
     
 
-    struct gpuCullParams{
-        alignas(16) uint32_t totalChunks;
+    struct GPUCullParams{
+        uint32_t totalChunks;
+        uint32_t totalPointLights;
+        uint32_t totalSpotLights;
+        uint32_t padding;
 	    Frustum frustum;
     };
 
@@ -581,6 +600,7 @@ private:
     friend class Shadow;
     friend class PointLight;
     friend class SpotLight;
+    friend class LightCuller;
     FrameConstants frameConstants{ vec3(-0.17199061810970306f,0.81795543432235718f,0.54897010326385498f),vec3(1,1,1),1.f,10.f,1.f };
 };
 
