@@ -151,7 +151,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
         InterlockedExchange(nearZ, asuint(clampFar), orgval);
         InterlockedExchange(farZ, asuint(clampNear), orgval);
     }
-    GroupMemoryBarrierWithGroupSync();
+    GroupMemoryBarrier();
     InterlockedMin(nearZ, asuint(maxDepth));
     InterlockedMax(farZ, asuint(minDepth));
     GroupMemoryBarrierWithGroupSync();
