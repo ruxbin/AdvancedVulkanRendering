@@ -127,7 +127,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     //cull against each tile frustum -- view space
     //1. calculate tile frustum with (near & far depth)
     uint2 basecoord = uint2(gid.x * gLightCullingTileSize + gtid.x *2, gid.y * gLightCullingTileSize + gtid.y*2);
-    basecoord = min(basecoord, uint2(frameConstants.physicalSize)-1);
+    basecoord = min(basecoord, uint2(frameConstants.physicalSize)-1);//metal will ingnore out-of-bounds read and return 0
     uint2 basecoord1 = basecoord + uint2(1, 0);
     basecoord1 = min(basecoord1, uint2(frameConstants.physicalSize)-1);
     uint2 basecoord2 = basecoord + uint2(1, 1);
