@@ -630,11 +630,19 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     vec4* data;
     vkMapMemory(device.getLogicalDevice(), pointlightCullingDataBufferMemory, 0, pointlightCullingDataBufferInfo.size,
         0, (void**)&data);
+    uint32_t transparentPointLightCount = 0;
     for (int i = 0; i < gpuScene._pointLights.size(); ++i)
     {
         *data++ = vec4(gpuScene._pointLights[i]._pointLightData->posSqrRadius.xyz(), sqrtf(gpuScene._pointLights[i]._pointLightData->posSqrRadius.w));
-	*data++ = vec4(gpuScene._pointLights[i]._pointLightData->color,0);
+	//encode tranparent in color.w
+	bool isTransparentLight = (gpuScene._pointLights[i]._pointLightData->flags&LIGHT_FOR_TRANSPARENT_FLAG)!=0;
+	if(isTransparentLight)
+		++transparentPointLightCount;
+	*data++ = vec4(gpuScene._pointLights[i]._pointLightData->color,isTransparentLight?-1:1);
     }
+
+	
+    spdlog::info("transparent point light count:{} total:{}",transparentPointLightCount,gpuScene._pointLights.size()); 
 
     vkUnmapMemory(device.getLogicalDevice(), pointlightCullingDataBufferMemory);
 
@@ -678,8 +686,20 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     lightIndicesBufferInfo.flags = 0;
     if (vkCreateBuffer(device.getLogicalDevice(), &lightIndicesBufferInfo, nullptr,
         &_lightIndicesBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create sphere vertex buffer!");
+        throw std::runtime_error("failed to create light indices buffer!");
     }
+
+    VkBufferCreateInfo lightIndicesTransparentBufferInfo{};
+    lightIndicesTransparentBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    lightIndicesTransparentBufferInfo.size = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+    lightIndicesTransparentBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    lightIndicesTransparentBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    lightIndicesTransparentBufferInfo.flags = 0;
+    if (vkCreateBuffer(device.getLogicalDevice(), &lightIndicesTransparentBufferInfo, nullptr,
+        &_lightIndicesTransparentBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create lighttransparent indices buffer!");
+    }
+
     VkMemoryRequirements lightindicesMemRequirements;
     vkGetBufferMemoryRequirements(device.getLogicalDevice(), _lightIndicesBuffer,
         &lightindicesMemRequirements);
@@ -697,6 +717,20 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     }
     vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesBuffer,
         lightindicesBufferMemory, 0);
+
+
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _lightIndicesTransparentBuffer,
+        &lightindicesMemRequirements);
+    allocInfo2.allocationSize = lightindicesMemRequirements.size;
+
+    VkDeviceMemory lightindicesTransparentBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo2, nullptr,
+        &lightindicesTransparentBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate pointLight buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesTransparentBuffer,
+        lightindicesTransparentBufferMemory, 0);
+
 
 
     VkImageCreateInfo imageInfo{};
@@ -883,7 +917,16 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     traditionalViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     traditionalViewBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    VkDescriptorSetLayoutBinding bindings[] = { frameDataBinding, cullParamsBinding, pointLightCullingDataBinding ,depthTextureBinding,xzRangeBinding,debugViewBinding,lightIndicesBinding,traditionalViewBinding };
+
+    VkDescriptorSetLayoutBinding lightIndicesTransparentBinding = {};
+    lightIndicesTransparentBinding.binding = 8;
+    lightIndicesTransparentBinding.descriptorCount = 1;
+    lightIndicesTransparentBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    lightIndicesTransparentBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+
+
+    VkDescriptorSetLayoutBinding bindings[] = { frameDataBinding, cullParamsBinding, pointLightCullingDataBinding ,depthTextureBinding,xzRangeBinding,debugViewBinding,lightIndicesBinding,lightIndicesTransparentBinding,traditionalViewBinding };
 
     constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
@@ -1089,6 +1132,28 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     setWrite6.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     setWrite6.pBufferInfo = &binfo6;
 
+
+    VkDescriptorBufferInfo binfo7;
+    // it will be the camera buffer
+    binfo7.buffer = _lightIndicesTransparentBuffer;
+    // at 0 offset
+    binfo7.offset = 0;
+    // of the size of a camera data struct
+    binfo7.range = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+    VkWriteDescriptorSet setWrite7 = {};
+    setWrite7.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite7.pNext = nullptr;
+    setWrite7.dstBinding = 7;
+    // of the global descriptor
+    setWrite7.dstSet = coarseCullDescriptorSet;
+
+    setWrite7.descriptorCount = 1;
+    setWrite7.dstArrayElement = 0;
+    // and the type is uniform buffer
+    setWrite7.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    setWrite7.pBufferInfo = &binfo6;
+
+
     VkWriteDescriptorSet setWriteIndices_deferredlighting = {};
     setWriteIndices_deferredlighting.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     setWriteIndices_deferredlighting.pNext = nullptr;
@@ -1116,7 +1181,7 @@ void LightCuller::InitRHI(const VulkanDevice& device, const GpuScene& gpuScene, 
     setTraditionalDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     setTraditionalDebug.pImageInfo = &tradtionalImageInfo;
 
-    std::array< VkWriteDescriptorSet, 8> writes = { setWrite,setWrite1,setWrite2,setWrite4,setWriteDebug,setWriteDepth,setWrite6,setTraditionalDebug };
+    std::array< VkWriteDescriptorSet, 9> writes = { setWrite,setWrite1,setWrite2,setWrite4,setWriteDebug,setWriteDepth,setWrite6,setWrite7,setTraditionalDebug };
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
 

@@ -28,6 +28,7 @@ StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world posi
 [[vk::binding(5,0)]] RWTexture2D<uint> lightDebug;            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
 [[vk::binding(6,0)]] RWStructuredBuffer<uint> lightIndices;
 [[vk::binding(7,0)]] RWTexture2D<float4> tradtionDebug;
+[[vk::binding(8,0)]] RWStructuredBuffer<uint> lightIndicesTransparent;
 
 
 //calculate each light's xzrange
@@ -178,6 +179,17 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     frustum.minZFrustumXY = float4(xNearS,yNearS);
     frustum.maxZFrustumXY = float4(xFarS,yFarS);
     frustum.tileBoundingSphere = float4(float3((NearCenter + FarCenter)*0.5, zCenter), 0);
+
+
+	
+//bounding sphere for transparent objects with minZ = 0
+    float3 tileCenter = float3(FarCenter*0.5,zFar * 0.5);
+    float3 tileMaxOffset = float3(0,0,0);
+    tileMaxOffset.xy = max(abs(frustum.maxZFrustumXY.xz - tileCenter.xy), abs(frustum.maxZFrustumXY.yw - tileCenter.xy));
+    tileMaxOffset.z = zFar*0.5;
+
+    float4 tileBoundingSphereTransparent = float4(tileCenter, length(tileMaxOffset));
+
     
     uint xCluterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
     uint outputIndex = (gid.x + gid.y * xCluterCount) * MAX_LIGHTS_PER_TILE;
@@ -188,9 +200,10 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
         float4 lightPosView = mul(cameraParams.viewMatrix, float4(pointLightCullingData[i].posRadius.xyz, 1));
         
         float r = pointLightCullingData[i].posRadius.w;
-        
+       	bool isTransParent = pointLightCullingData[i].color.w<0; 
         bool inFrustumMinZ = (lightPosView.z + r) > frustum.tileMinZ;
         bool inFrustumMaxZ = (lightPosView.z - r) < frustum.tileMaxZ;
+	bool inFrustumNearZ = lightPosView.z + r > 0;
      	//if(i==64)
 //	{
 //		tradtionDebug[gid.xy] = float4(lightPosView.z,r,frustum.tileMinZ,lightPosView.z+r+frustum.tileMinZ);
@@ -200,16 +213,31 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
         //    gid.y>=xzRange.z && gid.y<xzRange.z+xzRange.w)
         if (uint(gid.x - xzRange.x) < xzRange.y &&
             uint(gid.y - xzRange.z) < xzRange.w
-	    && inFrustumMinZ
 	    && inFrustumMaxZ)
         {
+	
+	if(inFrustumMinZ)
+	{
             if (intersectsFrustumTile(lightPosView.xyz, r, frustum, false))
             {
                 uint storeindex = 0;
                 InterlockedAdd(lightIndices[outputIndex], 1, storeindex);
                 lightIndices[storeindex + outputIndex + 1] = i;
-                InterlockedAdd(lightDebug[gid.xy], 1);
+                //InterlockedAdd(lightDebug[gid.xy], 1);
             }
+	}
+	
+	if(isTransParent && inFrustumNearZ)
+	{
+		if(intersectsFrustumTile(lightPosView.xyz,r,frustum,true))
+		{
+		uint storeindex = 0;
+		InterlockedAdd(lightIndicesTransparent[outputIndex], 1, storeindex);
+                lightIndicesTransparent[storeindex + outputIndex + 1] = i;
+
+		}
+	}
+
             
         }
         

@@ -89,6 +89,7 @@ private:
 
 	VkBuffer            _xzRangeBuffer;
 	VkBuffer			_lightIndicesBuffer;
+	VkBuffer			_lightIndicesTransparentBuffer;
 	VkImage				_xzDebugImage;
 	VkImageView			_xzDebugImageView;
 
