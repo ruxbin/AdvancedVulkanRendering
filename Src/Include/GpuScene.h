@@ -609,7 +609,7 @@ struct fmt::formatter<vec4> : fmt::formatter<std::string>
 {
     auto format(vec4 my, format_context& ctx) const -> decltype(ctx.out())
     {
-        return format_to(ctx.out(), "[vec4 ={} {} {} {}]", my.x, my.y, my.z,my.w);
+        return fmt::format_to(ctx.out(), "[vec4 ={} {} {} {}]", my.x, my.y, my.z,my.w);
     }
 };
 
@@ -618,7 +618,7 @@ struct fmt::formatter<vec3> : fmt::formatter<std::string>
 {
     auto format(vec3 my, format_context& ctx) const -> decltype(ctx.out())
     {
-        return format_to(ctx.out(), "[vec3 ={} {} {}]", my.x, my.y, my.z);
+        return fmt::format_to(ctx.out(), "[vec3 ={} {} {}]", my.x, my.y, my.z);
     }
 };
 
@@ -627,6 +627,6 @@ struct fmt::formatter<vec2> : fmt::formatter<std::string>
 {
     auto format(vec2 my, format_context& ctx) const -> decltype(ctx.out())
     {
-        return format_to(ctx.out(), "[vec2 ={} {}]", my.x, my.y);
+        return fmt::format_to(ctx.out(), "[vec2 ={} {}]", my.x, my.y);
     }
 };
