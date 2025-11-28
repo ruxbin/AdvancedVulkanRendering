@@ -18,3 +18,4 @@ G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -spirv -T vs_6_0 pointspotlight.hlsl -fs
 
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E CoarseCull -Fo CoarseCull.cs.spv
 G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E TraditionalCull -Fo TraditionalCull.cs.spv
+G:\dxc_cmake\RelWithDebInfo\bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E ClearLightIndices -Fo ClearIndices.cs.spv

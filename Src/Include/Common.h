@@ -92,7 +92,7 @@ inline bool hasStencilComponent(VkFormat format) {
         format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
-
+#define LIGHT_FOR_TRANSPARENT_FLAG (0x00000001)
 //PointLightData is stored in the dynmaic uniform buffer, it requires that offset should be 64 bytes aligned when binding the descriptorset
 struct alignas(64) PointLightData
 {
