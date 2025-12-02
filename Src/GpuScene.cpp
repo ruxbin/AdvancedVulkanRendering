@@ -1763,12 +1763,14 @@ void GpuScene::init_appl_descriptors()
     setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
     std::vector<VkDescriptorImageInfo> imageinfo;
-    imageinfo.resize(textures.size());
+    //imageinfo.resize(textures.size());
     for (int texturei = 0; texturei < textures.size(); ++texturei)
     {
-        imageinfo[texturei].imageView = textures[texturei].second;
-        imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        //imageinfo[texturei].imageView = textures[texturei].second;
+        //imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         //imageinfo[texturei].sampler = textureSampler;
+	VkDescriptorImageInfo dii = {.imageView=textures[texturei].second,.imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+	imageinfo.push_back(dii);
     }
 
 
