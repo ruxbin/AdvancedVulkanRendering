@@ -45,14 +45,21 @@ int main(int nargs, char ** args) {
 
     SDL_Event e; 
     bool quit = false; 
-    std::chrono::time_point<std::chrono::system_clock> lastTime =
-        std::chrono::system_clock::now();
+    
     bool mouseDown = false;
     float currentZDegree = 0;
     float currentYDegree = 0;
     constexpr float rotateSpeed = 0.1f;
     constexpr float moveSpeed = 0.5f;
+    constexpr int avg_windows_size = 10;
+	int current_window_count = 0;
+    std::chrono::milliseconds checkpoint_sum1 = std::chrono::milliseconds(0);
+    std::chrono::milliseconds checkpoint_sum2 = std::chrono::milliseconds(0);
     while (quit == false) { 
+
+        std::chrono::time_point<std::chrono::system_clock> time_checkpoint1 =
+            std::chrono::system_clock::now();
+
         while (SDL_PollEvent(&e)) {
             
             if (e.type == SDL_QUIT) quit = true; 
@@ -125,18 +132,38 @@ int main(int nargs, char ** args) {
                 currentYDegree = 0;
             }
             //else
+            
+		    
+        }
+
+        std::chrono::time_point<std::chrono::system_clock> time_checkpoint2 =
+            std::chrono::system_clock::now();
+        {
+
+
+            //if (std::chrono::system_clock::now() - lastTime > std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
             {
-                
-                
-                if (std::chrono::system_clock::now() - lastTime > std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
-                {
-                    gpuScene.Draw();
-                    lastTime = std::chrono::system_clock::now();
-                }
+                gpuScene.Draw();
                 
             }
-		    
-        } 
+
+        }
+
+        std::chrono::time_point<std::chrono::system_clock> time_checkpoint3 =
+            std::chrono::system_clock::now();
+
+        checkpoint_sum1 += std::chrono::milliseconds((time_checkpoint2 - time_checkpoint1).count());
+		checkpoint_sum2 += std::chrono::milliseconds((time_checkpoint3 - time_checkpoint2).count());
+		++current_window_count;
+        if (current_window_count == avg_windows_size)
+        {
+            checkpoint_sum1 /= avg_windows_size;
+			checkpoint_sum2 /= avg_windows_size;
+			current_window_count = 0;
+            spdlog::info("{}--{}", checkpoint_sum1.count(), checkpoint_sum2.count());
+            checkpoint_sum1 = std::chrono::milliseconds(0);
+            checkpoint_sum2 = std::chrono::milliseconds(0);
+        }
     }
 
     if (window)
