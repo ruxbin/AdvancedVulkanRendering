@@ -9,22 +9,20 @@
 #pragma once
 
 #if defined __cplusplus
-extern "C"{
+extern "C" {
 
 #endif
 
-void LoadObj(const char * filepath);
+void LoadObj(const char *filepath);
 
 unsigned long getVertexSize();
 
 unsigned long getIndexSize();
 
-void * getRawVertexData();
+void *getRawVertexData();
 
-void * getRawIndexData();
+void *getRawIndexData();
 
 #if defined __cplusplus
 }
 #endif
-
-

@@ -1,109 +1,105 @@
 #pragma once
 
-#include "Matrix.h"
 #include "Common.h"
+#include "Matrix.h"
 #include "VulkanSetup.h"
 #include <vector>
+
 
 class GpuScene;
 class LightCuller;
 
-class Light
-{
+class Light {
 public:
-	virtual void Draw(VkCommandBuffer& ,const GpuScene&)=0;
-	//virtual void InitRHI(const VulkanDevice&, const GpuScene&)=0;
+  virtual void Draw(VkCommandBuffer &, const GpuScene &) = 0;
+  // virtual void InitRHI(const VulkanDevice&, const GpuScene&)=0;
 };
 
-
-class PointLight : public Light
-{
+class PointLight : public Light {
 private:
-	uint32_t _dynamicOffset = 0;
-	const PointLightData* _pointLightData = nullptr;
+  uint32_t _dynamicOffset = 0;
+  const PointLightData *_pointLightData = nullptr;
+
 public:
-	virtual void Draw(VkCommandBuffer& ,const GpuScene&);
-	static void InitRHI(const VulkanDevice&, const GpuScene&);
-	PointLight(uint32_t dynamic_offset, const PointLightData* pld) : _dynamicOffset(dynamic_offset),_pointLightData(pld)
-	{
+  virtual void Draw(VkCommandBuffer &, const GpuScene &);
+  static void InitRHI(const VulkanDevice &, const GpuScene &);
+  PointLight(uint32_t dynamic_offset, const PointLightData *pld)
+      : _dynamicOffset(dynamic_offset), _pointLightData(pld) {}
+  const PointLightData *getPointLightData() const { return _pointLightData; }
 
-	}
-	const PointLightData* getPointLightData()const { return _pointLightData; }
+  static VkBuffer pointLightDynamicUniformBuffer;
 
-	static VkBuffer pointLightDynamicUniformBuffer;
+  static VkPipelineLayout drawPointLightPipelineLayout;
+  static VkPipeline drawPointLightPipeline;
+  static VkPipeline drawPointLightPipelineStencil;
 
-	static VkPipelineLayout drawPointLightPipelineLayout;
-	static VkPipeline drawPointLightPipeline;
-	static VkPipeline drawPointLightPipelineStencil;
+  static VkDescriptorPool pointLightingDescriptorPool;
+  static VkDescriptorSetLayout drawPointLightDescriptorSetLayout;
+  static VkDescriptorSet drawPointLightDescriptorSet;
+  static std::vector<PointLightData> pointLightData;
 
-	static VkDescriptorPool pointLightingDescriptorPool;
-	static VkDescriptorSetLayout drawPointLightDescriptorSetLayout;
-	static VkDescriptorSet drawPointLightDescriptorSet;
-	static std::vector<PointLightData> pointLightData;
+  static void CommonDrawSetup(VkCommandBuffer &);
 
-
-	static void CommonDrawSetup(VkCommandBuffer&);
-
-	friend class LightCuller;
+  friend class LightCuller;
 };
 
-
-
-class SpotLight : public Light
-{
+class SpotLight : public Light {
 private:
-	//VkBuffer coneBuffer;
-	//VkBuffer coneIndexBuffer;
-	const SpotLightData* _spotLightData = nullptr;
-	uint32_t _dynamicOffset = 0;
-	
+  // VkBuffer coneBuffer;
+  // VkBuffer coneIndexBuffer;
+  const SpotLightData *_spotLightData = nullptr;
+  uint32_t _dynamicOffset = 0;
 
 public:
-	virtual void Draw(VkCommandBuffer&, const GpuScene&) {}
-	virtual void InitRHI(const VulkanDevice&, const GpuScene&) {}
+  virtual void Draw(VkCommandBuffer &, const GpuScene &) {}
+  virtual void InitRHI(const VulkanDevice &, const GpuScene &) {}
 
-	SpotLight(uint32_t dynamic_offset, const SpotLightData* sld) : _dynamicOffset(dynamic_offset), _spotLightData(sld) {}
+  SpotLight(uint32_t dynamic_offset, const SpotLightData *sld)
+      : _dynamicOffset(dynamic_offset), _spotLightData(sld) {}
 
-	static std::vector<SpotLightData> spotLightData;
+  static std::vector<SpotLightData> spotLightData;
 };
 
-#   define DEFAULT_LIGHT_CULLING_TILE_SIZE  (32)
+#define DEFAULT_LIGHT_CULLING_TILE_SIZE (32)
 #define LIGHT_CLUSTER_DEPTH (64)
 
-#define MAX_LIGHTS_PER_TILE                 (64)
+#define MAX_LIGHTS_PER_TILE (64)
 
-#define MAX_LIGHTS_PER_CLUSTER              (16)
+#define MAX_LIGHTS_PER_CLUSTER (16)
 
-class LightCuller
-{
+class LightCuller {
 public:
-	void ClusterLightForScreen(VkCommandBuffer&, const VulkanDevice& device, const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
-	void InitRHI(const VulkanDevice& , const GpuScene& gpuScene, uint32_t screen_width, uint32_t screen_heigt);
-	LightCuller();
-	VkImage GetXZDebugImage(){return _xzDebugImage;}
-	VkImage GetTraditionalDebugImage() { return _traditionalCullDebugImage; }
-	VkBuffer GetPointLightCullingDataBuffer()const{return _pointLightCullingDataBuffer;}
+  void ClusterLightForScreen(VkCommandBuffer &, const VulkanDevice &device,
+                             const GpuScene &gpuScene, uint32_t screen_width,
+                             uint32_t screen_heigt);
+  void InitRHI(const VulkanDevice &, const GpuScene &gpuScene,
+               uint32_t screen_width, uint32_t screen_heigt);
+  LightCuller();
+  VkImage GetXZDebugImage() { return _xzDebugImage; }
+  VkImage GetTraditionalDebugImage() { return _traditionalCullDebugImage; }
+  VkBuffer GetPointLightCullingDataBuffer() const {
+    return _pointLightCullingDataBuffer;
+  }
+
 private:
+  VkBuffer _pointLightCullingDataBuffer;
 
-	VkBuffer            _pointLightCullingDataBuffer;
+  VkBuffer _xzRangeBuffer;
+  VkBuffer _lightIndicesBuffer;
+  VkBuffer _lightIndicesTransparentBuffer;
+  VkImage _xzDebugImage;
+  VkImageView _xzDebugImageView;
 
-	VkBuffer            _xzRangeBuffer;
-	VkBuffer			_lightIndicesBuffer;
-	VkBuffer			_lightIndicesTransparentBuffer;
-	VkImage				_xzDebugImage;
-	VkImageView			_xzDebugImageView;
+  VkImage _traditionalCullDebugImage;
+  VkImageView _traditionalCullDebugImageView;
 
-	VkImage				_traditionalCullDebugImage;
-	VkImageView			_traditionalCullDebugImageView;
+  VkDescriptorSetLayout coarseCullSetLayout;
+  VkDescriptorPool coarseCullDescriptorPool;
+  VkDescriptorSet coarseCullDescriptorSet;
 
-
-	VkDescriptorSetLayout coarseCullSetLayout;
-	VkDescriptorPool coarseCullDescriptorPool;
-	VkDescriptorSet coarseCullDescriptorSet;
-
-	VkPipelineLayout coarseCullPipelineLayout;
-	VkPipeline coarseCullPipeline;
-	VkPipeline clearDebugViewPipeline;
-	VkPipeline traditionalCullPipeline;
-	VkPipeline clearIndicesPipeline;
+  VkPipelineLayout coarseCullPipelineLayout;
+  VkPipeline coarseCullPipeline;
+  VkPipeline clearDebugViewPipeline;
+  VkPipeline traditionalCullPipeline;
+  VkPipeline clearIndicesPipeline;
 };

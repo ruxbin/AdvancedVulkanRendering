@@ -1,46 +1,58 @@
 #include "VulkanSetup.h"
 #include "SDL_syswm.h"
 #include "spdlog/spdlog.h"
-#include <stdexcept>
 #include <array>
+#include <stdexcept>
+
 static constexpr bool enableValidationLayers = true; // TODO: options
 
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
-	spdlog::error("validation layer: {}", pCallbackData->pMessage);
-        return VK_FALSE;
-    }
-
-
-void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
-        createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        createInfo.pfnUserCallback = debugCallback;
-    }
-
-
-VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
-    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-    if (func != nullptr) {
-        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-    } else {
-        return VK_ERROR_EXTENSION_NOT_PRESENT;
-    }
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+              VkDebugUtilsMessageTypeFlagsEXT messageType,
+              const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
+              void *pUserData) {
+  spdlog::error("validation layer: {}", pCallbackData->pMessage);
+  return VK_FALSE;
 }
 
-    void VulkanDevice::setupDebugMessager() {
-        if (!enableValidationLayers) return;
+void populateDebugMessengerCreateInfo(
+    VkDebugUtilsMessengerCreateInfoEXT &createInfo) {
+  createInfo = {};
+  createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+  createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+  createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+  createInfo.pfnUserCallback = debugCallback;
+}
 
-        VkDebugUtilsMessengerCreateInfoEXT createInfo;
-        populateDebugMessengerCreateInfo(createInfo);
+VkResult CreateDebugUtilsMessengerEXT(
+    VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
+    const VkAllocationCallbacks *pAllocator,
+    VkDebugUtilsMessengerEXT *pDebugMessenger) {
+  auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+      instance, "vkCreateDebugUtilsMessengerEXT");
+  if (func != nullptr) {
+    return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+  } else {
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+  }
+}
 
-        if (CreateDebugUtilsMessengerEXT(vkInstance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
-            throw std::runtime_error("failed to set up debug messenger!");
-        }
-    }
+void VulkanDevice::setupDebugMessager() {
+  if (!enableValidationLayers)
+    return;
 
+  VkDebugUtilsMessengerCreateInfoEXT createInfo;
+  populateDebugMessengerCreateInfo(createInfo);
+
+  if (CreateDebugUtilsMessengerEXT(vkInstance, &createInfo, nullptr,
+                                   &debugMessenger) != VK_SUCCESS) {
+    throw std::runtime_error("failed to set up debug messenger!");
+  }
+}
 
 VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   checkValidationLayerSupport();
@@ -50,8 +62,10 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
   appInfo.pEngineName = "YouHe";
   appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-  //VK_API_VERSION_1_2运行时vkCmdPipelineBarrier2会抛异常
-  appInfo.apiVersion = VK_API_VERSION_1_3;//need bindless & vkGetPhysicalDeviceFeatures2 &VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+  // VK_API_VERSION_1_2运行时vkCmdPipelineBarrier2会抛异常
+  appInfo.apiVersion =
+      VK_API_VERSION_1_3; // need bindless & vkGetPhysicalDeviceFeatures2
+                          // &VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
 
   VkInstanceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -63,7 +77,8 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   // todo:constexpr static const char* const*
   createInfo.ppEnabledExtensionNames =
       instaceExtensionNames; //(const char* const *)extensions.data();
-  createInfo.enabledExtensionCount = sizeof(instaceExtensionNames)/sizeof(instaceExtensionNames[0]);
+  createInfo.enabledExtensionCount =
+      sizeof(instaceExtensionNames) / sizeof(instaceExtensionNames[0]);
 
   VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
   if (enableValidationLayers) {
@@ -72,7 +87,7 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
     createInfo.ppEnabledLayerNames = validationLayers;
 
     populateDebugMessengerCreateInfo(debugCreateInfo);
-    createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
+    createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT *)&debugCreateInfo;
   } else {
     createInfo.enabledLayerCount = 0;
 
@@ -139,18 +154,15 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   CreateDepthResource();
 
   // createMainRenderPass
-  //createRenderPass();
+  // createRenderPass();
 
-//createframebuffers -- after renderpass since framebuffers are bound to renderpass
-  //createFramebuffers();
+  // createframebuffers -- after renderpass since framebuffers are bound to
+  // renderpass createFramebuffers();
 }
 
-
-void VulkanDevice::createRenderPass() {
-
-    }
+void VulkanDevice::createRenderPass() {}
 constexpr std::vector<std::string_view> VulkanDevice::getRequiredExtensions() {
-//TODO: same as instanceExtensionNames
+  // TODO: same as instanceExtensionNames
   std::vector<std::string_view> extensions = {"VK_KHR_surface",
 #ifdef __gnu_linux__
                                               "VK_KHR_xlib_surface"
@@ -217,7 +229,7 @@ void VulkanDevice::createLogicalDevice() {
 
   std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
   std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(),
-	  					indices.computeFamily.value(),
+                                            indices.computeFamily.value(),
                                             indices.presentFamily.value()};
 
   float queuePriority = 1.0f;
@@ -230,31 +242,55 @@ void VulkanDevice::createLogicalDevice() {
     queueCreateInfos.push_back(queueCreateInfo);
   }
 
-  //The Vulkan spec states: If the pNext chain includes a VkPhysicalDeviceVulkan12Features structure, then it must not include a VkPhysicalDevice8BitStorageFeatures, VkPhysicalDeviceShaderAtomicInt64Features, VkPhysicalDeviceShaderFloat16Int8Features, VkPhysicalDeviceDescriptorIndexingFeatures, VkPhysicalDeviceScalarBlockLayoutFeatures, VkPhysicalDeviceImagelessFramebufferFeatures, VkPhysicalDeviceUniformBufferStandardLayoutFeatures, VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures, VkPhysicalDeviceSeparateDepthStencilLayoutsFeatures, VkPhysicalDeviceHostQueryResetFeatures, VkPhysicalDeviceTimelineSemaphoreFeatures, VkPhysicalDeviceBufferDeviceAddressFeatures, or VkPhysicalDeviceVulkanMemoryModelFeatures structure
-  //VkPhysicalDeviceDescriptorIndexingFeatures indexing_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT, nullptr };
-  //VkPhysicalDeviceFeatures2 device_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &indexing_features };
-  //vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features);
+  // The Vulkan spec states: If the pNext chain includes a
+  // VkPhysicalDeviceVulkan12Features structure, then it must not include a
+  // VkPhysicalDevice8BitStorageFeatures,
+  // VkPhysicalDeviceShaderAtomicInt64Features,
+  // VkPhysicalDeviceShaderFloat16Int8Features,
+  // VkPhysicalDeviceDescriptorIndexingFeatures,
+  // VkPhysicalDeviceScalarBlockLayoutFeatures,
+  // VkPhysicalDeviceImagelessFramebufferFeatures,
+  // VkPhysicalDeviceUniformBufferStandardLayoutFeatures,
+  // VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures,
+  // VkPhysicalDeviceSeparateDepthStencilLayoutsFeatures,
+  // VkPhysicalDeviceHostQueryResetFeatures,
+  // VkPhysicalDeviceTimelineSemaphoreFeatures,
+  // VkPhysicalDeviceBufferDeviceAddressFeatures, or
+  // VkPhysicalDeviceVulkanMemoryModelFeatures structure
+  // VkPhysicalDeviceDescriptorIndexingFeatures indexing_features{
+  // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT, nullptr
+  // }; VkPhysicalDeviceFeatures2 device_features{
+  // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &indexing_features };
+  // vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features);
 
-  VkPhysicalDeviceSynchronization2Features synchron2_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,nullptr };
-  VkPhysicalDeviceFeatures2 device_features1{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &synchron2_features };
+  VkPhysicalDeviceSynchronization2Features synchron2_features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES, nullptr};
+  VkPhysicalDeviceFeatures2 device_features1{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &synchron2_features};
   vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features1);
 
-  VkPhysicalDeviceVulkan11Features storagebuffer16bit{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,nullptr };
-  VkPhysicalDeviceFeatures2 device_features3{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &storagebuffer16bit };
+  VkPhysicalDeviceVulkan11Features storagebuffer16bit{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, nullptr};
+  VkPhysicalDeviceFeatures2 device_features3{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &storagebuffer16bit};
   vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features3);
 
-  VkPhysicalDeviceVulkan12Features float16_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,nullptr };
-  VkPhysicalDeviceFeatures2 device_features2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &float16_features };
+  VkPhysicalDeviceVulkan12Features float16_features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, nullptr};
+  VkPhysicalDeviceFeatures2 device_features2{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &float16_features};
   vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features2);
 
-  //bool bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
+  // bool bindless_supported = indexing_features.descriptorBindingPartiallyBound
+  // && indexing_features.runtimeDescriptorArray;
 
   // Enable all features: just pass the physical features 2 struct.
-  VkPhysicalDeviceFeatures2 physical_features2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+  VkPhysicalDeviceFeatures2 physical_features2 = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   vkGetPhysicalDeviceFeatures2(physicalDevice, &physical_features2);
-  if(physical_features2.features.geometryShader && physical_features2.features.tessellationShader)
-  {
-	spdlog::info("tesselation supported by this hardware!!!");
+  if (physical_features2.features.geometryShader &&
+      physical_features2.features.tessellationShader) {
+    spdlog::info("tesselation supported by this hardware!!!");
   }
 
   VkDeviceCreateInfo createInfo{};
@@ -263,7 +299,6 @@ void VulkanDevice::createLogicalDevice() {
   createInfo.queueCreateInfoCount =
       static_cast<uint32_t>(queueCreateInfos.size());
   createInfo.pQueueCreateInfos = queueCreateInfos.data();
-
 
   createInfo.enabledExtensionCount = static_cast<uint32_t>(
       sizeof(deviceExtensionNames) / sizeof(deviceExtensionNames[0]));
@@ -281,8 +316,8 @@ void VulkanDevice::createLogicalDevice() {
   physical_features2.pNext = &float16_features;
   float16_features.pNext = &synchron2_features;
   synchron2_features.pNext = &storagebuffer16bit;
-  //if (bindless_supported) {
-      // This should be already set to VK_TRUE, as we queried before.
+  // if (bindless_supported) {
+  //  This should be already set to VK_TRUE, as we queried before.
   //    indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
   //    indexing_features.runtimeDescriptorArray = VK_TRUE;
 
@@ -293,31 +328,34 @@ void VulkanDevice::createLogicalDevice() {
       VK_SUCCESS) {
     throw std::runtime_error("failed to create logical device!");
   }
-VkPhysicalDeviceImageFormatInfo2 physicalDeviceImageFormatInfo;
-physicalDeviceImageFormatInfo.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
-physicalDeviceImageFormatInfo.pNext = nullptr;
-physicalDeviceImageFormatInfo.format = VK_FORMAT_R8_UINT;
-physicalDeviceImageFormatInfo.type = VK_IMAGE_TYPE_2D;
-physicalDeviceImageFormatInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-physicalDeviceImageFormatInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-physicalDeviceImageFormatInfo.flags = 0;
+  VkPhysicalDeviceImageFormatInfo2 physicalDeviceImageFormatInfo;
+  physicalDeviceImageFormatInfo.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+  physicalDeviceImageFormatInfo.pNext = nullptr;
+  physicalDeviceImageFormatInfo.format = VK_FORMAT_R8_UINT;
+  physicalDeviceImageFormatInfo.type = VK_IMAGE_TYPE_2D;
+  physicalDeviceImageFormatInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  physicalDeviceImageFormatInfo.usage =
+      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  physicalDeviceImageFormatInfo.flags = 0;
 
-VkFormatProperties2 imageFormatProperties;
-imageFormatProperties.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
-imageFormatProperties.pNext = nullptr;
-//VkFormatProperties3 imageFormatProperties3;
-//imageFormatProperties3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
-//imageFormatProperties3.pNext = nullptr;
-//imageFormatProperties.pNext = &imageFormatProperties3;
-vkGetPhysicalDeviceFormatProperties2(physicalDevice, VK_FORMAT_R32_UINT,&imageFormatProperties);
-if ((imageFormatProperties.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT)!=0)
-{
+  VkFormatProperties2 imageFormatProperties;
+  imageFormatProperties.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+  imageFormatProperties.pNext = nullptr;
+  // VkFormatProperties3 imageFormatProperties3;
+  // imageFormatProperties3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+  // imageFormatProperties3.pNext = nullptr;
+  // imageFormatProperties.pNext = &imageFormatProperties3;
+  vkGetPhysicalDeviceFormatProperties2(physicalDevice, VK_FORMAT_R32_UINT,
+                                       &imageFormatProperties);
+  if ((imageFormatProperties.formatProperties.optimalTilingFeatures &
+       VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT) != 0) {
     spdlog::info("atomic operation supported by this hardware!!!");
-}
+  }
 
   vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
   vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
-  vkGetDeviceQueue(device, indices.computeFamily.value(),0,&computeQueue);
+  vkGetDeviceQueue(device, indices.computeFamily.value(), 0, &computeQueue);
 }
 
 VkSurfaceFormatKHR VulkanDevice::chooseSwapSurfaceFormat(
@@ -418,10 +456,7 @@ void VulkanDevice::createImageViews() {
   }
 }
 
-
-void VulkanDevice::createFramebuffers() {
-
-    }
+void VulkanDevice::createFramebuffers() {}
 
 void VulkanDevice::createCommandPool() {
   QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
@@ -437,7 +472,7 @@ void VulkanDevice::createCommandPool() {
   }
 }
 
-VkCommandBuffer VulkanDevice::beginSingleTimeCommands()const {
+VkCommandBuffer VulkanDevice::beginSingleTimeCommands() const {
   VkCommandBufferAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -456,7 +491,7 @@ VkCommandBuffer VulkanDevice::beginSingleTimeCommands()const {
   return commandBuffer;
 }
 
-void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) const{
+void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) const {
   vkEndCommandBuffer(commandBuffer);
 
   VkSubmitInfo submitInfo{};
@@ -470,11 +505,10 @@ void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) const{
   vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
-
-
 void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
                                          VkImageLayout oldLayout,
-                                         VkImageLayout newLayout,uint32_t miplevel) const {
+                                         VkImageLayout newLayout,
+                                         uint32_t miplevel) const {
   VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
   VkImageMemoryBarrier barrier{};
@@ -490,18 +524,17 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
   barrier.subresourceRange.baseArrayLayer = 0;
   barrier.subresourceRange.layerCount = 1;
 
-  if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL||newLayout==VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+  if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+      newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 
     if (hasStencilComponent(format)) {
       barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
     }
-  } else if(oldLayout== VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-      barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-  }
-  else
-  {
-      barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  } else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+  } else {
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   }
 
   VkPipelineStageFlags sourceStage;
@@ -522,24 +555,29 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
     sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-             (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL||
-	      newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)) {
+             (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+              newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)) {
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  }
-  else if ( (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL|| oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-  {
-      barrier.srcAccessMask = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL?VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  } else if ((oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+              oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) &&
+             newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    barrier.srcAccessMask =
+        oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+            : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-      sourceStage = oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;   //TODO：VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT？？
-      destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-  }
-  else {
+    sourceStage =
+        oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+            : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // TODO：VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT？？
+    destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else {
     throw std::invalid_argument("unsupported layout transition!");
   }
 
