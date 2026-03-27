@@ -1,6 +1,7 @@
 #pragma once
 #include "Camera.h"
 #include "Common.h"
+#include "AssetLoader.h"
 #include "Light.h"
 #include "Matrix.h"
 #include "VulkanSetup.h"
@@ -30,6 +31,9 @@ struct AAPLTextureData {
   std::vector<unsigned long> _mipLengths;
   AAPLTextureData() = delete;
   AAPLTextureData(FILE *f);
+#ifdef __ANDROID__
+  AAPLTextureData(AssetLoader::BinaryFileReader &reader);
+#endif
   AAPLTextureData(const AAPLTextureData &) = delete;
   AAPLTextureData(AAPLTextureData &&rhs);
 };
@@ -324,9 +328,8 @@ public:
   }
 
   Camera *GetMainCamera() { return maincamera; }
-  void init_descriptors(VkImageView);
 
-  void init_descriptorsV2();
+  void init_GlobaldescriptorSet();
 
   void init_appl_descriptors();
 

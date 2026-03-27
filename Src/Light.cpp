@@ -1,5 +1,6 @@
 #include "Light.h"
 #include "GpuScene.h"
+#include "VulkanCompat.h"
 #include <math.h>
 
 static VkBuffer sphereBuffer = nullptr;

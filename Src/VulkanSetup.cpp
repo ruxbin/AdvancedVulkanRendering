@@ -1,10 +1,17 @@
 #include "VulkanSetup.h"
+#ifndef __ANDROID__
 #include "SDL_syswm.h"
+#endif
+#include "SDL_vulkan.h"
 #include "spdlog/spdlog.h"
 #include <array>
 #include <stdexcept>
 
+#ifdef __ANDROID__
+static constexpr bool enableValidationLayers = false;
+#else
 static constexpr bool enableValidationLayers = true; // TODO: options
+#endif
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -63,9 +70,13 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   appInfo.pEngineName = "YouHe";
   appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
   // VK_API_VERSION_1_2运行时vkCmdPipelineBarrier2会抛异常
+#ifdef __ANDROID__
+  appInfo.apiVersion = VK_API_VERSION_1_1; // wider mobile compatibility
+#else
   appInfo.apiVersion =
       VK_API_VERSION_1_3; // need bindless & vkGetPhysicalDeviceFeatures2
                           // &VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+#endif
 
   VkInstanceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -82,9 +93,11 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
 
   VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
   if (enableValidationLayers) {
+#ifndef __ANDROID__
     createInfo.enabledLayerCount = static_cast<uint32_t>(
         sizeof(validationLayers) / sizeof(validationLayers[0]));
     createInfo.ppEnabledLayerNames = validationLayers;
+#endif
 
     populateDebugMessengerCreateInfo(debugCreateInfo);
     createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT *)&debugCreateInfo;
@@ -99,6 +112,11 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
   }
   setupDebugMessager();
 
+#ifdef __ANDROID__
+  if (SDL_Vulkan_CreateSurface(sdl_window, vkInstance, &wsiSurface) == SDL_FALSE) {
+    throw std::runtime_error("failed to create Android Vulkan surface via SDL!");
+  }
+#else
   SDL_SysWMinfo wmInfo;
   SDL_VERSION(&wmInfo.version);
   SDL_GetWindowWMInfo(sdl_window, &wmInfo);
@@ -138,6 +156,7 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
     throw std::runtime_error("failed to create window surface!");
   }
 #endif
+#endif // !__ANDROID__
   // pick physical device
   pickPhysicalDevice();
 
@@ -161,13 +180,14 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
 }
 
 void VulkanDevice::createRenderPass() {}
-constexpr std::vector<std::string_view> VulkanDevice::getRequiredExtensions() {
+std::vector<std::string_view> VulkanDevice::getRequiredExtensions() {
   // TODO: same as instanceExtensionNames
   std::vector<std::string_view> extensions = {"VK_KHR_surface",
-#ifdef __gnu_linux__
+#ifdef __ANDROID__
+                                              "VK_KHR_android_surface"
+#elif defined(__gnu_linux__)
                                               "VK_KHR_xlib_surface"
-#endif
-#ifdef _WIN32
+#elif defined(_WIN32)
                                               "VK_KHR_win32_surface"
 #endif
   };
@@ -305,9 +325,11 @@ void VulkanDevice::createLogicalDevice() {
   createInfo.ppEnabledExtensionNames = deviceExtensionNames;
 
   if (enableValidationLayers) {
+#ifndef __ANDROID__
     createInfo.enabledLayerCount = static_cast<uint32_t>(
         sizeof(validationLayers) / sizeof(validationLayers[0]));
     createInfo.ppEnabledLayerNames = validationLayers;
+#endif
   } else {
     createInfo.enabledLayerCount = 0;
   }

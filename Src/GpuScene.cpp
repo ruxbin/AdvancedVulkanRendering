@@ -1,9 +1,11 @@
 
 #include "GpuScene.h"
+#include "AssetLoader.h"
 #include "Light.h"
 #include "ObjLoader.h"
 #include "Shadow.h"
 #include "ThirdParty/lzfse.h"
+#include "VulkanCompat.h"
 #include "VulkanSetup.h"
 
 
@@ -22,21 +24,7 @@
 
 // TODO: move to common.cpp
 std::vector<char> readFile(const std::string &filename) {
-  std::ifstream file(filename, std::ios::ate | std::ios::binary);
-
-  if (!file.is_open()) {
-    throw std::runtime_error("failed to open file!");
-  }
-
-  size_t fileSize = (size_t)file.tellg();
-  std::vector<char> buffer(fileSize);
-
-  file.seekg(0);
-  file.read(buffer.data(), fileSize);
-
-  file.close();
-
-  return buffer;
+  return AssetLoader::readFileAsset(filename);
 }
 
 // Header for compressed blocks.
@@ -1788,20 +1776,20 @@ void GpuScene::init_appl_descriptors() {
   binfo.offset = 0;
   binfo.range = sizeof(AAPLShaderMaterial) * materials.size();
 
-  VkWriteDescriptorSet setWrite = {};
-  setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite.pNext = nullptr;
+  VkWriteDescriptorSet WriteMaterialToSet = {};
+  WriteMaterialToSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  WriteMaterialToSet.pNext = nullptr;
 
   // we are going to write into binding number 0
-  setWrite.dstBinding = 1;
+  WriteMaterialToSet.dstBinding = 1;
   // of the global descriptor
-  setWrite.dstSet = applDescriptorSet;
+  WriteMaterialToSet.dstSet = applDescriptorSet;
 
-  setWrite.descriptorCount = 1;
-  setWrite.dstArrayElement = 0;
+  WriteMaterialToSet.descriptorCount = 1;
+  WriteMaterialToSet.dstArrayElement = 0;
   // and the type is uniform buffer
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  setWrite.pBufferInfo = &binfo;
+  WriteMaterialToSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  WriteMaterialToSet.pBufferInfo = &binfo;
 
   VkDescriptorImageInfo samplerinfo;
   samplerinfo.sampler = textureSampler;
@@ -1884,7 +1872,7 @@ void GpuScene::init_appl_descriptors() {
   chunkIndexBufferWrite.pBufferInfo = &chunkIndexBufferInfo;
 
   std::array<VkWriteDescriptorSet, bindingcount> writes = {
-      uniformWrite,    setWrite,        setSampler,
+      uniformWrite,    WriteMaterialToSet,        setSampler,
       setWriteTexture, meshChunksWrite, chunkIndexBufferWrite};
   // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite ,
   // setSampler };
@@ -1893,7 +1881,7 @@ void GpuScene::init_appl_descriptors() {
                          writes.data(), 0, nullptr);
 }
 
-void GpuScene::init_descriptorsV2() {
+void GpuScene::init_GlobaldescriptorSet() {
   // information about the binding.
   VkDescriptorSetLayoutBinding camBufferBinding = {};
   camBufferBinding.binding = 0;
@@ -1980,125 +1968,6 @@ void GpuScene::init_descriptorsV2() {
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
-}
-
-void GpuScene::init_descriptors(VkImageView currentImage) {
-
-  // information about the binding.
-  VkDescriptorSetLayoutBinding camBufferBinding = {};
-  camBufferBinding.binding = 0;
-  camBufferBinding.descriptorCount = 1;
-  // it's a uniform buffer binding
-  camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-
-  // we use it from the vertex shader
-  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-  VkDescriptorSetLayoutBinding samplerBinding = {};
-  samplerBinding.binding = 1;
-  samplerBinding.descriptorCount = 1;
-  samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-  VkDescriptorSetLayoutBinding bindings[] = {camBufferBinding, samplerBinding};
-
-  VkDescriptorSetLayoutCreateInfo setinfo = {};
-  setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  setinfo.pNext = nullptr;
-
-  // we are going to have 1 binding
-  setinfo.bindingCount = 2;
-  // no flags
-  setinfo.flags = 0;
-  // point to the camera buffer binding
-  setinfo.pBindings = bindings;
-
-  vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
-                              &globalSetLayout);
-
-  // other code ....
-  // create a descriptor pool that will hold 10 uniform buffers
-  std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10}};
-
-  VkDescriptorPoolCreateInfo pool_info = {};
-  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.flags = 0;
-  pool_info.maxSets = 10;
-  pool_info.poolSizeCount = (uint32_t)sizes.size();
-  pool_info.pPoolSizes = sizes.data();
-
-  vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
-                         &descriptorPool);
-
-  VkDescriptorSetAllocateInfo allocInfo = {};
-  allocInfo.pNext = nullptr;
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  // using the pool we just set
-  allocInfo.descriptorPool = descriptorPool;
-  // only 1 descriptor
-  allocInfo.descriptorSetCount = 1;
-  // using the global data layout
-  allocInfo.pSetLayouts = &globalSetLayout;
-
-  vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                           &globalDescriptor);
-
-  // information about the buffer we want to point at in the descriptor
-  VkDescriptorBufferInfo binfo;
-  // it will be the camera buffer
-  binfo.buffer = uniformBuffer;
-  // at 0 offset
-  binfo.offset = 0;
-  // of the size of a camera data struct
-  binfo.range = sizeof(FrameConstants) + sizeof(mat4) * 4;
-
-  VkWriteDescriptorSet setWrite = {};
-  setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  setWrite.dstBinding = 0;
-  // of the global descriptor
-  setWrite.dstSet = globalDescriptor;
-
-  setWrite.descriptorCount = 1;
-  setWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-  setWrite.pBufferInfo = &binfo;
-
-  // vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0,
-  // nullptr);
-
-  VkDescriptorImageInfo imageinfo;
-  imageinfo.imageView = currentImage;
-  imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  imageinfo.sampler = textureSampler;
-
-  VkWriteDescriptorSet setWriteTexture = {};
-  setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWriteTexture.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  setWriteTexture.dstBinding = 1;
-  // of the global descriptor
-  setWriteTexture.dstSet = globalDescriptor;
-  setWriteTexture.dstArrayElement = 0;
-
-  setWriteTexture.descriptorCount = 1;
-  setWriteTexture.descriptorType =
-      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // TODO:
-                                                 // 换成VK_DESCRIPTOR_TYPE_SAMPLER会无效
-  setWriteTexture.pImageInfo = &imageinfo;
-
-  std::array<VkWriteDescriptorSet, 2> writes = {setWrite, setWriteTexture};
-
-  vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
-                         writes.data(), 0, nullptr);
-
-  // AAPLDescriptorSets
 }
 
 void GpuScene::CreateTextures() {
@@ -2309,10 +2178,22 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createCommandBuffer(deviceref.getCommandPool());
 
   applMesh =
+#ifdef __ANDROID__
+      new AAPLMeshData("debug1.bin");
+#else
       new AAPLMeshData((_rootPath / "debug1.bin").generic_string().c_str());
+#endif
 
+#ifdef __ANDROID__
+  {
+    auto sceneBytes = AssetLoader::loadAssetBytes("scene.scene");
+    std::string sceneStr(sceneBytes.begin(), sceneBytes.end());
+    sceneFile = nlohmann::json::parse(sceneStr);
+  }
+#else
   std::ifstream f(root / "scene.scene");
   sceneFile = nlohmann::json::parse(f);
+#endif
 
   // maincamera = new Camera(60 * 3.1414926f / 180.f, 0.1, 100, vec3(0, 0, -2),
   //                         deviceref.getSwapChainExtent().width /
@@ -2900,7 +2781,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   // auto textureRes =
   // createTexture("G:\\AdvancedVulkanRendering\\textures\\texture.jpg");
   // currentImage = textureRes.first;
-  init_descriptorsV2();
+  init_GlobaldescriptorSet();
   // init_descriptors(textureRes.second);
   // init_descriptors(textures[13].second);
   init_appl_descriptors();
@@ -4079,6 +3960,37 @@ AAPLTextureData::AAPLTextureData(FILE *f) {
   }
 }
 
+#ifdef __ANDROID__
+AAPLTextureData::AAPLTextureData(AssetLoader::BinaryFileReader &reader) {
+  int path_length = 0;
+  reader.read(&path_length, sizeof(int), 1);
+  char *cstring = (char *)malloc(path_length + 1);
+  reader.read(cstring, 1, path_length);
+  cstring[path_length] = 0;
+  _path = std::string(cstring);
+  free(cstring);
+  reader.read(&_pathHash, sizeof(uint32_t), 1);
+  reader.read(&_width, sizeof(unsigned long long), 1);
+  reader.read(&_height, sizeof(unsigned long long), 1);
+  reader.read(&_mipmapLevelCount, sizeof(unsigned long long), 1);
+  reader.read(&_pixelFormat, sizeof(uint32_t), 1);
+  reader.read(&_pixelDataOffset, sizeof(unsigned long long), 1);
+  reader.read(&_pixelDataLength, sizeof(unsigned long long), 1);
+
+  for (int i = 0; i < _mipmapLevelCount; i++) {
+    unsigned long long offset_c;
+    reader.read(&offset_c, sizeof(offset_c), 1);
+    _mipOffsets.push_back(offset_c);
+  }
+
+  for (int i = 0; i < _mipmapLevelCount; i++) {
+    unsigned long long length_c;
+    reader.read(&length_c, sizeof(length_c), 1);
+    _mipLengths.push_back(length_c);
+  }
+}
+#endif
+
 AAPLMeshData::~AAPLMeshData() {
   if (_vertexData)
     free(_vertexData);
@@ -4103,6 +4015,83 @@ AAPLMeshData::~AAPLMeshData() {
 enum MTLIndexType { MTLIndexTypeUInt16 = 0, MTLIndexTypeUInt32 = 1 };
 
 AAPLMeshData::AAPLMeshData(const char *filepath) {
+#ifdef __ANDROID__
+  AssetLoader::BinaryFileReader reader(filepath);
+  if (reader.isOpen()) {
+    reader.read(&_vertexCount, sizeof(_vertexCount), 1);
+    reader.read(&_indexCount, sizeof(_indexCount), 1);
+    reader.read(&_indexType, sizeof(_indexType), 1);
+    if (_indexType != MTLIndexTypeUInt32)
+      spdlog::error("index type error!!!");
+    reader.read(&_chunkCount, sizeof(_chunkCount), 1);
+    reader.read(&_meshCount, sizeof(_meshCount), 1);
+    reader.read(&_opaqueChunkCount, sizeof(_opaqueChunkCount), 1);
+    reader.read(&_opaqueMeshCount, sizeof(_opaqueMeshCount), 1);
+    reader.read(&_alphaMaskedChunkCount, sizeof(_alphaMaskedChunkCount), 1);
+    reader.read(&_alphaMaskedMeshCount, sizeof(_alphaMaskedMeshCount), 1);
+    reader.read(&_transparentChunkCount, sizeof(_transparentChunkCount), 1);
+    reader.read(&_transparentMeshCount, sizeof(_transparentMeshCount), 1);
+    reader.read(&_materialCount, sizeof(_materialCount), 1);
+
+    unsigned long long bytes_length = 0;
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedVertexDataLength = bytes_length;
+    _vertexData = malloc(bytes_length);
+    reader.read(_vertexData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedNormalDataLength = bytes_length;
+    _normalData = malloc(bytes_length);
+    reader.read(_normalData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedTangentDataLength = bytes_length;
+    _tangentData = malloc(bytes_length);
+    reader.read(_tangentData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedUvDataLength = bytes_length;
+    _uvData = malloc(bytes_length);
+    reader.read(_uvData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedIndexDataLength = bytes_length;
+    _indexData = malloc(bytes_length);
+    reader.read(_indexData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedChunkDataLength = bytes_length;
+    _chunkData = malloc(bytes_length);
+    reader.read(_chunkData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedMeshDataLength = bytes_length;
+    _meshData = malloc(bytes_length);
+    reader.read(_meshData, 1, bytes_length);
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    compressedMaterialDataLength = bytes_length;
+    _materialData = malloc(bytes_length);
+    reader.read(_materialData, 1, bytes_length);
+
+    unsigned long long texture_count = 0;
+    reader.read(&texture_count, sizeof(bytes_length), 1);
+
+    for (int i = 0; i < texture_count; ++i) {
+      _textures.push_back(AAPLTextureData(reader));
+    }
+
+    reader.read(&bytes_length, sizeof(bytes_length), 1);
+    _textureData = malloc(bytes_length);
+    reader.read(_textureData, 1, bytes_length);
+
+    reader.close();
+  }
+
+  else {
+    spdlog::error("file not found {}", filepath);
+  }
+#else
   FILE *rawFile = fopen(filepath, "rb");
   if (rawFile) {
     // unsigned long
@@ -4183,6 +4172,7 @@ AAPLMeshData::AAPLMeshData(const char *filepath) {
   else {
     spdlog::error("file not found {}", filepath);
   }
+#endif // !__ANDROID__
 }
 
 // Helper to get the properties of block compressed pixel formats used by this
@@ -4270,8 +4260,15 @@ GpuScene::createTexture(const std::string &path) {
   VkImage textureImage;
   VkImageView currentImage;
   int texWidth, texHeight, texChannels;
+#ifdef __ANDROID__
+  auto texData = AssetLoader::loadAssetBytes(path);
+  stbi_uc *pixels = stbi_load_from_memory(texData.data(), (int)texData.size(),
+                                          &texWidth, &texHeight, &texChannels,
+                                          STBI_rgb_alpha);
+#else
   stbi_uc *pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels,
                               STBI_rgb_alpha);
+#endif
   VkDeviceSize imageSize = texWidth * texHeight * 4;
 
   if (!pixels) {

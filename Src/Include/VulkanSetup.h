@@ -1,8 +1,9 @@
 #pragma once
-#ifdef _WIN32
+#ifdef __ANDROID__
+#define VK_USE_PLATFORM_ANDROID_KHR
+#elif defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
-#endif
-#ifdef __gnu_linux__
+#elif defined(__gnu_linux__)
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 #include "vulkan/vulkan.h"
@@ -17,7 +18,9 @@
 #ifdef _WIN32
 #include "vulkan/vulkan_win32.h"
 #endif
-#ifdef __gnu_linux__
+#ifdef __ANDROID__
+#include "vulkan/vulkan_android.h"
+#elif defined(__gnu_linux__)
 #include "vulkan/vulkan_xlib.h"
 #endif
 
@@ -64,7 +67,7 @@ uint32_t findMemoryType(uint32_t typeFilter,
       throw std::runtime_error("failed to find suitable memory type!");
     }
 private:
-  constexpr std::vector<std::string_view> getRequiredExtensions();
+  std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
   VkDevice device;
   VkQueue graphicsQueue;
@@ -94,30 +97,37 @@ private:
 VkDebugUtilsMessengerEXT debugMessenger;
 
   constexpr static const char *const instaceExtensionNames[] = {
-      "VK_KHR_surface", 
+      "VK_KHR_surface",
+#ifndef __ANDROID__
       VK_EXT_DEBUG_UTILS_EXTENSION_NAME,//TODO:only use this when validation layer is enabled?
-#ifdef _WIN32
-      "VK_KHR_win32_surface"
 #endif
-#ifdef __gnu_linux__
+#ifdef __ANDROID__
+      "VK_KHR_android_surface"
+#elif defined(_WIN32)
+      "VK_KHR_win32_surface"
+#elif defined(__gnu_linux__)
 	      "VK_KHR_xlib_surface"
 #endif
   };
   constexpr static const char *const deviceExtensionNames[] = {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-  VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME ,
+  VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
+#ifndef __ANDROID__
 VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME,
 VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,  // supress validation error pCreateInfos[0].pStages[0] SPIR-V Extension SPV_KHR_non_semantic_info was declared, but one of the following requirements is required
 //VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
 VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME
+#endif
   };
+#ifndef __ANDROID__
   constexpr static const char *const validationLayers[] = {
-      
+
 #ifdef _WIN32
       "VK_LAYER_KHRONOS_synchronization2",
 #endif
       //VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME ,
       "VK_LAYER_KHRONOS_validation"};
+#endif
 
   bool checkValidationLayerSupport();
   void pickPhysicalDevice();

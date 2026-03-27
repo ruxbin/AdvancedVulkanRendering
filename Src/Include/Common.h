@@ -1,9 +1,10 @@
 #pragma once
 #include "Matrix.h"
-#ifdef _WIN32
+#ifdef __ANDROID__
+#define VK_USE_PLATFORM_ANDROID_KHR
+#elif defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
-#endif
-#ifdef __gnu_linux__
+#elif defined(__gnu_linux__)
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 #include "vulkan/vulkan.h"
@@ -13,8 +14,13 @@
 #include <string>
 #include <vector>
 
+#ifdef __ANDROID__
+extern int WINDOW_WIDTH;
+extern int WINDOW_HEIGHT;
+#else
 const int WINDOW_WIDTH = 1224;
 const int WINDOW_HEIGHT = 691;
+#endif
 
 // appl definitions
 struct AAPLBoundingBox3 {

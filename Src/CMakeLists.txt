@@ -28,6 +28,7 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/ObjLoader.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Shadow.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Light.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/AssetLoader.cpp
 )
 
 

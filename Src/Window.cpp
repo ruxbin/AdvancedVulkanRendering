@@ -4,8 +4,20 @@
 #include "VulkanSetup.h"
 #include "spdlog/spdlog.h"
 #include <chrono>
+#ifndef __ANDROID__
 #include <filesystem>
+#endif
 #include <string_view>
+
+#ifdef __ANDROID__
+#include "AssetLoader.h"
+#include <jni.h>
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
+
+int WINDOW_WIDTH = 0;
+int WINDOW_HEIGHT = 0;
+#endif
 
 
 int main(int nargs, char **args) {
@@ -13,13 +25,48 @@ int main(int nargs, char **args) {
     spdlog::error("SDL init failed");
   }
 
+#ifdef __ANDROID__
+  // Query display size for fullscreen on Android
+  SDL_DisplayMode displayMode;
+  if (SDL_GetCurrentDisplayMode(0, &displayMode) == 0) {
+    WINDOW_WIDTH = displayMode.w;
+    WINDOW_HEIGHT = displayMode.h;
+  } else {
+    WINDOW_WIDTH = 1920;
+    WINDOW_HEIGHT = 1080;
+  }
+
+  // Initialize AAssetManager from SDL's JNI
+  {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    jclass clazz = env->GetObjectClass(activity);
+    jmethodID getAssets = env->GetMethodID(clazz, "getAssets", "()Landroid/content/res/AssetManager;");
+    jobject assetManagerObj = env->CallObjectMethod(activity, getAssets);
+    AAssetManager *mgr = AAssetManager_fromJava(env, assetManagerObj);
+    AssetLoader::setAndroidAssetManager(mgr);
+    env->DeleteLocalRef(assetManagerObj);
+    env->DeleteLocalRef(clazz);
+    env->DeleteLocalRef(activity);
+  }
+
+  SDL_Window *window = SDL_CreateWindow("AdvancedVulkanRendering",
+                                        SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                                        WINDOW_WIDTH, WINDOW_HEIGHT,
+                                        SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN);
+#else
   SDL_Window *window = SDL_CreateWindow("test", 100, 100, WINDOW_WIDTH,
-                                        WINDOW_HEIGHT, SDL_WINDOW_OPENGL);
+                                        WINDOW_HEIGHT, SDL_WINDOW_VULKAN);
+#endif
 
   if (window == nullptr) {
     spdlog::error("SDL create window failed");
   }
 
+#ifdef __ANDROID__
+  // On Android, assets use relative paths through AAssetManager
+  std::filesystem::path currentPath("");
+#else
   std::filesystem::path currentPath = std::filesystem::current_path();
   while (!std::filesystem::exists(currentPath / "shaders")) {
     if (currentPath != currentPath.parent_path())
@@ -31,13 +78,11 @@ int main(int nargs, char **args) {
     spdlog::error("failed to locate shaders");
     return 1;
   }
+#endif
 
   VulkanDevice vk(window);
 
-  // std::string_view scenePath =
-  // "../GraphicsAPI/UsingMetalToDrawAViewContentsents/Resources/edward.obj";
   GpuScene gpuScene(currentPath, vk);
-  // GpuScene gpuScene(std::string_view("useless"), vk); //TODO: why error?
 
   SDL_Event e;
   bool quit = false;
@@ -118,6 +163,35 @@ int main(int nargs, char **args) {
         currentZDegree = 0;
         currentYDegree = 0;
       }
+#ifdef __ANDROID__
+      // Touch input: single-finger drag rotates camera
+      else if (e.type == SDL_FINGERMOTION) {
+        float dx = e.tfinger.dx * WINDOW_WIDTH;
+        float dy = e.tfinger.dy * WINDOW_HEIGHT;
+        if (abs(dx) > abs(dy)) {
+          currentYDegree += dx * rotateSpeed * 0.5f;
+          gpuScene.GetMainCamera()->RotateY(currentYDegree);
+        } else {
+          currentZDegree += dy * rotateSpeed * 0.5f;
+          gpuScene.GetMainCamera()->RotateZ(currentZDegree);
+        }
+      }
+      else if (e.type == SDL_FINGERDOWN) {
+        currentZDegree = 0;
+        currentYDegree = 0;
+      }
+      // Pinch to zoom
+      else if (e.type == SDL_MULTIGESTURE) {
+        if (e.mgesture.numFingers == 2) {
+          float pinchDist = e.mgesture.dDist;
+          if (pinchDist > 0.0f) {
+            gpuScene.GetMainCamera()->MoveForward(moveSpeed * pinchDist * 20.0f);
+          } else {
+            gpuScene.GetMainCamera()->MoveBackward(moveSpeed * (-pinchDist) * 20.0f);
+          }
+        }
+      }
+#endif
       // else
     }
 
