@@ -175,14 +175,24 @@ private:
   VkPipelineLayout epipelineLayout;
   VkPipeline egraphicsPipeline;
 
-  VkCommandBuffer commandBuffer;
+  // 多帧并行 (Frames in Flight)
+  // framesInFlight 由 swapchain 图像数量决定，在初始化时设置
+  uint32_t framesInFlight = 0;
+  std::vector<VkCommandBuffer> commandBuffers;
+  std::vector<VkSemaphore> imageAvailableSemaphores;
+  std::vector<VkSemaphore> renderFinishedSemaphores;
+  std::vector<VkFence> inFlightFences;
+  uint32_t currentFrame = 0;
+  
+  // 获取当前帧的 command buffer
+  VkCommandBuffer& getCurrentCommandBuffer() { return commandBuffers[currentFrame]; }
+  
   float modelScale;
 
   Camera *maincamera;
 
-  VkSemaphore imageAvailableSemaphore;
-  VkSemaphore renderFinishedSemaphore;
-  VkFence inFlightFence;
+  // 标记是否需要重建 swapchain
+  bool framebufferResized = false;
 
   AAPLMeshData *applMesh;
 
@@ -292,26 +302,32 @@ private:
 
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
-  void createCommandBuffer(VkCommandPool commandPool) {
+  void createCommandBuffers(VkCommandPool commandPool) {
+    commandBuffers.resize(framesInFlight);
+    
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
+    allocInfo.commandBufferCount = framesInFlight;
 
     if (vkAllocateCommandBuffers(device.getLogicalDevice(), &allocInfo,
-                                 &commandBuffer) != VK_SUCCESS) {
+                                 commandBuffers.data()) != VK_SUCCESS) {
       throw std::runtime_error("failed to allocate command buffers!");
     }
   }
 
   void createSyncObjects();
+  void cleanupSwapChainResources();
+  void recreateSwapChainResources();
 
 public:
   GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref);
   GpuScene() = delete;
   GpuScene(const GpuScene &) = delete;
   void Draw();
+  void recreateSwapChain();
+  void setFramebufferResized(bool resized) { framebufferResized = resized; }
   const std::filesystem::path &RootPath() const { return _rootPath; }
 
   VkShaderModule createShaderModule(const std::vector<char> &code) const;
@@ -336,11 +352,11 @@ public:
   void init_drawparams_descriptors();
 
   void init_deferredlighting_descriptors();
-  void DrawChunk(const AAPLMeshChunk &);
-  void DrawChunks();
+  void DrawChunk(const AAPLMeshChunk &, VkCommandBuffer commandBuffer);
+  void DrawChunks(VkCommandBuffer commandBuffer);
   void TriggerClusterLighting() { useClusterLighting = !useClusterLighting; }
 
-  void DrawChunksBasePass();
+  void DrawChunksBasePass(VkCommandBuffer commandBuffer);
 
   void CreateTextures();
 
@@ -350,7 +366,8 @@ public:
 
   void transitionImageLayout(VkImage image, VkFormat format,
                              VkImageLayout oldLayout,
-                             VkImageLayout newLayout) const {
+                             VkImageLayout newLayout,
+                             VkCommandBuffer commandBuffer) const {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = oldLayout;
@@ -441,7 +458,7 @@ public:
   }
 
   void CreateDepthTexture();
-  void DrawOccluders();
+  void DrawOccluders(VkCommandBuffer commandBuffer);
   void CreateOccluderZPass();
   void CreateOccluderZPassFrameBuffer();
   void CreateZdepthView();
@@ -545,7 +562,7 @@ public:
     }
   }
 
-  void recordCommandBuffer(int frameindex);
+  void recordCommandBuffer(int imageIndex, VkCommandBuffer cmdBuffer);
   std::pair<VkImage, VkImageView> createTexture(const AAPLTextureData &);
 
   std::pair<VkImageView, VkDeviceMemory> createTexture(const std::string &path);

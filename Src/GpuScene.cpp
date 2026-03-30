@@ -2176,7 +2176,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createSyncObjects();
   createUniformBuffer();
 
-  createCommandBuffer(deviceref.getCommandPool());
+  createCommandBuffers(deviceref.getCommandPool());
 
   applMesh =
 #ifdef __ANDROID__
@@ -3294,7 +3294,7 @@ void GpuScene::CreateZdepthView() {
   }
 }
 
-void GpuScene::DrawOccluders() {
+void GpuScene::DrawOccluders(VkCommandBuffer commandBuffer) {
   VkRenderPassBeginInfo renderPassInfo{};
   renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   renderPassInfo.renderPass = occluderZPass;
@@ -3334,8 +3334,10 @@ void GpuScene::DrawOccluders() {
   vkCmdEndRenderPass(commandBuffer);
 }
 
-void GpuScene::recordCommandBuffer(int imageIndex) {
-
+void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer) {
+  // 注意：commandBuffer 参数会遮蔽任何同名的成员变量，
+  // 这样函数内部所有对 commandBuffer 的引用都会使用这个参数
+  
   _shadow->UpdateShadowMatrices(*this);
   {
     frameConstants.nearPlane = maincamera->Near();
@@ -3427,7 +3429,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
       .pMemoryBarriers = &memoryBarrier,
   };
 #endif
-  DrawOccluders();
+  DrawOccluders(commandBuffer);
 
 #ifndef USE_CPU_ENCODE_DRAWPARAM
   vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
@@ -3460,7 +3462,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     // VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor,
     // 0, nullptr); vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
-    DrawChunksBasePass();
+    DrawChunksBasePass(commandBuffer);
 
     vkCmdEndRenderPass(commandBuffer);
   }
@@ -3472,10 +3474,10 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
                               device.getSwapChainExtent().height);
       }
       transitionImageLayout(_lightCuller->GetXZDebugImage(), VK_FORMAT_R32_UINT,
-                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, commandBuffer);
       transitionImageLayout(_lightCuller->GetTraditionalDebugImage(),
                             VK_FORMAT_R32G32B32A32_SFLOAT,
-                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, commandBuffer);
       // transitionImageLayout(device.getWindowDepthImage(),
       // device.getWindowDepthFormat(),
       // VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -3510,7 +3512,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
     for (int i = 0; i < 4; i++)
       transitionImageLayout(_gbuffers[i], _gbufferFormat[i],
                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, commandBuffer);
 
     if (useClusterLighting) {
       // don't need to write stencil anymore
@@ -3535,15 +3537,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
       transitionImageLayout(
           device.getWindowDepthImage(), device.getWindowDepthFormat(),
           VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL); // read
-                                                                       // depth
-                                                                       // while
-                                                                       // write
-                                                                       // stencil
-                                                                       // in the
-                                                                       // point
-                                                                       // lighting
-                                                                       // pass
+          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer); // read depth while write stencil in the point lighting pass
     }
   }
 
@@ -3680,7 +3674,7 @@ void GpuScene::recordCommandBuffer(int imageIndex) {
   }
 }
 
-void GpuScene::DrawChunk(const AAPLMeshChunk &chunk) {
+void GpuScene::DrawChunk(const AAPLMeshChunk &chunk, VkCommandBuffer commandBuffer) {
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawclusterPipeline);
   VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
@@ -3706,7 +3700,7 @@ void GpuScene::DrawChunk(const AAPLMeshChunk &chunk) {
   vkCmdDrawIndexed(commandBuffer, chunk.indexCount, 1, chunk.indexBegin, 0, 0);
 }
 
-void GpuScene::DrawChunksBasePass() {
+void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
 
   VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
                               applTangentBuffer, applUVBuffer,
@@ -3780,7 +3774,7 @@ void GpuScene::DrawChunksBasePass() {
 #endif
 }
 
-void GpuScene::DrawChunks() {
+void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawclusterPipelineAlphaMask);
   VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
@@ -3845,27 +3839,43 @@ void GpuScene::Draw() {
   // draw mesh
   // submit commandbuffer
 
-  vkWaitForFences(device.getLogicalDevice(), 1, &inFlightFence, VK_TRUE,
-                  UINT64_MAX);
-  vkResetFences(device.getLogicalDevice(), 1, &inFlightFence);
+  // 等待当前帧的 fence 完成
+  VkResult fenceResult = vkWaitForFences(device.getLogicalDevice(), 1, 
+                  &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+  if (fenceResult != VK_SUCCESS) {
+    spdlog::error("failed to wait for fence! {}", static_cast<int>(fenceResult));
+    return;
+  }
 
-  // updateSamplerInDescriptors();
-
-  // dispatch the gpu cull threadgroups
-
+  // 获取下一个 swapchain image
   uint32_t imageIndex;
-  vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(),
-                        UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE,
+  VkResult acquireResult = vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(),
+                        UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE,
                         &imageIndex);
+  
+  // 处理 swapchain 过期的情况（例如窗口大小改变）
+  if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+    spdlog::warn("Swapchain out of date, needs recreation");
+    recreateSwapChain();
+    return;
+  } else if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+    spdlog::error("failed to acquire swap chain image! {}", static_cast<int>(acquireResult));
+    throw std::runtime_error("failed to acquire swap chain image!");
+  }
 
-  vkResetCommandBuffer(commandBuffer, /*VkCommandBufferResetFlagBits*/ 0);
+  // 只有在成功获取 image 后才 reset fence，避免死锁
+  vkResetFences(device.getLogicalDevice(), 1, &inFlightFences[currentFrame]);
 
-  recordCommandBuffer(imageIndex);
+  // 使用当前帧的 command buffer
+  VkCommandBuffer& currentCmdBuffer = commandBuffers[currentFrame];
+  vkResetCommandBuffer(currentCmdBuffer, /*VkCommandBufferResetFlagBits*/ 0);
+
+  recordCommandBuffer(imageIndex, currentCmdBuffer);
 
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-  VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
+  VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
   VkPipelineStageFlags waitStages[] = {
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
   submitInfo.waitSemaphoreCount = 1;
@@ -3873,15 +3883,15 @@ void GpuScene::Draw() {
   submitInfo.pWaitDstStageMask = waitStages;
 
   submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers = &commandBuffer;
+  submitInfo.pCommandBuffers = &currentCmdBuffer;
 
-  VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
+  VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
   VkResult submitResult =
-      vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFence);
+      vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFences[currentFrame]);
   if (submitResult != VK_SUCCESS) {
-    spdlog::error("failed to submit draw command buffer! {}", submitResult);
+    spdlog::error("failed to submit draw command buffer! {}", static_cast<int>(submitResult));
     throw std::runtime_error("failed to submit draw command buffer!");
   }
 
@@ -3897,10 +3907,122 @@ void GpuScene::Draw() {
 
   presentInfo.pImageIndices = &imageIndex;
 
-  vkQueuePresentKHR(device.getPresentQueue(), &presentInfo);
+  VkResult presentResult = vkQueuePresentKHR(device.getPresentQueue(), &presentInfo);
+  
+  // 检查呈现结果，处理 swapchain 需要重建的情况
+  if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || framebufferResized) {
+    framebufferResized = false;
+    spdlog::warn("Swapchain suboptimal or out of date after present, needs recreation");
+    recreateSwapChain();
+  } else if (presentResult != VK_SUCCESS) {
+    spdlog::error("failed to present swap chain image! {}", static_cast<int>(presentResult));
+    throw std::runtime_error("failed to present swap chain image!");
+  }
+
+  // 前进到下一帧
+  currentFrame = (currentFrame + 1) % framesInFlight;
+}
+
+void GpuScene::cleanupSwapChainResources() {
+  // 清理依赖 swapchain 尺寸的资源
+  // 这些资源需要在 swapchain 重建时重新创建
+  
+  // 清理 deferred framebuffers
+  for (auto framebuffer : _deferredFrameBuffer) {
+    vkDestroyFramebuffer(device.getLogicalDevice(), framebuffer, nullptr);
+  }
+  _deferredFrameBuffer.clear();
+
+  // 清理 forward framebuffers
+  for (auto framebuffer : _forwardFrameBuffer) {
+    vkDestroyFramebuffer(device.getLogicalDevice(), framebuffer, nullptr);
+  }
+  _forwardFrameBuffer.clear();
+
+  // 清理 GBuffer 资源
+  if (_gbufferAlbedoAlphaTextureView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _gbufferAlbedoAlphaTextureView, nullptr);
+  }
+  if (_gbufferNormalsTextureView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _gbufferNormalsTextureView, nullptr);
+  }
+  if (_gbufferEmissiveTextureView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _gbufferEmissiveTextureView, nullptr);
+  }
+  if (_gbufferF0RoughnessTextureView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _gbufferF0RoughnessTextureView, nullptr);
+  }
+
+  // 注意：如果 GBuffer images 也是独立创建的，也需要在这里销毁
+  // vkDestroyImage, vkFreeMemory 等
+}
+
+void GpuScene::recreateSwapChainResources() {
+  // 重新创建依赖 swapchain 尺寸的资源
+  
+  // 重新创建 deferred/forward framebuffers
+  CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
+  CreateForwardLightingFrameBuffer(device.getSwapChainImageCount());
+  
+  // 更新 camera aspect ratio
+  if (maincamera) {
+    float aspect = device.getSwapChainExtent().width / 
+                   static_cast<float>(device.getSwapChainExtent().height);
+    // 如果 Camera 类有设置 aspect ratio 的方法，在这里调用
+    // maincamera->setAspectRatio(aspect);
+  }
+
+  spdlog::info("Swapchain resources recreated: {}x{}", 
+               device.getSwapChainExtent().width, 
+               device.getSwapChainExtent().height);
+}
+
+void GpuScene::recreateSwapChain() {
+  // 等待设备空闲
+  vkDeviceWaitIdle(device.getLogicalDevice());
+
+  // 清理旧的 GpuScene swapchain 相关资源
+  cleanupSwapChainResources();
+  
+  // 调用 VulkanDevice 的重建方法（重建 swapchain、image views、depth 资源）
+  const_cast<VulkanDevice&>(device).recreateSwapChain();
+  
+  // 检查 swapchain 图像数量是否变化，如果变化则需要重建同步对象和命令缓冲区
+  uint32_t newImageCount = device.getSwapChainImageCount();
+  if (newImageCount != framesInFlight) {
+    spdlog::info("Swapchain image count changed from {} to {}", framesInFlight, newImageCount);
+    
+    // 清理旧的同步对象
+    for (size_t i = 0; i < framesInFlight; i++) {
+      vkDestroySemaphore(device.getLogicalDevice(), imageAvailableSemaphores[i], nullptr);
+      vkDestroySemaphore(device.getLogicalDevice(), renderFinishedSemaphores[i], nullptr);
+      vkDestroyFence(device.getLogicalDevice(), inFlightFences[i], nullptr);
+    }
+    
+    // 重新创建同步对象（这会更新 framesInFlight）
+    createSyncObjects();
+    
+    // 重新创建命令缓冲区
+    createCommandBuffers(device.getCommandPool());
+    
+    // 重置 currentFrame 以避免越界访问
+    currentFrame = 0;
+  }
+  
+  // 重新创建 GpuScene 中依赖 swapchain 的资源
+  recreateSwapChainResources();
+
+  spdlog::info("Swapchain recreated successfully");
 }
 
 void GpuScene::createSyncObjects() {
+  // framesInFlight 由 swapchain 图像数量决定
+  framesInFlight = device.getSwapChainImageCount();
+  
+  imageAvailableSemaphores.resize(framesInFlight);
+  renderFinishedSemaphores.resize(framesInFlight);
+  inFlightFences.resize(framesInFlight);
+
   VkSemaphoreCreateInfo semaphoreInfo{};
   semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
@@ -3908,14 +4030,16 @@ void GpuScene::createSyncObjects() {
   fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
   fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-  if (vkCreateSemaphore(device.getLogicalDevice(), &semaphoreInfo, nullptr,
-                        &imageAvailableSemaphore) != VK_SUCCESS ||
-      vkCreateSemaphore(device.getLogicalDevice(), &semaphoreInfo, nullptr,
-                        &renderFinishedSemaphore) != VK_SUCCESS ||
-      vkCreateFence(device.getLogicalDevice(), &fenceInfo, nullptr,
-                    &inFlightFence) != VK_SUCCESS) {
-    throw std::runtime_error(
-        "failed to create synchronization objects for a frame!");
+  for (size_t i = 0; i < framesInFlight; i++) {
+    if (vkCreateSemaphore(device.getLogicalDevice(), &semaphoreInfo, nullptr,
+                          &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+        vkCreateSemaphore(device.getLogicalDevice(), &semaphoreInfo, nullptr,
+                          &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+        vkCreateFence(device.getLogicalDevice(), &fenceInfo, nullptr,
+                      &inFlightFences[i]) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create synchronization objects for a frame!");
+    }
   }
 }
 

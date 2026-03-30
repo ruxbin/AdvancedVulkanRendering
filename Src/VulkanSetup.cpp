@@ -608,3 +608,36 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
 
   endSingleTimeCommands(commandBuffer);
 }
+
+void VulkanDevice::cleanupSwapChain() {
+  // 销毁深度资源
+  vkDestroyImageView(device, depthImageView, nullptr);
+  vkDestroyImageView(device, depthOnlyImageView, nullptr);
+  vkDestroyImage(device, depthImage, nullptr);
+  vkFreeMemory(device, depthImageMemory, nullptr);
+
+  // 销毁 swapchain image views
+  for (auto imageView : swapChainImageViews) {
+    vkDestroyImageView(device, imageView, nullptr);
+  }
+  swapChainImageViews.clear();
+
+  // 销毁 swapchain
+  vkDestroySwapchainKHR(device, swapChain, nullptr);
+}
+
+void VulkanDevice::recreateSwapChain() {
+  // 等待设备空闲
+  vkDeviceWaitIdle(device);
+
+  // 清理旧的 swapchain 资源
+  cleanupSwapChain();
+
+  // 重新创建 swapchain 和相关资源
+  createSwapChain();
+  createImageViews();
+  CreateDepthResource();
+
+  // 注意：render pass 通常不需要重建，因为它不依赖 swapchain 尺寸
+  // 但 framebuffers 需要在 GpuScene 中重建
+}
