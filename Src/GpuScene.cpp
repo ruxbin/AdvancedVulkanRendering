@@ -694,13 +694,13 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
        .format = VK_FORMAT_R32G32_SFLOAT,
        .offset = sizeof(float) * 3 * 2}};
 
-  VkPipelineVertexInputStateCreateInfo edwardVertexInputInfo{};
-  edwardVertexInputInfo.sType =
+  VkPipelineVertexInputStateCreateInfo emptyVertexInputInfo{};
+  emptyVertexInputInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-  edwardVertexInputInfo.vertexBindingDescriptionCount = 1;
-  edwardVertexInputInfo.pVertexBindingDescriptions = &edwardInputBinding;
-  edwardVertexInputInfo.vertexAttributeDescriptionCount = 3;
-  edwardVertexInputInfo.pVertexAttributeDescriptions = edwardInputAttributes;
+  emptyVertexInputInfo.vertexBindingDescriptionCount = 0;
+  emptyVertexInputInfo.pVertexBindingDescriptions = nullptr;
+  emptyVertexInputInfo.vertexAttributeDescriptionCount = 0;
+  emptyVertexInputInfo.pVertexAttributeDescriptions = nullptr;
 
   VkPipelineDepthStencilStateCreateInfo depthStencilState{};
   depthStencilState.sType =
@@ -889,7 +889,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   deferredLightingPipelineInfo.stageCount = 2;
   deferredLightingPipelineInfo.pStages = deferredLightingPassStages;
   deferredLightingPipelineInfo.pVertexInputState =
-      &edwardVertexInputInfo; // TODO: don't need that?
+      &emptyVertexInputInfo; 
   deferredLightingPipelineInfo.pInputAssemblyState = &inputAssembly;
   deferredLightingPipelineInfo.pViewportState = &viewportState;
   deferredLightingPipelineInfo.pRasterizationState = &rasterizerBackFace;
@@ -915,7 +915,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   deferredLightingPipelineInfo_clusterlighting.pStages =
       deferredLightingPassStages_clusterlighting;
   deferredLightingPipelineInfo_clusterlighting.pVertexInputState =
-      &edwardVertexInputInfo; // TODO: don't need that?
+      &emptyVertexInputInfo; 
   deferredLightingPipelineInfo_clusterlighting.pInputAssemblyState =
       &inputAssembly;
   deferredLightingPipelineInfo_clusterlighting.pViewportState = &viewportState;
@@ -1301,6 +1301,7 @@ void GpuScene::init_deferredlighting_descriptors() {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
