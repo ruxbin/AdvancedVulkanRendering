@@ -1410,6 +1410,8 @@ void GpuScene::init_deferredlighting_descriptors() {
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
+
+  
 }
 
 void GpuScene::init_drawparams_descriptors() {
@@ -2792,7 +2794,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createRenderOccludersPipeline(occluderZPass);
   createComputePipeline();
 
-  _shadow = new Shadow(1024);
+  _shadow = new Shadow(device,*this,1024);
   // create point light
   {
     size_t pointlightCount = sceneFile["point_lights"].size();

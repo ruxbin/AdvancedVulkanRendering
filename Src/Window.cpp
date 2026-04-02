@@ -96,6 +96,7 @@ int main(int nargs, char **args) {
   int current_window_count = 0;
   std::chrono::milliseconds checkpoint_sum1 = std::chrono::milliseconds(0);
   std::chrono::milliseconds checkpoint_sum2 = std::chrono::milliseconds(0);
+  float oneSecondCount = std::chrono::milliseconds(1000).count();
   while (quit == false) {
 
     std::chrono::time_point<std::chrono::system_clock> time_checkpoint1 =
@@ -207,16 +208,18 @@ int main(int nargs, char **args) {
     std::chrono::time_point<std::chrono::system_clock> time_checkpoint3 =
         std::chrono::system_clock::now();
 
-    checkpoint_sum1 += std::chrono::milliseconds(
-        (time_checkpoint2 - time_checkpoint1).count());
-    checkpoint_sum2 += std::chrono::milliseconds(
-        (time_checkpoint3 - time_checkpoint2).count());
+    
+    checkpoint_sum1 += std::chrono::duration_cast<std::chrono::milliseconds>(time_checkpoint2 - time_checkpoint1);
+    checkpoint_sum2 += std::chrono::duration_cast<std::chrono::milliseconds>(time_checkpoint3 - time_checkpoint2);
     ++current_window_count;
     if (current_window_count == avg_windows_size) {
       checkpoint_sum1 /= avg_windows_size;
       checkpoint_sum2 /= avg_windows_size;
       current_window_count = 0;
-      spdlog::info("{}--{}", checkpoint_sum1.count(), checkpoint_sum2.count());
+      spdlog::info("PollEvent Duration:{} seconds -- GPUScene Draw Duration:{} seconds. Elapsed:{} seconds", 
+        checkpoint_sum1.count()/oneSecondCount, 
+        checkpoint_sum2.count()/oneSecondCount,
+        (checkpoint_sum1+checkpoint_sum2).count()*avg_windows_size/oneSecondCount);
       checkpoint_sum1 = std::chrono::milliseconds(0);
       checkpoint_sum2 = std::chrono::milliseconds(0);
     }

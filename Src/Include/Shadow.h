@@ -30,7 +30,10 @@ private:
   void InitRHI(const VulkanDevice &, const GpuScene &);
 
 public:
-  Shadow(uint32_t shadowResolution) : _shadowResolution(shadowResolution) {}
+  Shadow(const VulkanDevice& device, const GpuScene& gpuscene, uint32_t shadowResolution) : _shadowResolution(shadowResolution) 
+  {
+    InitRHI(device, gpuscene);
+  }
 
   void CreateShadowSlices(const VulkanDevice &);
   void RenderShadowMap(VkCommandBuffer &, const GpuScene &,

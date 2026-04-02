@@ -158,6 +158,8 @@ void Shadow::UpdateShadowMatrices(const GpuScene &gpuScene) {
   }
 }
 
+static bool vulkanResourceCreated = false;
+
 void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   CreateShadowSlices(device);
 
@@ -516,9 +518,10 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   vkDestroyShaderModule(device.getLogicalDevice(), vertShaderModule, nullptr);
   vkDestroyShaderModule(device.getLogicalDevice(),
                         drawclusterPSShaderModuleDepthOnly, nullptr);
+    vulkanResourceCreated = true;
 }
 
-static bool vulkanResourceCreated = false;
+
 void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
                              const GpuScene &gpuScene,
                              const VulkanDevice &device) {
