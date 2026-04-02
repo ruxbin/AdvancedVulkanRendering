@@ -29,6 +29,40 @@ private:
   VkSampler _shadowMapSampler;
   void InitRHI(const VulkanDevice &, const GpuScene &);
 
+  // GPU-Driven Shadow (Stage 2)
+  VkBuffer _shadowDrawParamsBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _shadowDrawParamsMemory = VK_NULL_HANDLE;
+  VkBuffer _shadowWriteIndexBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _shadowWriteIndexMemory = VK_NULL_HANDLE;
+  VkBuffer _shadowChunkIndicesBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _shadowChunkIndicesMemory = VK_NULL_HANDLE;
+  VkBuffer _shadowInstanceBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _shadowInstanceMemory = VK_NULL_HANDLE;
+  VkBuffer _shadowCullParamsBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _shadowCullParamsMemory = VK_NULL_HANDLE;
+
+  VkDescriptorSetLayout _shadowCullSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool _shadowCullDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorSet _shadowCullDescriptorSet = VK_NULL_HANDLE;
+
+  VkPipelineLayout _shadowCullPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline _shadowCullPipeline = VK_NULL_HANDLE;
+
+  // Indirect shadow rendering pipelines (reads material from SSBO, no push constants)
+  VkPipeline _shadowPassPipelineIndirect = VK_NULL_HANDLE;
+  VkPipeline _shadowPassPipelineAlphaMaskIndirect = VK_NULL_HANDLE;
+
+  bool _gpuShadowInitialized = false;
+  void InitGPUShadowResources(const VulkanDevice &, const GpuScene &);
+
+  struct ShadowCullParams {
+    uint32_t opaqueChunkCount;
+    uint32_t alphaMaskedChunkCount;
+    uint32_t cascadeMaxChunks;
+    uint32_t cascadeIndex;
+    Frustum cascadeFrustum;
+  };
+
 public:
   Shadow(const VulkanDevice& device, const GpuScene& gpuscene, uint32_t shadowResolution) : _shadowResolution(shadowResolution) 
   {

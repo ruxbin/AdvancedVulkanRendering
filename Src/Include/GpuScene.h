@@ -223,7 +223,9 @@ private:
 
   VkPipelineLayout drawclusterBasePipelineLayout;
   VkPipeline drawclusterBasePipeline;
+  VkPipeline drawclusterBasePipelineAlphaMask; // GPU indirect alpha-mask base pass
   VkPipeline drawclusterForwardPipeline;
+  VkPipeline drawclusterForwardPipelineIndirect; // GPU indirect forward pass (no push constants)
 
   VkPipelineLayout deferredLightingPipelineLayout;
   VkPipeline deferredLightingPipeline;
@@ -299,6 +301,29 @@ private:
   LightCuller *_lightCuller = nullptr;
 
   bool useClusterLighting = false;
+
+  // Hi-Z Occlusion Culling (Stage 3)
+  VkImage _hizTexture = VK_NULL_HANDLE;
+  VkDeviceMemory _hizMemory = VK_NULL_HANDLE;
+  VkImageView _hizTextureView = VK_NULL_HANDLE;  // full mip chain for sampling
+  std::vector<VkImageView> _hizMipViews;          // per-mip views for compute writes
+  VkSampler _hizSampler = VK_NULL_HANDLE;
+  uint32_t _hizMipLevels = 0;
+  uint32_t _hizWidth = 0;
+  uint32_t _hizHeight = 0;
+
+  VkPipelineLayout _hizPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline _hizCopyPipeline = VK_NULL_HANDLE;
+  VkPipeline _hizDownsamplePipeline = VK_NULL_HANDLE;
+
+  VkDescriptorSetLayout _hizCopySetLayout = VK_NULL_HANDLE;
+  VkDescriptorSetLayout _hizDownsampleSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool _hizDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorSet _hizCopyDescriptorSet = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> _hizDownsampleDescriptorSets;
+
+  void createHiZResources();
+  void generateHiZPyramid(VkCommandBuffer commandBuffer);
 
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
@@ -472,10 +497,15 @@ public:
   void CreateForwardLightingFrameBuffer(uint32_t count);
 
   struct GPUCullParams {
-    uint32_t totalChunks;
+    uint32_t opaqueChunkCount;
+    uint32_t alphaMaskedChunkCount;
+    uint32_t transparentChunkCount;
     uint32_t totalPointLights;
     uint32_t totalSpotLights;
-    uint32_t padding;
+    uint32_t hizMipLevels;
+    float screenWidth;
+    float screenHeight;
+    float viewProjMatrix[16]; // 64 bytes, starts at offset 32
     Frustum frustum;
   };
 

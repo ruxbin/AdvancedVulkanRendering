@@ -19,7 +19,7 @@
 #include <vector>
 
 
-#define USE_CPU_ENCODE_DRAWPARAM
+// USE_CPU_ENCODE_DRAWPARAM removed: GPU indirect draw is now the default path
 #define LIGHT_FOR_TRANSPARENT_FLAG (0x00000001)
 
 // TODO: move to common.cpp
@@ -271,7 +271,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass) {
 
 void GpuScene::createComputePipeline() {
   auto computeShaderCode =
-      readFile((_rootPath / "shaders/gpucull.scc.spv").generic_string());
+      readFile((_rootPath / "shaders/gpucull.cs.spv").generic_string());
   VkShaderModule computeShaderModule = createShaderModule(computeShaderCode);
   VkPipelineShaderStageCreateInfo computeStageInfo{};
   computeStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -326,6 +326,12 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   auto drawClusterForwardPsShaderCode = readFile(
       (_rootPath / "shaders/drawcluster.forward.ps.spv").generic_string());
 
+  auto drawClusterBasePassAlphaMaskPSCode = readFile(
+      (_rootPath / "shaders/drawcluster.base.alphamask.ps.spv").generic_string());
+
+  auto drawClusterForwardIndirectPSCode = readFile(
+      (_rootPath / "shaders/drawcluster.forward.indirect.ps.spv").generic_string());
+
   auto deferredLightingVSShaderCode = readFile(
       (_rootPath / "shaders/deferredlighting.vs.spv").generic_string());
   auto deferredLightingPSShaderCode = readFile(
@@ -345,6 +351,12 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       createShaderModule(drawClusterBasePSShaderCode);
   VkShaderModule drawclusterForwardPSShaderModule =
       createShaderModule(drawClusterForwardPsShaderCode);
+
+  VkShaderModule drawclusterBasePassAlphaMaskPSModule =
+      createShaderModule(drawClusterBasePassAlphaMaskPSCode);
+
+  VkShaderModule drawclusterForwardIndirectPSModule =
+      createShaderModule(drawClusterForwardIndirectPSCode);
 
   VkShaderModule deferredLightingVSShaderModule =
       createShaderModule(deferredLightingVSShaderCode);
@@ -437,6 +449,20 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       drawclusterForwardPSShaderModule; // TODO:
                                         // 这几个module应该可以合并，在dxc中添加适当的参数？
   drawclusterForwardPSShaderStageInfo.pName = "RenderSceneForwardPS";
+
+  VkPipelineShaderStageCreateInfo drawclusterBaseAlphaMaskPSStageInfo{};
+  drawclusterBaseAlphaMaskPSStageInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  drawclusterBaseAlphaMaskPSStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  drawclusterBaseAlphaMaskPSStageInfo.module = drawclusterBasePassAlphaMaskPSModule;
+  drawclusterBaseAlphaMaskPSStageInfo.pName = "RenderSceneBasePassAlphaMask";
+
+  VkPipelineShaderStageCreateInfo drawclusterForwardIndirectPSStageInfo{};
+  drawclusterForwardIndirectPSStageInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  drawclusterForwardIndirectPSStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  drawclusterForwardIndirectPSStageInfo.module = drawclusterForwardIndirectPSModule;
+  drawclusterForwardIndirectPSStageInfo.pName = "RenderSceneForwardPSIndirect";
 
   VkPipelineShaderStageCreateInfo deferredLightingPSShaderStageInfo{};
   deferredLightingPSShaderStageInfo.sType =
@@ -856,6 +882,51 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
                                 &drawclusterBasePipeline) != VK_SUCCESS) {
     throw std::runtime_error(
         "failed to create drawcluster base graphics pipeline!");
+  }
+
+  // Alpha-mask base pass pipeline (GPU indirect, reads material from SSBO)
+  {
+    VkPipelineShaderStageCreateInfo baseAlphaMaskStages[] = {
+        drawclusterVSShaderStageInfo, drawclusterBaseAlphaMaskPSStageInfo};
+
+    VkGraphicsPipelineCreateInfo baseAlphaMaskPipelineInfo = drawclusterBasePipelineInfo;
+    baseAlphaMaskPipelineInfo.pStages = baseAlphaMaskStages;
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                  &baseAlphaMaskPipelineInfo, nullptr,
+                                  &drawclusterBasePipelineAlphaMask) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create drawcluster base alpha-mask graphics pipeline!");
+    }
+  }
+
+  // Forward pass indirect pipeline (GPU indirect, reads material from SSBO, no push constants)
+  {
+    VkPipelineShaderStageCreateInfo forwardIndirectStages[] = {
+        drawclusterVSShaderStageInfo, drawclusterForwardIndirectPSStageInfo};
+
+    VkGraphicsPipelineCreateInfo forwardIndirectPipelineInfo{};
+    forwardIndirectPipelineInfo.sType =
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    forwardIndirectPipelineInfo.stageCount = 2;
+    forwardIndirectPipelineInfo.pStages = forwardIndirectStages;
+    forwardIndirectPipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
+    forwardIndirectPipelineInfo.pInputAssemblyState = &inputAssembly;
+    forwardIndirectPipelineInfo.pViewportState = &viewportState;
+    forwardIndirectPipelineInfo.pRasterizationState = &rasterizer;
+    forwardIndirectPipelineInfo.pMultisampleState = &multisampling;
+    forwardIndirectPipelineInfo.pColorBlendState = &colorBlendingAlpha;
+    forwardIndirectPipelineInfo.layout = drawclusterBasePipelineLayout;
+    forwardIndirectPipelineInfo.renderPass = _forwardLightingPass;
+    forwardIndirectPipelineInfo.subpass = 0;
+    forwardIndirectPipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+    forwardIndirectPipelineInfo.pDepthStencilState = &depthStencilState;
+
+    if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                  &forwardIndirectPipelineInfo, nullptr,
+                                  &drawclusterForwardPipelineIndirect) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create drawcluster forward indirect pipeline!");
+    }
   }
 
   VkGraphicsPipelineCreateInfo drawclusterForwardPipelineInfo{};
@@ -1451,9 +1522,23 @@ void GpuScene::init_drawparams_descriptors() {
   instanceToDrawIDMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   instanceToDrawIDMapBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+  // Hi-Z texture (Stage 3)
+  VkDescriptorSetLayoutBinding hizTextureBinding = {};
+  hizTextureBinding.binding = 6;
+  hizTextureBinding.descriptorCount = 1;
+  hizTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  hizTextureBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+  VkDescriptorSetLayoutBinding hizSamplerBinding = {};
+  hizSamplerBinding.binding = 7;
+  hizSamplerBinding.descriptorCount = 1;
+  hizSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  hizSamplerBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {
       drawParamsBinding, cullParamsBinding,   meshChunksBinding,
-      writeIndexBinding, chunkIndicesBinding, instanceToDrawIDMapBinding};
+      writeIndexBinding, chunkIndicesBinding, instanceToDrawIDMapBinding,
+      hizTextureBinding, hizSamplerBinding};
 
   constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
@@ -1473,6 +1558,8 @@ void GpuScene::init_drawparams_descriptors() {
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 10},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -1563,11 +1650,10 @@ void GpuScene::init_drawparams_descriptors() {
   meshChunksBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   meshChunksBufferWrite.pBufferInfo = &meshChunksBufferInfo;
 
-  VkDescriptorBufferInfo writeIndexBufferInfo;
-  writeIndexBufferInfo.buffer = writeIndexBuffer;
-  // at 0 offset
-  writeIndexBufferInfo.offset = 0;
-  writeIndexBufferInfo.range = sizeof(uint32_t);
+  VkDescriptorBufferInfo writeIndexBufferDescInfo;
+  writeIndexBufferDescInfo.buffer = writeIndexBuffer;
+  writeIndexBufferDescInfo.offset = 0;
+  writeIndexBufferDescInfo.range = 3 * sizeof(uint32_t);
 
   VkWriteDescriptorSet writeIndexBufferWrite = {};
   writeIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1582,7 +1668,7 @@ void GpuScene::init_drawparams_descriptors() {
   writeIndexBufferWrite.dstArrayElement = 0;
   // and the type is uniform buffer
   writeIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  writeIndexBufferWrite.pBufferInfo = &writeIndexBufferInfo;
+  writeIndexBufferWrite.pBufferInfo = &writeIndexBufferDescInfo;
 
   VkDescriptorBufferInfo chunkIndicesBufferInfo;
   chunkIndicesBufferInfo.buffer = chunkIndicesBuffer;
@@ -1627,12 +1713,44 @@ void GpuScene::init_drawparams_descriptors() {
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   instanceToDrawIDMapBufferWrite.pBufferInfo = &applInstanceBufferInfo;
 
-  std::array<VkWriteDescriptorSet, bindingcount> writes = {
+  // Hi-Z descriptor writes (will be updated later when Hi-Z resources are created)
+  VkDescriptorImageInfo hizImageInfo{};
+  hizImageInfo.imageView = _hizTextureView; // may be VK_NULL_HANDLE initially
+  hizImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkWriteDescriptorSet hizTextureWrite = {};
+  hizTextureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  hizTextureWrite.pNext = nullptr;
+  hizTextureWrite.dstBinding = 6;
+  hizTextureWrite.dstSet = gpuCullDescriptorSet;
+  hizTextureWrite.descriptorCount = 1;
+  hizTextureWrite.dstArrayElement = 0;
+  hizTextureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  hizTextureWrite.pImageInfo = &hizImageInfo;
+
+  VkDescriptorImageInfo hizSamplerInfo{};
+  hizSamplerInfo.sampler = _hizSampler; // may be VK_NULL_HANDLE initially
+
+  VkWriteDescriptorSet hizSamplerWrite = {};
+  hizSamplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  hizSamplerWrite.pNext = nullptr;
+  hizSamplerWrite.dstBinding = 7;
+  hizSamplerWrite.dstSet = gpuCullDescriptorSet;
+  hizSamplerWrite.descriptorCount = 1;
+  hizSamplerWrite.dstArrayElement = 0;
+  hizSamplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  hizSamplerWrite.pImageInfo = &hizSamplerInfo;
+
+  std::vector<VkWriteDescriptorSet> writes = {
       drawParamsWrite,         cullParamsWrite,
       meshChunksBufferWrite,   writeIndexBufferWrite,
       chunkIndicesBufferWrite, instanceToDrawIDMapBufferWrite};
-  // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite ,
-  // setSampler };
+
+  // Only write Hi-Z descriptors if resources are ready
+  if (_hizTextureView != VK_NULL_HANDLE && _hizSampler != VK_NULL_HANDLE) {
+    writes.push_back(hizTextureWrite);
+    writes.push_back(hizSamplerWrite);
+  }
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
@@ -2667,7 +2785,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   {
     VkBufferCreateInfo writeIndexBufferInfo{};
     writeIndexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    writeIndexBufferInfo.size = sizeof(uint32_t);
+    writeIndexBufferInfo.size = 3 * sizeof(uint32_t); // opaque, alphaMask, transparent counts
     writeIndexBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     writeIndexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -2789,6 +2907,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   // init_descriptors(textures[13].second);
   init_appl_descriptors();
   init_drawparams_descriptors();
+  createHiZResources(); // Stage 3: creates Hi-Z texture and updates gpuCullDescriptorSet
   init_deferredlighting_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
@@ -3379,23 +3498,45 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     {
       uint32_t totalPointLights = _pointLights.size();
       uint32_t totalSpotLights = _spotLights.size();
+      uint32_t hizMips = _hizMipLevels;
+      float screenW = (float)device.getSwapChainExtent().width;
+      float screenH = (float)device.getSwapChainExtent().height;
+
+      // Compute view-projection matrix for Hi-Z AABB projection
+      mat4 viewProj = maincamera->getProjectMatrix() * maincamera->getObjectToCamera();
+      mat4 viewProjT = transpose(viewProj);
+
       vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0,
                   sizeof(GPUCullParams), 0, &data1);
-      memcpy(data1, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
-      memcpy((char *)data1 + 4, &totalPointLights, sizeof(uint32_t));
-      memcpy((char *)data1 + 8, &totalSpotLights, sizeof(uint32_t));
-      // memcpy((char*)data+offsetof(gpuCullParams,frustum),
-      // &maincamera->getFrustum(), sizeof(Frustum)); offsetof isn't working as
-      // expected
-      memcpy((char *)data1 + 16, &maincamera->getFrustum(), sizeof(Frustum));
+      // GPUCullParams layout matches HLSL cbuffer:
+      // offset 0:  opaqueChunkCount
+      // offset 4:  alphaMaskedChunkCount
+      // offset 8:  transparentChunkCount
+      // offset 12: totalPointLights
+      // offset 16: totalSpotLights
+      // offset 20: hizMipLevels
+      // offset 24: screenSize (float2)
+      // offset 32: viewProjMatrix (float4x4, 64 bytes)
+      // offset 96: frustum (96 bytes)
+      memcpy((char *)data1 + 0, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
+      memcpy((char *)data1 + 4, &applMesh->_alphaMaskedChunkCount, sizeof(uint32_t));
+      memcpy((char *)data1 + 8, &applMesh->_transparentChunkCount, sizeof(uint32_t));
+      memcpy((char *)data1 + 12, &totalPointLights, sizeof(uint32_t));
+      memcpy((char *)data1 + 16, &totalSpotLights, sizeof(uint32_t));
+      memcpy((char *)data1 + 20, &hizMips, sizeof(uint32_t));
+      memcpy((char *)data1 + 24, &screenW, sizeof(float));
+      memcpy((char *)data1 + 28, &screenH, sizeof(float));
+      memcpy((char *)data1 + 32, viewProjT.value_ptr(), sizeof(mat4));
+      memcpy((char *)data1 + 96, &maincamera->getFrustum(), sizeof(Frustum));
 
       vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
     }
 
-    uint32_t startIndex = 0;
+    // Reset all 3 write counters (opaque, alphaMask, transparent)
+    uint32_t zeroCounters[3] = {0, 0, 0};
     vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0,
-                sizeof(uint32_t), 0, &data1);
-    memcpy((uint32_t *)data1, &startIndex, sizeof(uint32_t));
+                3 * sizeof(uint32_t), 0, &data1);
+    memcpy(data1, zeroCounters, 3 * sizeof(uint32_t));
     vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemory);
   }
 
@@ -3406,9 +3547,15 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     throw std::runtime_error("failed to begin recording command buffer!");
   }
 
-#ifndef USE_CPU_ENCODE_DRAWPARAM
+  // Draw occluders first for Hi-Z generation
+  DrawOccluders(commandBuffer);
 
-  uint32_t groupx = (applMesh->_opaqueChunkCount + 127) / 128;
+  // Stage 3: Generate Hi-Z pyramid from occluder depth
+  generateHiZPyramid(commandBuffer);
+
+  // GPU Frustum + Hi-Z Culling (compute shader)
+  uint32_t totalChunks = applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount + applMesh->_transparentChunkCount;
+  uint32_t groupx = (totalChunks + 127) / 128;
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                     encodeDrawBufferPipeline);
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -3421,8 +3568,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       .pNext = nullptr,
       .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
       .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
-      .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR,
-      .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR};
+      .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR |
+                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT_KHR,
+      .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT_KHR |
+                       VK_ACCESS_2_SHADER_READ_BIT_KHR};
 
   VkDependencyInfo dependencyInfo = {
       .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -3430,12 +3579,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       .memoryBarrierCount = 1,
       .pMemoryBarriers = &memoryBarrier,
   };
-#endif
-  DrawOccluders(commandBuffer);
 
-#ifndef USE_CPU_ENCODE_DRAWPARAM
   vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-#endif
+
   { _shadow->RenderShadowMap(commandBuffer, *this, device); }
 
   {
@@ -3631,39 +3777,21 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
       vkCmdBeginRenderPass(commandBuffer, &forwardPassInfo,
                            VK_SUBPASS_CONTENTS_INLINE);
+
+      // Stage 4: GPU indirect forward pass for transparent objects
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        drawclusterForwardPipeline);
+                        drawclusterForwardPipelineIndirect);
       vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              drawclusterPipelineLayout, 0, 1,
-                              &applDescriptorSet, 1, &dynamic_offset);
+                              drawclusterBasePipelineLayout, 0, 1,
+                              &applDescriptorSet, 0, nullptr);
 
-      if (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount +
-              applMesh->_transparentChunkCount !=
-          applMesh->_chunkCount)
-        spdlog::error("chunk count error {} {}",
-                      applMesh->_opaqueChunkCount +
-                          applMesh->_alphaMaskedChunkCount +
-                          applMesh->_transparentChunkCount,
-                      applMesh->_chunkCount);
-
-      for (int i =
-               applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount;
-           i < applMesh->_chunkCount; ++i) {
-        PerObjPush perobj = {.matindex = m_Chunks[i].materialIndex};
-
-        {
-          if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox)) {
-            // debug_frustum_cull[i] = true;
-            continue;
-          }
-        }
-
-        vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout,
-                           VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj),
-                           &perobj);
-        vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1,
-                         m_Chunks[i].indexBegin, 0, 0);
-      }
+      uint32_t transparentOffset = (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount)
+                                   * sizeof(VkDrawIndexedIndirectCommand);
+      vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer,
+                                    transparentOffset,
+                                    writeIndexBuffer, 2 * sizeof(uint32_t),
+                                    applMesh->_transparentChunkCount,
+                                    sizeof(VkDrawIndexedIndirectCommand));
 
       vkCmdEndRenderPass(commandBuffer);
     }
@@ -3714,66 +3842,26 @@ void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
                          vertexBuffers, offsets);
   vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-#ifndef USE_CPU_ENCODE_DRAWPARAM
-  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    drawclusterBasePipeline);
-  // if the descriptor set data isn't change we can omit this?
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           drawclusterBasePipelineLayout, 0, 1,
                           &applDescriptorSet, 0, nullptr);
+
+  // Opaque chunks: indirect draw from region [0, opaqueChunkCount)
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    drawclusterBasePipeline);
   vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer, 0,
-                                writeIndexBuffer, 0, applMesh->_chunkCount,
+                                writeIndexBuffer, 0,
+                                applMesh->_opaqueChunkCount,
                                 sizeof(VkDrawIndexedIndirectCommand));
-#else
-  constexpr int beginindex = 0;
-  constexpr int indexClamp = 0xffffff;
 
-  uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
-
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          drawclusterPipelineLayout, 0, 1, &applDescriptorSet,
-                          1, &dynamic_offset);
-
+  // Alpha-masked chunks: indirect draw from region [opaqueChunkCount, opaqueChunkCount + alphaMaskedChunkCount)
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    drawclusterPipeline);
-  for (int i = 0; i < applMesh->_opaqueChunkCount; ++i) {
-    PerObjPush perobj = {.matindex = m_Chunks[i].materialIndex};
-
-    {
-      if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox)) {
-        // debug_frustum_cull[i] = true;
-        continue;
-      }
-    }
-
-    vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout,
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj),
-                       &perobj);
-    vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1,
-                     m_Chunks[i].indexBegin, 0, 0);
-  }
-  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    drawclusterPipelineAlphaMask);
-  for (int i = applMesh->_opaqueChunkCount;
-       i < applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount &&
-       i < indexClamp;
-       ++i) {
-    PerObjPush perobj = {.matindex = m_Chunks[i].materialIndex};
-
-    {
-      if (maincamera->getFrustum().FrustumCull(m_Chunks[i].boundingBox)) {
-        // debug_frustum_cull[i] = true;
-        continue;
-      }
-    }
-
-    vkCmdPushConstants(commandBuffer, drawclusterPipelineLayout,
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj),
-                       &perobj);
-    vkCmdDrawIndexed(commandBuffer, m_Chunks[i].indexCount, 1,
-                     m_Chunks[i].indexBegin, 0, 0);
-  }
-#endif
+                    drawclusterBasePipelineAlphaMask);
+  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer,
+                                applMesh->_opaqueChunkCount * sizeof(VkDrawIndexedIndirectCommand),
+                                writeIndexBuffer, sizeof(uint32_t),
+                                applMesh->_alphaMaskedChunkCount,
+                                sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
@@ -4015,6 +4103,124 @@ void GpuScene::recreateSwapChain() {
   recreateSwapChainResources();
 
   spdlog::info("Swapchain recreated successfully");
+}
+
+void GpuScene::createHiZResources() {
+  uint32_t width = device.getSwapChainExtent().width;
+  uint32_t height = device.getSwapChainExtent().height;
+
+  // Compute mip levels
+  uint32_t bigger = width > height ? width : height;
+  _hizMipLevels = static_cast<uint32_t>(floor(log2f(static_cast<float>(bigger)))) + 1;
+  _hizWidth = width;
+  _hizHeight = height;
+
+  // Create Hi-Z texture (R32_SFLOAT for storage + sampled)
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.extent = {width, height, 1};
+  imageInfo.mipLevels = _hizMipLevels;
+  imageInfo.arrayLayers = 1;
+  imageInfo.format = VK_FORMAT_R32_SFLOAT;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+  vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_hizTexture);
+
+  VkMemoryRequirements memReqs;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _hizTexture, &memReqs);
+
+  VkMemoryAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocInfo.allocationSize = memReqs.size;
+  allocInfo.memoryTypeIndex = device.findMemoryType(memReqs.memoryTypeBits,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_hizMemory);
+  vkBindImageMemory(device.getLogicalDevice(), _hizTexture, _hizMemory, 0);
+
+  // Full mip chain view for sampling in cull shader
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = _hizTexture;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = VK_FORMAT_R32_SFLOAT;
+  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewInfo.subresourceRange.baseMipLevel = 0;
+  viewInfo.subresourceRange.levelCount = _hizMipLevels;
+  viewInfo.subresourceRange.baseArrayLayer = 0;
+  viewInfo.subresourceRange.layerCount = 1;
+  vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_hizTextureView);
+
+  // Per-mip views for compute shader writes
+  _hizMipViews.resize(_hizMipLevels);
+  for (uint32_t i = 0; i < _hizMipLevels; ++i) {
+    VkImageViewCreateInfo mipViewInfo = viewInfo;
+    mipViewInfo.subresourceRange.baseMipLevel = i;
+    mipViewInfo.subresourceRange.levelCount = 1;
+    vkCreateImageView(device.getLogicalDevice(), &mipViewInfo, nullptr, &_hizMipViews[i]);
+  }
+
+  // Nearest clamp sampler for Hi-Z
+  VkSamplerCreateInfo samplerInfo{};
+  samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  samplerInfo.magFilter = VK_FILTER_NEAREST;
+  samplerInfo.minFilter = VK_FILTER_NEAREST;
+  samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.minLod = 0.0f;
+  samplerInfo.maxLod = static_cast<float>(_hizMipLevels);
+  vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &_hizSampler);
+
+  // Update gpuCullDescriptorSet with Hi-Z bindings
+  VkDescriptorImageInfo hizImageInfo{};
+  hizImageInfo.imageView = _hizTextureView;
+  hizImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkWriteDescriptorSet hizTexWrite{};
+  hizTexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  hizTexWrite.dstBinding = 6;
+  hizTexWrite.dstSet = gpuCullDescriptorSet;
+  hizTexWrite.descriptorCount = 1;
+  hizTexWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  hizTexWrite.pImageInfo = &hizImageInfo;
+
+  VkDescriptorImageInfo hizSampInfo{};
+  hizSampInfo.sampler = _hizSampler;
+
+  VkWriteDescriptorSet hizSampWrite{};
+  hizSampWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  hizSampWrite.dstBinding = 7;
+  hizSampWrite.dstSet = gpuCullDescriptorSet;
+  hizSampWrite.descriptorCount = 1;
+  hizSampWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  hizSampWrite.pImageInfo = &hizSampInfo;
+
+  VkWriteDescriptorSet writes[] = {hizTexWrite, hizSampWrite};
+  vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+
+  spdlog::info("Hi-Z resources created: {}x{}, {} mip levels", width, height, _hizMipLevels);
+
+  // TODO: Create Hi-Z compute pipelines and descriptor sets for CopyDepthToHiZ / DownsampleHiZ
+  // For now, the Hi-Z texture is created and bound but pyramid generation
+  // is a placeholder — hizMipLevels is set to 0 in the cull params until
+  // the compute pipelines are fully wired up.
+}
+
+void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
+  // Stage 3 Hi-Z generation placeholder
+  // TODO: Implement full compute pipeline dispatch chain:
+  //   1. Transition occluder depth to SHADER_READ_ONLY
+  //   2. Dispatch CopyDepthToHiZ (depth → Hi-Z mip 0)
+  //   3. For each mip 1..N: barrier + dispatch DownsampleHiZ
+  //   4. Transition Hi-Z to SHADER_READ_ONLY for cull shader sampling
+  //
+  // Until this is fully implemented, hizMipLevels in cull params is set to 0
+  // which makes IsOccludedByHiZ() always return false (frustum cull only).
 }
 
 void GpuScene::createSyncObjects() {

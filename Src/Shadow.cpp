@@ -529,83 +529,269 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     InitRHI(device, gpuScene);
   }
 
-  for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-    std::array<VkClearValue, 1> clearValues{};
+  if (!_gpuShadowInitialized) {
+    InitGPUShadowResources(device, gpuScene);
+  }
 
+  uint32_t opaqueCount = gpuScene.applMesh->_opaqueChunkCount;
+  uint32_t alphaMaskedCount = gpuScene.applMesh->_alphaMaskedChunkCount;
+  uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
+
+  for (int cascade = 0; cascade < SHADOW_CASCADE_COUNT; ++cascade) {
+    // Use camera frustum for shadow culling (conservative)
+    const Frustum &cascadeFrustum = gpuScene.maincamera->getFrustum();
+    // TODO: compute proper cascade frustum from shadow VP matrix
+
+    // Upload shadow cull params
+    {
+      void *data;
+      vkMapMemory(device.getLogicalDevice(), _shadowCullParamsMemory, 0,
+                  sizeof(ShadowCullParams), 0, &data);
+      memcpy((char *)data + 0, &opaqueCount, sizeof(uint32_t));
+      memcpy((char *)data + 4, &alphaMaskedCount, sizeof(uint32_t));
+      memcpy((char *)data + 8, &cascadeMaxChunks, sizeof(uint32_t));
+      uint32_t cascadeIdx = cascade;
+      memcpy((char *)data + 12, &cascadeIdx, sizeof(uint32_t));
+      memcpy((char *)data + 16, &cascadeFrustum, sizeof(Frustum));
+      vkUnmapMemory(device.getLogicalDevice(), _shadowCullParamsMemory);
+    }
+
+    // Reset write counters for this cascade
+    {
+      void *data;
+      vkMapMemory(device.getLogicalDevice(), _shadowWriteIndexMemory,
+                  cascade * 2 * sizeof(uint32_t), 2 * sizeof(uint32_t), 0, &data);
+      uint32_t zeros[2] = {0, 0};
+      memcpy(data, zeros, 2 * sizeof(uint32_t));
+      vkUnmapMemory(device.getLogicalDevice(), _shadowWriteIndexMemory);
+    }
+
+    // Dispatch ShadowCull compute shader
+    uint32_t groupx = (cascadeMaxChunks + 127) / 128;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      _shadowCullPipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            _shadowCullPipelineLayout, 0, 1,
+                            &_shadowCullDescriptorSet, 0, nullptr);
+    vkCmdDispatch(commandBuffer, groupx, 1, 1);
+
+    // Barrier: compute → indirect draw
+    VkMemoryBarrier2 memBarrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT_KHR |
+                        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT_KHR |
+                         VK_ACCESS_2_SHADER_READ_BIT_KHR};
+
+    VkDependencyInfo depInfo = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext = nullptr,
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &memBarrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+
+    // Begin shadow render pass
+    std::array<VkClearValue, 1> clearValues{};
     clearValues[0].depthStencil = {1.0f, 0};
 
-    VkRenderPassBeginInfo forwardPassInfo{};
-    forwardPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    forwardPassInfo.renderPass = _shadowPass;
-    forwardPassInfo.framebuffer = _shadowFrameBuffers[i];
-    forwardPassInfo.renderArea.offset = {0, 0};
-    forwardPassInfo.renderArea.extent = {_shadowResolution, _shadowResolution};
-    forwardPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    forwardPassInfo.pClearValues = clearValues.data();
+    VkRenderPassBeginInfo passInfo{};
+    passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    passInfo.renderPass = _shadowPass;
+    passInfo.framebuffer = _shadowFrameBuffers[cascade];
+    passInfo.renderArea.offset = {0, 0};
+    passInfo.renderArea.extent = {_shadowResolution, _shadowResolution};
+    passInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    passInfo.pClearValues = clearValues.data();
 
-    vkCmdBeginRenderPass(commandBuffer, &forwardPassInfo,
-                         VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderPass(commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     VkBuffer vertexBuffers[] = {
         gpuScene.applVertexBuffer, gpuScene.applNormalBuffer,
         gpuScene.applTangentBuffer, gpuScene.applUVBuffer,
-        gpuScene.applInstanceBuffer};
-    VkDeviceSize offsets[] = {0, 0, 0, 0, 0};
+        _shadowInstanceBuffer};
+    VkDeviceSize vbOffsets[] = {0, 0, 0, 0, 0};
 
     vkCmdBindVertexBuffers(commandBuffer, 0,
                            sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
-                           vertexBuffers, offsets);
+                           vertexBuffers, vbOffsets);
     vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
                          VK_INDEX_TYPE_UINT32);
+
+    uint32_t dynamic_offset = sizeof(mat4) * 2 * cascade;
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            gpuScene.drawclusterBasePipelineLayout, 0, 1,
+                            &gpuScene.applDescriptorSet, 0, nullptr);
+
+    // Buffer layout per cascade: [opaque region: cascadeMaxChunks][alphaMask region: cascadeMaxChunks]
+    VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
+    uint32_t cascadeBaseOpaque = cascade * cascadeMaxChunks * 2;
+    uint32_t cascadeBaseAlphaMask = cascadeBaseOpaque + cascadeMaxChunks;
+
+    // Opaque indirect draw
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       _shadowPassPipeline);
-    uint32_t dynamic_offset = sizeof(mat4) * 2 * i;
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            gpuScene.drawclusterPipelineLayout, 0, 1,
-                            &gpuScene.applDescriptorSet, 1, &dynamic_offset);
+    vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                  _shadowDrawParamsBuffer,
+                                  cascadeBaseOpaque * stride,
+                                  _shadowWriteIndexBuffer,
+                                  cascade * 2 * sizeof(uint32_t),
+                                  opaqueCount, stride);
 
-    for (int i = 0; i < gpuScene.applMesh->_opaqueChunkCount; ++i) {
-      PerObjPush perobj = {.matindex = gpuScene.m_Chunks[i].materialIndex};
-
-      {
-        // if
-        // (maincamera->getFrustum().FrustumCull(gpuScene.m_Chunks[i].boundingBox))
-        {
-          // debug_frustum_cull[i] = true;
-          // continue;
-        }
-      }
-
-      // vkCmdPushConstants(commandBuffer, gpuScene.drawclusterPipelineLayout,
-      // VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
-      vkCmdDrawIndexed(commandBuffer, gpuScene.m_Chunks[i].indexCount, 1,
-                       gpuScene.m_Chunks[i].indexBegin, 0, 0);
-    }
-
+    // Alpha-masked indirect draw
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       _shadowPassPipelineAlphaMask);
-    for (int i = gpuScene.applMesh->_opaqueChunkCount;
-         i < gpuScene.applMesh->_opaqueChunkCount +
-                 gpuScene.applMesh->_alphaMaskedChunkCount;
-         ++i) {
-      PerObjPush perobj = {.matindex = gpuScene.m_Chunks[i].materialIndex};
-
-      {
-        // if
-        // (maincamera->getFrustum().FrustumCull(gpuScene.m_Chunks[i].boundingBox))
-        {
-          // debug_frustum_cull[i] = true;
-          // continue;
-        }
-      }
-
-      vkCmdPushConstants(commandBuffer, gpuScene.drawclusterPipelineLayout,
-                         VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj),
-                         &perobj);
-      vkCmdDrawIndexed(commandBuffer, gpuScene.m_Chunks[i].indexCount, 1,
-                       gpuScene.m_Chunks[i].indexBegin, 0, 0);
-    }
+    vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                  _shadowDrawParamsBuffer,
+                                  cascadeBaseAlphaMask * stride,
+                                  _shadowWriteIndexBuffer,
+                                  (cascade * 2 + 1) * sizeof(uint32_t),
+                                  alphaMaskedCount, stride);
 
     vkCmdEndRenderPass(commandBuffer);
   }
+}
+
+void Shadow::InitGPUShadowResources(const VulkanDevice &device,
+                                     const GpuScene &gpuScene) {
+  uint32_t opaqueCount = gpuScene.applMesh->_opaqueChunkCount;
+  uint32_t alphaMaskedCount = gpuScene.applMesh->_alphaMaskedChunkCount;
+  uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
+  uint32_t totalSlots = SHADOW_CASCADE_COUNT * cascadeMaxChunks * 2;
+
+  auto createBuf = [&](VkDeviceSize size, VkBufferUsageFlags usage,
+                       VkMemoryPropertyFlags props, VkBuffer &buf,
+                       VkDeviceMemory &mem) {
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = size;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device.getLogicalDevice(), &info, nullptr, &buf);
+    VkMemoryRequirements reqs;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), buf, &reqs);
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = reqs.size;
+    alloc.memoryTypeIndex = device.findMemoryType(reqs.memoryTypeBits, props);
+    vkAllocateMemory(device.getLogicalDevice(), &alloc, nullptr, &mem);
+    vkBindBufferMemory(device.getLogicalDevice(), buf, mem, 0);
+  };
+
+  createBuf(totalSlots * sizeof(VkDrawIndexedIndirectCommand),
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            _shadowDrawParamsBuffer, _shadowDrawParamsMemory);
+
+  createBuf(SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            _shadowWriteIndexBuffer, _shadowWriteIndexMemory);
+
+  createBuf(totalSlots * sizeof(uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            _shadowChunkIndicesBuffer, _shadowChunkIndicesMemory);
+
+  createBuf(totalSlots * sizeof(uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            _shadowInstanceBuffer, _shadowInstanceMemory);
+
+  createBuf(sizeof(ShadowCullParams),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            _shadowCullParamsBuffer, _shadowCullParamsMemory);
+
+  // Descriptor set layout (matches shadowcull.hlsl)
+  VkDescriptorSetLayoutBinding layoutBindings[] = {
+      {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+  };
+
+  VkDescriptorSetLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layoutInfo.bindingCount = 6;
+  layoutInfo.pBindings = layoutBindings;
+  vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr,
+                              &_shadowCullSetLayout);
+
+  std::vector<VkDescriptorPoolSize> poolSizes = {
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10}};
+  VkDescriptorPoolCreateInfo poolInfo{};
+  poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolInfo.maxSets = 10;
+  poolInfo.poolSizeCount = poolSizes.size();
+  poolInfo.pPoolSizes = poolSizes.data();
+  vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr,
+                         &_shadowCullDescriptorPool);
+
+  VkDescriptorSetAllocateInfo dsAlloc{};
+  dsAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsAlloc.descriptorPool = _shadowCullDescriptorPool;
+  dsAlloc.descriptorSetCount = 1;
+  dsAlloc.pSetLayouts = &_shadowCullSetLayout;
+  vkAllocateDescriptorSets(device.getLogicalDevice(), &dsAlloc,
+                           &_shadowCullDescriptorSet);
+
+  // Write descriptors
+  VkDescriptorBufferInfo drawParamsInfo = {_shadowDrawParamsBuffer, 0, totalSlots * sizeof(VkDrawIndexedIndirectCommand)};
+  VkDescriptorBufferInfo cullParamsInfo = {_shadowCullParamsBuffer, 0, sizeof(ShadowCullParams)};
+  VkDescriptorBufferInfo meshChunksInfo = {gpuScene.meshChunksBuffer, 0, sizeof(AAPLMeshChunk) * gpuScene.applMesh->_chunkCount};
+  VkDescriptorBufferInfo writeIdxInfo = {_shadowWriteIndexBuffer, 0, SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t)};
+  VkDescriptorBufferInfo chunkIdxInfo = {_shadowChunkIndicesBuffer, 0, totalSlots * sizeof(uint32_t)};
+  VkDescriptorBufferInfo instInfo = {_shadowInstanceBuffer, 0, totalSlots * sizeof(uint32_t)};
+
+  VkWriteDescriptorSet dsWrites[6] = {};
+  VkDescriptorBufferInfo* bufInfos[] = {&drawParamsInfo, &cullParamsInfo, &meshChunksInfo, &writeIdxInfo, &chunkIdxInfo, &instInfo};
+  VkDescriptorType types[] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+  for (int b = 0; b < 6; ++b) {
+    dsWrites[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    dsWrites[b].dstSet = _shadowCullDescriptorSet;
+    dsWrites[b].dstBinding = b;
+    dsWrites[b].descriptorCount = 1;
+    dsWrites[b].descriptorType = types[b];
+    dsWrites[b].pBufferInfo = bufInfos[b];
+  }
+  vkUpdateDescriptorSets(device.getLogicalDevice(), 6, dsWrites, 0, nullptr);
+
+  // Compute pipeline
+  VkPipelineLayoutCreateInfo pipeLayoutInfo{};
+  pipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pipeLayoutInfo.setLayoutCount = 1;
+  pipeLayoutInfo.pSetLayouts = &_shadowCullSetLayout;
+  vkCreatePipelineLayout(device.getLogicalDevice(), &pipeLayoutInfo, nullptr,
+                         &_shadowCullPipelineLayout);
+
+  auto shaderCode = readFile(
+      (gpuScene._rootPath / "shaders/shadowcull.cs.spv").generic_string());
+  VkShaderModule shaderModule = gpuScene.createShaderModule(shaderCode);
+
+  VkPipelineShaderStageCreateInfo stageInfo{};
+  stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  stageInfo.module = shaderModule;
+  stageInfo.pName = "ShadowCull";
+
+  VkComputePipelineCreateInfo compInfo{};
+  compInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  compInfo.layout = _shadowCullPipelineLayout;
+  compInfo.stage = stageInfo;
+  vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                           &compInfo, nullptr, &_shadowCullPipeline);
+
+  vkDestroyShaderModule(device.getLogicalDevice(), shaderModule, nullptr);
+
+  _gpuShadowInitialized = true;
+  spdlog::info("GPU-driven shadow resources initialized: {} total slots", totalSlots);
 }

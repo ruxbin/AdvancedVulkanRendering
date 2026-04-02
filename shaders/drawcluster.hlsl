@@ -255,7 +255,7 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
     half zzz = sqrt(oneminusdotproduct);
 
     half3 normal = zzz * geonormal - texnormal.y * geotan + texnormal.x * geobinormal;
-    
+
     AAPLPixelSurfaceData surfaceData;
     surfaceData.normal = normal;
     surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
@@ -263,8 +263,105 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
     surfaceData.roughness = max((half) 0.08, materialData.g);
     surfaceData.alpha = baseColor.a * material.alpha;
     surfaceData.emissive = emissive.xyz;
-    
+
     half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
     return half4(res, surfaceData.alpha);
 
+}
+
+// --- GPU Indirect Base Pass with Alpha Mask (Stage 1) ---
+// Reads material from SSBO via chunkIndex, clips alpha
+PSOutput RenderSceneBasePassAlphaMask(VSOutput input)
+{
+    PSOutput output;
+    uint chunkindex = chunkIndex[input.drawcallid];
+    uint materialIndex = meshChunks[chunkindex].materialIndex;
+    AAPLShaderMaterial material = materials[materialIndex];
+    half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+
+    clip(baseColor.w - ALPHA_CUTOUT);
+
+    half4 materialData = half4(0,0,0,0);
+    half4 emissive = 0;
+
+    if(material.hasMetallicRoughness>0)
+        materialData = _Textures[material.roughness_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+
+    if(material.hasEmissive>0)
+        emissive = _Textures[material.emissive_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+
+    half3 geonormal = normalize(input.normal);
+    half3 geotan = normalize(input.tangent);
+    half3 geobinormal = normalize(cross(geotan,geonormal));
+    half4 texnormal = _Textures[material.normal_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+    texnormal.xy = 2*texnormal.xy-1;
+    texnormal.z = sqrt(saturate(1.0f - dot(texnormal.xy, texnormal.xy)));
+
+    half3 normal = texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinormal;
+    AAPLPixelSurfaceData surfaceData;
+    surfaceData.normal = normal;
+    surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
+    surfaceData.F0=lerp((half)0.04, baseColor.rgb, materialData.b);
+    surfaceData.roughness=max((half)0.08, materialData.g);
+    surfaceData.alpha=baseColor.a * material.alpha;
+    surfaceData.emissive=emissive.xyz;
+    output.albedo      = half4(surfaceData.albedo, surfaceData.alpha);
+    output.normals     = half4(surfaceData.normal, 0.0f);
+    output.emissive    = half4(surfaceData.emissive, 0.0f);
+    output.F0Roughness = half4(surfaceData.F0, surfaceData.roughness);
+    return output;
+}
+
+// --- GPU Indirect Forward Pass (Stage 4) ---
+// Reads material from SSBO via chunkIndex, no push constants
+half4 RenderSceneForwardPSIndirect(VSOutput input) : SV_Target
+{
+    uint chunkindex = chunkIndex[input.drawcallid];
+    uint materialIndex = meshChunks[chunkindex].materialIndex;
+    AAPLShaderMaterial material = materials[materialIndex];
+    half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+    half4 materialData = half4(0, 0, 0, 0);
+    half4 emissive = 0;
+
+    if (material.hasMetallicRoughness > 0)
+        materialData = _Textures[material.roughness_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+
+    if (material.hasEmissive > 0)
+        emissive = _Textures[material.emissive_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+
+    half3 geonormal = normalize(input.normal);
+    half3 geotan = normalize(input.tangent);
+    half3 geobinormal = normalize(cross(geotan, geonormal));
+    half4 texnormal = _Textures[material.normal_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+    texnormal.xy = 2 * texnormal.xy - 1;
+    half dotproduct = dot(texnormal.xy, texnormal.xy);
+    half oneminusdotproduct = saturate(1.0f - dotproduct);
+    half zzz = sqrt(oneminusdotproduct);
+
+    half3 normal = zzz * geonormal - texnormal.y * geotan + texnormal.x * geobinormal;
+
+    AAPLPixelSurfaceData surfaceData;
+    surfaceData.normal = normal;
+    surfaceData.albedo = lerp(baseColor.rgb, 0.0f, materialData.b);
+    surfaceData.F0 = lerp((half) 0.04, baseColor.rgb, materialData.b);
+    surfaceData.roughness = max((half) 0.08, materialData.g);
+    surfaceData.alpha = baseColor.a * material.alpha;
+    surfaceData.emissive = emissive.xyz;
+
+    half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
+    return half4(res, surfaceData.alpha);
+}
+
+// --- GPU Indirect Shadow Depth Only (Stage 2) ---
+// Reads material from SSBO for alpha test, no push constants
+void RenderSceneShadowDepthIndirect(VSOutput input)
+{
+    if (specAlphaMask)
+    {
+        uint chunkindex = chunkIndex[input.drawcallid];
+        uint materialIndex = meshChunks[chunkindex].materialIndex;
+        AAPLShaderMaterial material = materials[materialIndex];
+        half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
+        clip(baseColor.w - ALPHA_CUTOUT);
+    }
 }
