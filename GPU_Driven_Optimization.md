@@ -258,11 +258,289 @@ vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer,
 | 文件 | 改动类型 | 涉及 Stage |
 |------|----------|-----------|
 | `shaders/gpucull.hlsl` | 重写 | 1, 3, 4 |
-| `shaders/drawcluster.hlsl` | 新增入口点 | 1, 4 |
+| `shaders/drawcluster.hlsl` | 新增入口点 | 1, 2, 4 |
 | `shaders/shadowcull.hlsl` | 新建 | 2 |
 | `shaders/hiz.hlsl` | 新建 | 3 |
 | `shaders/compile_shaders.bat` | 新增编译命令 | 1, 2, 3, 4 |
 | `Src/GpuScene.cpp` | 大量修改 | 1, 3, 4 |
 | `Src/Include/GpuScene.h` | 新增成员 | 1, 3, 4 |
-| `Src/Shadow.cpp` | 重写 RenderShadowMap | 2 |
+| `Src/Shadow.cpp` | 重写 RenderShadowMap + 新增 InitGPUShadowResources | 2 |
 | `Src/Include/Shadow.h` | 新增成员 | 2 |
+
+---
+
+## 实现详情
+
+### Stage 1 — GPU Indirect Draw (Base Pass)
+
+#### `Src/GpuScene.cpp`
+
+1. **移除 `#define USE_CPU_ENCODE_DRAWPARAM`**（原第 22 行），GPU indirect 路径成为默认路径。
+
+2. **`writeIndexBuffer` 扩展**：从 `sizeof(uint32_t)` 扩展到 `3 * sizeof(uint32_t)`，存储 `[opaqueCount, alphaMaskCount, transparentCount]`。
+
+3. **`GPUCullParams` 结构体重新布局**（`GpuScene.h`）：
+   ```
+   offset 0:  opaqueChunkCount      (uint32)
+   offset 4:  alphaMaskedChunkCount  (uint32)
+   offset 8:  transparentChunkCount  (uint32)
+   offset 12: totalPointLights       (uint32)
+   offset 16: totalSpotLights        (uint32)
+   offset 20: hizMipLevels           (uint32)
+   offset 24: screenSize             (float2)
+   offset 32: viewProjMatrix         (float4x4, 64 bytes)
+   offset 96: frustum                (Frustum, 96 bytes)
+   ```
+
+4. **每帧 cull params 上传**：使用 memcpy 按偏移量写入所有字段，包括 viewProjMatrix（用于 Hi-Z AABB 投影）和 hizMipLevels。
+
+5. **每帧重置 3 个 write counter** 到 0。
+
+6. **`DrawChunksBasePass()` 重写**：
+   - Opaque: `vkCmdDrawIndexedIndirectCount` 从 `drawParamsBuffer` offset 0 读取，count 从 `writeIndexBuffer` offset 0 读取。
+   - AlphaMask: 从 `drawParamsBuffer` offset `opaqueChunkCount * stride` 读取，count 从 `writeIndexBuffer` offset `sizeof(uint32_t)` 读取。
+
+7. **新增 pipeline**：
+   - `drawclusterBasePipelineAlphaMask`：使用 `drawcluster.base.alphamask.ps.spv`（`RenderSceneBasePassAlphaMask` 入口），使用 `drawclusterBasePipelineLayout`（无 push constants），从 SSBO 读材质并做 alpha clip。
+   - `drawclusterForwardPipelineIndirect`：使用 `drawcluster.forward.indirect.ps.spv`（`RenderSceneForwardPSIndirect` 入口），同样无 push constants。
+
+8. **`gpuCullDescriptorSet` 扩展**：新增 binding 6（Hi-Z sampled image）和 binding 7（Hi-Z sampler），descriptor pool 增加对应类型。
+
+9. **compute dispatch 调整**：`groupx` 改为 `(totalChunks + 127) / 128`（totalChunks = opaque + alphaMask + transparent），barrier 的 dstStageMask 增加了 `VERTEX_SHADER_BIT`。
+
+10. **渲染顺序调整**：`DrawOccluders()` 移到 compute dispatch 之前（原来在 `#ifdef` 中间），以便 Hi-Z 先生成。
+
+#### `shaders/gpucull.hlsl`
+
+- 完全重写。cbuffer 扩展为包含 `opaqueChunkCount`、`alphaMaskedChunkCount`、`transparentChunkCount`、`viewProjMatrix`、`screenSize`、`hizMipLevels`。
+- 新增 `IsOccludedByHiZ()` 函数：投影 AABB 8 顶点到屏幕空间，选择对应 mip level，采样 Hi-Z 4 角取 MIN，reverse-Z 下判断是否被遮挡。
+- 按 chunk index 范围分流写入 opaque / alphaMask / transparent 三个区域。
+
+#### `shaders/drawcluster.hlsl`
+
+- 新增 `RenderSceneBasePassAlphaMask`：与 `RenderSceneBasePass` 相同的 SSBO 材质读取，增加 `clip(baseColor.w - ALPHA_CUTOUT)`。
+- 新增 `RenderSceneForwardPSIndirect`：与 `RenderSceneForwardPS` 相同的光照计算，但从 `chunkIndex[input.drawcallid]` 读材质而非 push constants。
+- 新增 `RenderSceneShadowDepthIndirect`：用于 Stage 2 shadow indirect，根据 `specAlphaMask` 特化常量决定是否做 alpha test。
+
+---
+
+### Stage 2 — GPU-Driven Shadow Maps
+
+#### `Src/Include/Shadow.h`
+
+新增成员：
+- 6 个 buffer（`_shadowDrawParamsBuffer`、`_shadowWriteIndexBuffer`、`_shadowChunkIndicesBuffer`、`_shadowInstanceBuffer`、`_shadowCullParamsBuffer` 及对应 memory）
+- descriptor set / pool / layout（`_shadowCullSetLayout`、`_shadowCullDescriptorPool`、`_shadowCullDescriptorSet`）
+- compute pipeline（`_shadowCullPipelineLayout`、`_shadowCullPipeline`）
+- `ShadowCullParams` 结构体：`{opaqueChunkCount, alphaMaskedChunkCount, cascadeMaxChunks, cascadeIndex, Frustum}`
+- `InitGPUShadowResources()` 方法
+
+#### `Src/Shadow.cpp`
+
+1. **`InitGPUShadowResources()`**：
+   - Buffer 布局：`totalSlots = SHADOW_CASCADE_COUNT * cascadeMaxChunks * 2`（每个 cascade 有 opaque 和 alphaMask 两个区域）。
+   - 使用 lambda `createBuf` 简化 buffer 创建。
+   - 6 个 descriptor set binding 与 `shadowcull.hlsl` 一一对应。
+   - 加载 `shadowcull.cs.spv`，创建 compute pipeline（入口 `ShadowCull`）。
+
+2. **`RenderShadowMap()` 重写**：
+   - 首次调用时触发 `InitGPUShadowResources()`。
+   - 每个 cascade 循环：上传 cascade frustum → 重置 write counter → dispatch ShadowCull → barrier → begin render pass → 2x `vkCmdDrawIndexedIndirectCount`（opaque + alphaMask）→ end render pass。
+   - 使用 `_shadowInstanceBuffer` 作为 vertex buffer（替代 `applInstanceBuffer`），因为 shadow cull shader 写入自己的 instance-to-draw mapping。
+   - descriptor set 绑定使用 `drawclusterBasePipelineLayout`（无 push constants / 无 dynamic offset）。
+
+#### `shaders/shadowcull.hlsl`
+
+- 每个 cascade 独立 dispatch。
+- 按 `cascadeIndex` 计算 buffer 偏移：`cascadeBaseOpaque = cascadeIndex * cascadeMaxChunks * 2`。
+- 对 opaque 和 alphaMask 分别写入独立区域，使用独立的原子计数器 `shadowWriteIndex[cascadeIndex * 2 + 0/1]`。
+
+---
+
+### Stage 3 — Hi-Z Occlusion Culling
+
+#### `Src/Include/GpuScene.h`
+
+新增成员：
+- `_hizTexture`（VK_FORMAT_R32_SFLOAT，带 mip chain）、`_hizMemory`
+- `_hizTextureView`（全 mip chain，用于 cull shader 采样）
+- `_hizMipViews`（per-mip view，用于 compute shader storage write）
+- `_hizSampler`（nearest, clamp）
+- `_hizCopyPipeline`、`_hizDownsamplePipeline`、`_hizPipelineLayout`
+- `_hizCopySetLayout`、`_hizDownsampleSetLayout`（相同布局：binding 0 = sampled image, binding 1 = storage image）
+- `_hizCopyDescriptorSet`、`_hizDownsampleDescriptorSets`（per-mip）
+- `_hizMipLevels`、`_hizWidth`、`_hizHeight`
+
+#### `Src/GpuScene.cpp` — `createHiZResources()`
+
+1. **Hi-Z texture 创建**：`VK_FORMAT_R32_SFLOAT`，`STORAGE_BIT | SAMPLED_BIT`，mip levels = `floor(log2(max(w,h))) + 1`。
+
+2. **Descriptor set layout**：两个相同的 layout（set 0 for CopyDepthToHiZ, set 1 for DownsampleHiZ），每个包含 binding 0（sampled image）+ binding 1（storage image）。
+
+3. **Pipeline layout**：两个 set layout + push constant `{uint2 mipSize}`（8 bytes）。
+
+4. **Descriptor set 分配**：
+   - `_hizCopyDescriptorSet`（set 0）：`_depthTextureView`（occluder depth, D32_SFLOAT depth aspect view）→ `_hizMipViews[0]`。
+   - `_hizDownsampleDescriptorSets[m-1]`（set 1）：`_hizMipViews[m-1]` → `_hizMipViews[m]`，共 `mipLevels - 1` 个。
+
+5. **Compute pipeline 创建**：
+   - `_hizCopyPipeline`：加载 `hiz_copy.cs.spv`，入口 `CopyDepthToHiZ`。
+   - `_hizDownsamplePipeline`：加载 `hiz_downsample.cs.spv`，入口 `DownsampleHiZ`。
+
+6. **gpuCullDescriptorSet 更新**：binding 6 绑定 `_hizTextureView`（全 mip chain），binding 7 绑定 `_hizSampler`。
+
+#### `Src/GpuScene.cpp` — `generateHiZPyramid()`
+
+每帧在 `DrawOccluders()` 之后、`EncodeDrawBuffer` compute dispatch 之前执行：
+
+```
+1. Barrier: _depthTexture DEPTH_ATTACHMENT → DEPTH_READ_ONLY
+2. Barrier: _hizTexture (all mips) UNDEFINED → GENERAL
+3. Bind _hizCopyPipeline + set 0, push {width, height}
+   Dispatch CopyDepthToHiZ: (width+7)/8 × (height+7)/8
+4. For mip = 1 to mipLevels-1:
+   a. Barrier: _hizTexture mip[m-1] GENERAL → SHADER_READ_ONLY
+   b. Bind _hizDownsamplePipeline + set 1, push {mipW, mipH}
+   c. Dispatch DownsampleHiZ: (mipW+7)/8 × (mipH+7)/8
+5. Barrier: _hizTexture last mip GENERAL → SHADER_READ_ONLY
+6. Barrier: _depthTexture DEPTH_READ_ONLY → DEPTH_ATTACHMENT (恢复给后续 pass)
+```
+
+#### `shaders/hiz.hlsl`
+
+- Push constant `{uint2 mipSize}` 用于边界检查。
+- `CopyDepthToHiZ`（set 0）：从 `depthTexture`（occluder depth）Load 采样，写入 `hizMip0`。
+- `DownsampleHiZ`（set 1）：从 `prevMip` Load 2×2 区域，取 MIN（reverse-Z 下保留最远可见表面），写入 `currentMip`。
+
+#### `shaders/gpucull.hlsl` — `IsOccludedByHiZ()`
+
+- 如果 `hizMipLevels == 0`，直接返回 false（Hi-Z 未就绪）。
+- 将 AABB 8 个顶点用 `viewProjMatrix` 投影到 NDC，找到屏幕空间 min/max UV 和 max depth（reverse-Z 下最近点）。
+- 任何顶点 `clip.w <= 0`（在摄像机后方）时跳过 Hi-Z test。
+- 根据投影像素尺寸选择 mip level：`ceil(log2(max(pixelW, pixelH)))`。
+- 在选定 mip 上采样 Hi-Z 的 4 个角取 MIN。
+- **遮挡判定**：`maxAabbDepth <= hizMinDepth` → 被遮挡（AABB 最近点仍在 Hi-Z 最远可见表面之后）。
+
+---
+
+### Stage 4 — GPU-Driven 透明物体
+
+#### `Src/GpuScene.cpp`
+
+- Forward pass CPU 循环替换为 `vkCmdDrawIndexedIndirectCount`，从 `drawParamsBuffer` 的 transparent 区域读取。
+- 使用 `drawclusterForwardPipelineIndirect`（`drawclusterBasePipelineLayout`，无 push constants）。
+- count 从 `writeIndexBuffer` offset `2 * sizeof(uint32_t)` 读取。
+
+#### `shaders/gpucull.hlsl`
+
+- 当 `chunkIndex >= opaqueChunkCount + alphaMaskedChunkCount` 时写入 transparent 区域，使用 `writeIndex[2]`。
+
+---
+
+## 编译命令
+
+`compile_shaders.bat` 新增：
+
+```bat
+REM Stage 1
+dxc -spirv -T cs_6_2 gpucull.hlsl -E EncodeDrawBuffer -Fo gpucull.cs.spv
+dxc -spirv -T ps_6_0 drawcluster.hlsl -E RenderSceneBasePassAlphaMask -Fo drawcluster.base.alphamask.ps.spv
+
+REM Stage 2
+dxc -spirv -T cs_6_2 shadowcull.hlsl -E ShadowCull -Fo shadowcull.cs.spv
+dxc -spirv -T ps_6_0 drawcluster.hlsl -E RenderSceneShadowDepthIndirect -Fo drawcluster.shadow.indirect.ps.spv
+
+REM Stage 3
+dxc -spirv -T cs_6_2 hiz.hlsl -E CopyDepthToHiZ -Fo hiz_copy.cs.spv
+dxc -spirv -T cs_6_2 hiz.hlsl -E DownsampleHiZ -Fo hiz_downsample.cs.spv
+
+REM Stage 4
+dxc -spirv -T ps_6_0 drawcluster.hlsl -E RenderSceneForwardPSIndirect -Fo drawcluster.forward.indirect.ps.spv
+```
+
+---
+
+## Bug Fix: Shadow Acne 修复
+
+### 问题描述
+
+Shadow pass 渲染时出现自阴影（shadow acne）：表面无缘无故被自己的影子覆盖，产生条纹伪影。
+
+### 根因分析
+
+**`Src/Shadow.cpp` line 421**: 深度偏移（depth bias）被禁用
+```cpp
+rasterizer.depthBiasEnable = VK_FALSE;  // ❌ 禁用深度偏移
+```
+
+**问题机制**：
+1. 阴影贴图以浮点精度渲染深度
+2. 光照计算时，表面到光源的距离可能因浮点舍入误差与阴影贴图中记录的值完全相同或略近
+3. 深度对比时（`VK_COMPARE_OP_LESS`），由于精度误差，表面可能被判定为在其自身阴影后
+4. 无深度偏移时，无法抵消这种精度误差 → 自阴影
+
+### 修复方案
+
+在 shadow pass 的 rasterizer 配置中启用深度偏移：
+
+**文件**: `Src/Shadow.cpp` lines 413-424
+
+**改动**:
+```cpp
+VkPipelineRasterizationStateCreateInfo rasterizer{};
+rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+rasterizer.depthClampEnable = VK_FALSE;
+rasterizer.rasterizerDiscardEnable = VK_FALSE;
+rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+rasterizer.lineWidth = 1.0f;
+rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+rasterizer.depthBiasEnable = VK_TRUE;              // ✅ 启用深度偏移
+rasterizer.depthBiasConstantFactor = 1.25f;        // 固定偏移（防止自阴影）
+rasterizer.depthBiasSlopeFactor = 1.75f;           // 斜率偏移（处理陡峭表面）
+rasterizer.depthBiasClamp = 0.0f;                  // 无上限夹钳
+```
+
+### 深度偏移参数说明
+
+| 参数 | 值 | 作用 |
+|------|-----|------|
+| `depthBiasConstantFactor` | 1.25f | 对所有像素添加固定深度偏移，单位为最小深度可表示间隔 |
+| `depthBiasSlopeFactor` | 1.75f | 按表面斜率添加额外偏移：`bias += slope * depthBiasSlopeFactor`，处理掠射角表面 |
+| `depthBiasClamp` | 0.0f | 不限制总偏移量（避免过度修正） |
+
+### Vulkan 深度偏移公式
+
+```
+finalDepth = fragmentDepth + depthBiasConstantFactor * minimumResolvableDepthDifference
+                           + depthBiasSlopeFactor * maxDepthSlope
+```
+
+其中：
+- `minimumResolvableDepthDifference` = 1 / (2^24) 对于 D32_SFLOAT
+- `maxDepthSlope` = max(|dZ/dX|, |dZ/dY|) 在像素内的最大深度梯度
+
+### 效果验证
+
+编译并运行后：
+- ✅ Shadow map 自阴影消失
+- ✅ 阴影轮廓清晰无条纹
+- ✅ 投影阴影仍然准确（偏移量极小，不影响可见阴影质量）
+
+### 微调指南（如需进一步调整）
+
+若阴影仍有轻微伪影：
+- **增加** `depthBiasConstantFactor`（如 1.5f）
+- **增加** `depthBiasSlopeFactor`（如 2.0f）
+
+若阴影出现**peter panning**（表面悬浮在阴影上）：
+- **减少** `depthBiasConstantFactor`（如 1.0f）
+- **减少** `depthBiasSlopeFactor`（如 1.5f）
+
+### 影响范围
+
+仅影响 shadow pass 的深度值生成（不影响主摄像机深度），修改：
+- `_shadowPassPipeline`（opaque pass）
+- `_shadowPassPipelineAlphaMask`（alpha-masked pass）
+
+两个 pipeline 使用同一个 rasterizer 配置，修复适用于所有阴影级联。

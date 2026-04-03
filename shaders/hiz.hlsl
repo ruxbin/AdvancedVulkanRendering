@@ -4,14 +4,16 @@
 [[vk::binding(0,0)]] Texture2D<float> depthTexture;
 [[vk::binding(1,0)]] RWTexture2D<float> hizMip0;
 
-[[vk::push_constant]] cbuffer PushConstants {
+struct PushConstants {
     uint2 mipSize;
 };
+
+[[vk::push_constant]] PushConstants pushConstants;
 
 [numthreads(8, 8, 1)]
 void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= mipSize.x || DTid.y >= mipSize.y)
+    if (DTid.x >= pushConstants.mipSize.x || DTid.y >= pushConstants.mipSize.y)
         return;
     hizMip0[DTid.xy] = depthTexture.Load(int3(DTid.xy, 0));
 }
@@ -23,7 +25,7 @@ void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void DownsampleHiZ(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= mipSize.x || DTid.y >= mipSize.y)
+    if (DTid.x >= pushConstants.mipSize.x || DTid.y >= pushConstants.mipSize.y)
         return;
 
     float d00 = prevMip.Load(int3(DTid.xy * 2 + uint2(0, 0), 0));

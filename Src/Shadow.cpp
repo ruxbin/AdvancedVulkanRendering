@@ -418,7 +418,10 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   rasterizer.lineWidth = 1.0f;
   rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
   rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  rasterizer.depthBiasEnable = VK_FALSE;
+  rasterizer.depthBiasEnable = VK_TRUE;
+  rasterizer.depthBiasConstantFactor = 1.25f;
+  rasterizer.depthBiasSlopeFactor = 1.75f;
+  rasterizer.depthBiasClamp = 0.0f;
 
   VkPipelineMultisampleStateCreateInfo multisampling{};
   multisampling.sType =
@@ -621,10 +624,10 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
                          VK_INDEX_TYPE_UINT32);
 
-    uint32_t dynamic_offset = sizeof(mat4) * 2 * cascade;
+    uint32_t shadow_dynamic_offset = sizeof(mat4) * 2 * cascade;
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            gpuScene.drawclusterBasePipelineLayout, 0, 1,
-                            &gpuScene.applDescriptorSet, 0, nullptr);
+                            gpuScene.drawclusterPipelineLayout, 0, 1,
+                            &gpuScene.applDescriptorSet, 1, &shadow_dynamic_offset);
 
     // Buffer layout per cascade: [opaque region: cascadeMaxChunks][alphaMask region: cascadeMaxChunks]
     VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
