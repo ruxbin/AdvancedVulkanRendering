@@ -2184,7 +2184,7 @@ void GpuScene::CreateDepthTexture() {
                                               // initiallayout=preinitialized?
   imageInfo.initialLayout =
       VK_IMAGE_LAYOUT_UNDEFINED;   // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  imageInfo.format = _depthFormat; // TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we
+  imageInfo.format = VK_FORMAT_R32_SFLOAT; // TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we
                                    // don't need stencil currently anyway
   imageInfo.usage =
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -3258,7 +3258,7 @@ void GpuScene::CreateDeferredBasePass() {
 void GpuScene::CreateOccluderZPass() {
   // no color attachment only depth attachment
   VkAttachmentDescription depthAttachment{};
-  depthAttachment.format = _depthFormat; // TODO: should use the rt format?
+  depthAttachment.format = VK_FORMAT_R32_SFLOAT; // TODO: should use the rt format?
   depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
   depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -3266,11 +3266,11 @@ void GpuScene::CreateOccluderZPass() {
   depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   depthAttachment.finalLayout =
-      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 
   VkAttachmentReference depthAttachmentRef{};
   depthAttachmentRef.attachment = 0;
-  depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 
   VkSubpassDescription subpass{};
   subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -3398,7 +3398,7 @@ void GpuScene::CreateZdepthView() {
   createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   createInfo.image = _depthTexture;
   createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  createInfo.format = _depthFormat;
+  createInfo.format = VK_FORMAT_R32_SFLOAT;
   createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
   createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
   createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -3443,11 +3443,11 @@ void GpuScene::DrawOccluders(VkCommandBuffer commandBuffer) {
 
   // mat4 objtocamera = transpose(maincamera->getObjectToCamera());
 
-  uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
+  //uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
 
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipelineLayout, 0, 1, &globalDescriptor, 1,
-                          &dynamic_offset);
+                          pipelineLayout, 0, 1, &globalDescriptor, 0,
+                          nullptr);
 
   // vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
   vkCmdDrawIndexed(commandBuffer, sceneFile["occluder_indices"].size(), 1, 0, 0,
@@ -3736,7 +3736,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             deferredLightingPipelineLayout, 0, 1,
-                            &deferredLightingDescriptorSet, 1, &dynamic_offset);
+                            &deferredLightingDescriptorSet, 0, nullptr);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     if (!useClusterLighting) {
       // point light
@@ -3784,7 +3784,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       uint32_t fwd_dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
       vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               drawclusterBasePipelineLayout, 0, 1,
-                              &applDescriptorSet, 1, &fwd_dynamic_offset);
+                              &applDescriptorSet, 0, nullptr);
 
       uint32_t transparentOffset = (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount)
                                    * sizeof(VkDrawIndexedIndirectCommand);

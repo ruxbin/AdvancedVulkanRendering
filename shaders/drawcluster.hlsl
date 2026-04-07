@@ -16,6 +16,7 @@ struct GeometyBuffer
 struct PushConstants
 {
     uint materialIndex;
+    uint shadowIndex;
 };
 
 
@@ -103,13 +104,13 @@ struct PSOutput
 VSOutput RenderSceneVS( VSInput input)
 {
     VSOutput Output;
-    float4x4 finalMatrix = mul(cameraParams.shadowMatrix[0].shadowProjectionMatrix, cameraParams.shadowMatrix[0].shadowViewMatrix);
+    float4x4 finalMatrix = mul(cameraParams.projectionMatrix, cameraParams.viewMatrix);
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
     Output.drawcallid = input.drawcallid;
 
-    float4x4 invViewMatrix = cameraParams.shadowMatrix[1].shadowProjectionMatrix;
+    float4x4 invViewMatrix = cameraParams.invViewMatrix;
 
     Output.viewDir = normalize(float3(invViewMatrix._m03, invViewMatrix._m13, invViewMatrix._m23) - input.position);
     Output.wsPosition = float4(input.position, 1);
@@ -119,6 +120,28 @@ VSOutput RenderSceneVS( VSInput input)
 
     return Output;    
 }
+
+VSOutput RenderSceneVSShadow( VSInput input)
+{
+    VSOutput Output;
+    float4x4 finalMatrix = mul(cameraParams.shadowMatrix[pushconstants.shadowIndex]projectionMatrix, cameraParams.shadowMatrix[pushconstants].viewMatrix);
+    Output.Position = mul(finalMatrix ,float4(input.position,1.0));
+    //Output.Diffuse = float4(input.uv,0,0);
+    Output.TextureUV = input.uv;
+    Output.drawcallid = input.drawcallid;
+
+    float4x4 invViewMatrix = cameraParams.invViewMatrix;
+
+    Output.viewDir = normalize(float3(invViewMatrix._m03, invViewMatrix._m13, invViewMatrix._m23) - input.position);
+    Output.wsPosition = float4(input.position, 1);
+
+	Output.normal = normalize(input.normal);
+	Output.tangent = normalize(input.tangent);
+
+    return Output;    
+}
+
+
 
 #define ALPHA_CUTOUT 0.1
 

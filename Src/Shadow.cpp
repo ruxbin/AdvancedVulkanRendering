@@ -266,13 +266,14 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
 
   // pipeline
 
-  auto vsShaderCode = readFile(
-      (gpuScene.RootPath() / "shaders/drawcluster.vs.spv").generic_string());
+ auto vsShaderShadowCode = readFile(
+      (gpuScene.RootPath() / "shaders/drawclusterShadow.vs.spv").generic_string());
+  
   auto drawClusterPSShaderCodeDepthOnly =
       readFile((gpuScene.RootPath() / "shaders/drawcluster.depth.ps.spv")
                    .generic_string());
 
-  VkShaderModule vertShaderModule = gpuScene.createShaderModule(vsShaderCode);
+  VkShaderModule vertShaderModule = gpuScene.createShaderModule(vsShaderShadowCode);
   VkShaderModule drawclusterPSShaderModuleDepthOnly =
       gpuScene.createShaderModule(drawClusterPSShaderCodeDepthOnly);
   // TODO: merge with GpuScene::createShaderModule
@@ -300,7 +301,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   drawclusterVSShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
   drawclusterVSShaderStageInfo.module = vertShaderModule;
-  drawclusterVSShaderStageInfo.pName = "RenderSceneVS";
+  drawclusterVSShaderStageInfo.pName = "RenderSceneVSShadow";
 
   VkPipelineShaderStageCreateInfo
       drawclusterPSShaderStageInfoAlphaMaskDepthOnly{};
@@ -634,6 +635,11 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     uint32_t cascadeBaseOpaque = cascade * cascadeMaxChunks * 2;
     uint32_t cascadeBaseAlphaMask = cascadeBaseOpaque + cascadeMaxChunks;
 
+	
+    PerObjPush perobj = {.shadowindex = (uint32_t)cascade};
+    vkCmdPushConstants(commandBuffer, gpuScene.drawclusterPipelineLayout,
+                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(perobj), &perobj);
+  
     // Opaque indirect draw
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       _shadowPassPipeline);

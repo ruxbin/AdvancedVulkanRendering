@@ -17,8 +17,9 @@ struct VSOutput
 cbuffer cam
 {
     //CameraParamsBuffer ub;
+	CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
-    CameraParamsBuffer cameraParams;
+//    CameraParamsBuffer cameraParams;
 }
 
 VSOutput RenderSceneVS( VSInput input)

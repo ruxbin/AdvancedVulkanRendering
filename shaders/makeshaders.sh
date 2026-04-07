@@ -26,5 +26,16 @@ echo compiling deferredLightingPS
 echo compiling deferredlightingVS
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E AAPLSimpleTexVertexOutFSQuadVertexShader -I deferredlighting.hlsl -S vs -T spirv -O deferredlighting.vs.spv
 
+echo compiling drawclusterbasePS
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E RenderSceneBasePS -I drawcluster.hlsl -S ps -T spirv -O drawcluster.ps.spv
+
+echo compiling drawclusterbaseVS
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E RenderSceneVS -I drawcluster.hlsl -S vs -T spirv -O drawcluster.vs.spv
+
+echo compiling drawOccluderVS
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E RenderSceneVS -I drawoccluders.hlsl -S vs -T spirv -O occluders.vs.spv
+
+echo compiling drawclustershadowVS
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E RenderSceneVSShadow -I drawcluster.hlsl -S vs -T spirv -O drawclusterShadow.vs.spv
 
 
