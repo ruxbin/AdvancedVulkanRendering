@@ -3,34 +3,25 @@
 
 
 
-[[vk::binding(0,0)]] Texture2D<float4> albedoeTex;
-[[vk::binding(1,0)]] Texture2D<float4> normalTex;
-[[vk::binding(2,0)]] Texture2D<float4> emissiveTex;
-[[vk::binding(3,0)]] Texture2D<float4> F0RoughnessTex;
-[[vk::binding(4,0)]] Texture2D<float> inDepth;
-[[vk::binding(5,0)]] SamplerState _NearestClampSampler;
-
-[[vk::binding(6,0)]] 
-cbuffer frameData
+[[vk::binding(0,0)]]
+cbuffer cam
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(7,0)]] Texture2DArray<float> shadowMaps;
-[[vk::binding(8,0)]] SamplerComparisonState shadowSampler;//TODO : initializer 
-//{
-   // sampler state
-//    Filter = COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-//    AddressU = MIRROR;
-//    AddressV = MIRROR;
+[[vk::binding(0,1)]] Texture2D<float4> albedoeTex;
+[[vk::binding(1,1)]] Texture2D<float4> normalTex;
+[[vk::binding(2,1)]] Texture2D<float4> emissiveTex;
+[[vk::binding(3,1)]] Texture2D<float4> F0RoughnessTex;
+[[vk::binding(4,1)]] Texture2D<float> inDepth;
+[[vk::binding(5,1)]] SamplerState _NearestClampSampler;
 
-   // sampler comparison state
-//    ComparisonFunc = LESS;
-//};
-[[vk::binding(9,0)]]
-StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world position
-[[vk::binding(10,0)]] StructuredBuffer<uint> lightIndices;
+[[vk::binding(7,1)]] Texture2DArray<float> shadowMaps;
+[[vk::binding(8,1)]] SamplerComparisonState shadowSampler;
+[[vk::binding(9,1)]]
+StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
+[[vk::binding(10,1)]] StructuredBuffer<uint> lightIndices;
 
 struct VSOutput
 {

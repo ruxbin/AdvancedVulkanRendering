@@ -135,7 +135,7 @@ private:
 
   VkDescriptorSetLayout globalSetLayout;
   VkDescriptorPool descriptorPool;
-  VkDescriptorSet globalDescriptor;
+  VkDescriptorSet globalDescriptorSet;
 
   VkDescriptorSetLayout applSetLayout;
   VkDescriptorPool applDescriptorPool;
@@ -205,8 +205,6 @@ private:
   VkBuffer applUVBuffer;
   VkDeviceMemory applUVBufferMemory;
 
-  VkBuffer applInstanceBuffer;
-  VkDeviceMemory applInstanceBufferMemory;
 
   VkBuffer applIndexBuffer;
   VkDeviceMemory applIndexMemory;

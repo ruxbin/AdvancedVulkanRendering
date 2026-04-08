@@ -21,7 +21,6 @@
 // writeIndex[2] = transparent visible count
 
 [[vk::binding(4,0)]] RWStructuredBuffer<uint> chunkIndices;
-[[vk::binding(5,0)]] RWStructuredBuffer<uint> instanceToDrawIDMap;
 
 [[vk::binding(6,0)]] Texture2D<float> hizTexture;
 [[vk::binding(7,0)]] SamplerState hizSampler;
@@ -127,7 +126,6 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID)
         DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, insertIndex };
         drawParams[insertIndex] = cmd;
         chunkIndices[insertIndex] = chunkIndex;
-        instanceToDrawIDMap[insertIndex] = insertIndex;
     }
     else if (chunkIndex < opaqueChunkCount + alphaMaskedChunkCount)
     {
@@ -138,7 +136,6 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID)
         DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, offset + insertIndex };
         drawParams[offset + insertIndex] = cmd;
         chunkIndices[offset + insertIndex] = chunkIndex;
-        instanceToDrawIDMap[offset + insertIndex] = offset + insertIndex;
     }
     else
     {
@@ -149,6 +146,5 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID)
         DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, offset + insertIndex };
         drawParams[offset + insertIndex] = cmd;
         chunkIndices[offset + insertIndex] = chunkIndex;
-        instanceToDrawIDMap[offset + insertIndex] = offset + insertIndex;
     }
 }

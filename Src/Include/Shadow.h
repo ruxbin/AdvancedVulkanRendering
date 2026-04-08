@@ -7,7 +7,7 @@
 
 
 #define SHADOW_CASCADE_COUNT 3
-// VK_FORMAT_R32_SFLOAT won't work
+// VK_FORMAT_R32_SFLOAT won't work -- why?
 #define SHADOW_FORMAT VK_FORMAT_D32_SFLOAT_S8_UINT
 
 class GpuScene;
@@ -34,10 +34,7 @@ private:
   VkDeviceMemory _shadowDrawParamsMemory = VK_NULL_HANDLE;
   VkBuffer _shadowWriteIndexBuffer = VK_NULL_HANDLE;
   VkDeviceMemory _shadowWriteIndexMemory = VK_NULL_HANDLE;
-  VkBuffer _shadowChunkIndicesBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory _shadowChunkIndicesMemory = VK_NULL_HANDLE;
-  VkBuffer _shadowInstanceBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory _shadowInstanceMemory = VK_NULL_HANDLE;
+
   VkBuffer _shadowCullParamsBuffer = VK_NULL_HANDLE;
   VkDeviceMemory _shadowCullParamsMemory = VK_NULL_HANDLE;
 

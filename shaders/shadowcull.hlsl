@@ -14,7 +14,7 @@
 // shadowWriteIndex[cascadeIndex * 2 + 0] = opaque count for this cascade
 // shadowWriteIndex[cascadeIndex * 2 + 1] = alpha-masked count for this cascade
 [[vk::binding(4,0)]] RWStructuredBuffer<uint> shadowChunkIndices;
-[[vk::binding(5,0)]] RWStructuredBuffer<uint> shadowInstanceMap;
+//[[vk::binding(5,0)]] RWStructuredBuffer<uint> shadowInstanceMap;
 
 [numthreads(128, 1, 1)]
 void ShadowCull(uint3 DTid : SV_DispatchThreadID)
@@ -44,7 +44,7 @@ void ShadowCull(uint3 DTid : SV_DispatchThreadID)
         DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, globalIdx };
         shadowDrawParams[globalIdx] = cmd;
         shadowChunkIndices[globalIdx] = chunkIndex;
-        shadowInstanceMap[globalIdx] = globalIdx;
+//        shadowInstanceMap[globalIdx] = globalIdx;
     }
     else
     {
@@ -54,6 +54,6 @@ void ShadowCull(uint3 DTid : SV_DispatchThreadID)
         DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, globalIdx };
         shadowDrawParams[globalIdx] = cmd;
         shadowChunkIndices[globalIdx] = chunkIndex;
-        shadowInstanceMap[globalIdx] = globalIdx;
+//        shadowInstanceMap[globalIdx] = globalIdx;
     }
 }

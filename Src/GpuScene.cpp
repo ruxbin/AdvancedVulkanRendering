@@ -649,6 +649,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   colorBlendings.blendConstants[2] = 0.0f;
   colorBlendings.blendConstants[3] = 0.0f;
 
+  VkDescriptorSetLayout drawclusterLayouts[] = {globalSetLayout, applSetLayout};
   VkPushConstantRange drawclusterpushconstantRange = {
       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
       .offset = 0,
@@ -656,8 +657,8 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   VkPipelineLayoutCreateInfo drawclusterpipelineLayoutInfo{};
   drawclusterpipelineLayoutInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  drawclusterpipelineLayoutInfo.setLayoutCount = 1;
-  drawclusterpipelineLayoutInfo.pSetLayouts = &applSetLayout;
+  drawclusterpipelineLayoutInfo.setLayoutCount = 2;
+  drawclusterpipelineLayoutInfo.pSetLayouts = drawclusterLayouts;
   drawclusterpipelineLayoutInfo.pushConstantRangeCount = 1;
   drawclusterpipelineLayoutInfo.pPushConstantRanges =
       &drawclusterpushconstantRange;
@@ -671,8 +672,8 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   VkPipelineLayoutCreateInfo drawclusterBasePipelineLayoutInfo{};
   drawclusterBasePipelineLayoutInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  drawclusterBasePipelineLayoutInfo.setLayoutCount = 1;
-  drawclusterBasePipelineLayoutInfo.pSetLayouts = &applSetLayout;
+  drawclusterBasePipelineLayoutInfo.setLayoutCount = 2;
+  drawclusterBasePipelineLayoutInfo.pSetLayouts = drawclusterLayouts;
   drawclusterBasePipelineLayoutInfo.pushConstantRangeCount = 0;
 
   if (vkCreatePipelineLayout(device.getLogicalDevice(),
@@ -681,11 +682,12 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     throw std::runtime_error("failed to create drawcluster pipeline layout!");
   }
 
+  VkDescriptorSetLayout deferredLayouts[] = {globalSetLayout, deferredLightingSetLayout};
   VkPipelineLayoutCreateInfo deferredLightingPipelineLayoutInfo{};
   deferredLightingPipelineLayoutInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  deferredLightingPipelineLayoutInfo.setLayoutCount = 1;
-  deferredLightingPipelineLayoutInfo.pSetLayouts = &deferredLightingSetLayout;
+  deferredLightingPipelineLayoutInfo.setLayoutCount = 2;
+  deferredLightingPipelineLayoutInfo.pSetLayouts = deferredLayouts;
   deferredLightingPipelineLayoutInfo.pushConstantRangeCount = 0;
 
   if (vkCreatePipelineLayout(device.getLogicalDevice(),
@@ -784,11 +786,6 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       .stride = sizeof(float) * 2,
       .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
 
-  constexpr VkVertexInputBindingDescription drawClusterInputBindingInstance = {
-      .binding = 4,
-      .stride = sizeof(uint32_t),
-      .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE};
-
   VkVertexInputAttributeDescription drawclusterInputAttributes[] = {
       {.location = 0,
        .binding = 0,
@@ -805,9 +802,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       {.location = 3,
        .binding = 3,
        .format = VK_FORMAT_R32G32_SFLOAT,
-       .offset = 0},
-
-      {.location = 4, .binding = 4, .format = VK_FORMAT_R32_UINT, .offset = 0}};
+       .offset = 0}};
 
   constexpr int inputChannelCount = sizeof(drawclusterInputAttributes) /
                                     sizeof(drawclusterInputAttributes[0]);
@@ -815,8 +810,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   constexpr std::array<VkVertexInputBindingDescription, inputChannelCount>
       drawculsterinputs = {
           drawClusterInputBindingPosition, drawClusterInputBindingNormal,
-          drawClusterInputBindingTangent, drawClusterInputBindingUV,
-          drawClusterInputBindingInstance};
+          drawClusterInputBindingTangent, drawClusterInputBindingUV};
 
   VkPipelineVertexInputStateCreateInfo drawclusterVertexInputInfo{};
   drawclusterVertexInputInfo.sType =
@@ -1346,7 +1340,6 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              f0RoughnessBinding,
                                              depthBinding,
                                              nearestClampSamplerBinding,
-                                             frameDataBinding,
                                              shadowMapsBinding,
                                              shadowMapsSamplerBinding,
                                              pointLightCullingDataBinding,
@@ -1370,9 +1363,8 @@ void GpuScene::init_deferredlighting_descriptors() {
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -1397,30 +1389,6 @@ void GpuScene::init_deferredlighting_descriptors() {
 
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
                            &deferredLightingDescriptorSet);
-
-  // information about the buffer we want to point at in the descriptor
-  VkDescriptorBufferInfo binfo;
-  // it will be the camera buffer
-  binfo.buffer = uniformBuffer;
-  // at 0 offset
-  binfo.offset = 0;
-  // of the size of a camera data struct
-  binfo.range = sizeof(FrameData);
-
-  VkWriteDescriptorSet setWrite = {};
-  setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  setWrite.dstBinding = 6;
-  // of the global descriptor
-  setWrite.dstSet = deferredLightingDescriptorSet;
-
-  setWrite.descriptorCount = 1;
-  setWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-  setWrite.pBufferInfo = &binfo;
 
   VkDescriptorImageInfo samplerinfo;
   samplerinfo.sampler = nearestClampSampler;
@@ -1471,13 +1439,12 @@ void GpuScene::init_deferredlighting_descriptors() {
   setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   setWriteDepth.pImageInfo = &depthImageInfo;
 
-  std::array<VkWriteDescriptorSet, 7> writes = {setWriteTexture[0],
+  std::array<VkWriteDescriptorSet, 6> writes = {setWriteTexture[0],
                                                 setWriteTexture[1],
                                                 setWriteTexture[2],
                                                 setWriteTexture[3],
                                                 setWriteDepth,
-                                                setSampler,
-                                                setWrite};
+                                                setSampler};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
@@ -1516,12 +1483,6 @@ void GpuScene::init_drawparams_descriptors() {
   chunkIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   chunkIndicesBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-  VkDescriptorSetLayoutBinding instanceToDrawIDMapBinding = {};
-  instanceToDrawIDMapBinding.binding = 5;
-  instanceToDrawIDMapBinding.descriptorCount = 1;
-  instanceToDrawIDMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  instanceToDrawIDMapBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
   // Hi-Z texture (Stage 3)
   VkDescriptorSetLayoutBinding hizTextureBinding = {};
   hizTextureBinding.binding = 6;
@@ -1537,7 +1498,7 @@ void GpuScene::init_drawparams_descriptors() {
 
   VkDescriptorSetLayoutBinding bindings[] = {
       drawParamsBinding, cullParamsBinding,   meshChunksBinding,
-      writeIndexBinding, chunkIndicesBinding, instanceToDrawIDMapBinding,
+      writeIndexBinding, chunkIndicesBinding,
       hizTextureBinding, hizSamplerBinding};
 
   constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
@@ -1691,28 +1652,6 @@ void GpuScene::init_drawparams_descriptors() {
   chunkIndicesBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   chunkIndicesBufferWrite.pBufferInfo = &chunkIndicesBufferInfo;
 
-  VkDescriptorBufferInfo applInstanceBufferInfo;
-  applInstanceBufferInfo.buffer = applInstanceBuffer;
-  // at 0 offset
-  applInstanceBufferInfo.offset = 0;
-  applInstanceBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount;
-
-  VkWriteDescriptorSet instanceToDrawIDMapBufferWrite = {};
-  instanceToDrawIDMapBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  instanceToDrawIDMapBufferWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  instanceToDrawIDMapBufferWrite.dstBinding = 5;
-  // of the global descriptor
-  instanceToDrawIDMapBufferWrite.dstSet = gpuCullDescriptorSet;
-
-  instanceToDrawIDMapBufferWrite.descriptorCount = 1;
-  instanceToDrawIDMapBufferWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  instanceToDrawIDMapBufferWrite.descriptorType =
-      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  instanceToDrawIDMapBufferWrite.pBufferInfo = &applInstanceBufferInfo;
-
   // Hi-Z descriptor writes (will be updated later when Hi-Z resources are created)
   VkDescriptorImageInfo hizImageInfo{};
   hizImageInfo.imageView = _hizTextureView; // may be VK_NULL_HANDLE initially
@@ -1742,9 +1681,9 @@ void GpuScene::init_drawparams_descriptors() {
   hizSamplerWrite.pImageInfo = &hizSamplerInfo;
 
   std::vector<VkWriteDescriptorSet> writes = {
-      drawParamsWrite,         cullParamsWrite,
-      meshChunksBufferWrite,   writeIndexBufferWrite,
-      chunkIndicesBufferWrite, instanceToDrawIDMapBufferWrite};
+      drawParamsWrite,       cullParamsWrite,
+      meshChunksBufferWrite, writeIndexBufferWrite,
+      chunkIndicesBufferWrite};
 
   // Only write Hi-Z descriptors if resources are ready
   if (_hizTextureView != VK_NULL_HANDLE && _hizSampler != VK_NULL_HANDLE) {
@@ -1763,14 +1702,14 @@ void GpuScene::init_appl_descriptors() {
   uniformBufferBinding.descriptorCount = 1;
   // it's a uniform buffer binding
   uniformBufferBinding.descriptorType =
-      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
   // we use it from the vertex shader
   uniformBufferBinding.stageFlags =
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding matBinding = {};
-  matBinding.binding = 1;
+  matBinding.binding = 0;
   matBinding.descriptorCount = 1;
   // it's a uniform buffer binding
   matBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1778,41 +1717,40 @@ void GpuScene::init_appl_descriptors() {
   matBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding samplerBinding = {};
-  samplerBinding.binding = 2;
+  samplerBinding.binding = 1;
   samplerBinding.descriptorCount = 1;
   samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding textureBinding = {};
-  textureBinding.binding = 3;
+  textureBinding.binding = 2;
   textureBinding.descriptorCount = textures.size();
   textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding meshChunksBinding = {};
-  meshChunksBinding.binding = 4;
+  meshChunksBinding.binding = 3;
   meshChunksBinding.descriptorCount = 1;
   // it's a uniform buffer binding
   meshChunksBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  // we use it from the vertex shader
-  meshChunksBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  meshChunksBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding chunkIndexBinding = {};
-  chunkIndexBinding.binding = 5;
+  chunkIndexBinding.binding = 4;
   chunkIndexBinding.descriptorCount = 1;
   // it's a uniform buffer binding
   chunkIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   // we use it from the vertex shader
-  chunkIndexBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  chunkIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding bindings[] = {
-      uniformBufferBinding, matBinding,        samplerBinding,
+      matBinding,        samplerBinding,
       textureBinding,       meshChunksBinding, chunkIndexBinding};
 
   constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
   std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = {
-      0, 0, 0, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT, 0, 0};
+      0, 0, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT, 0, 0};
 
   // VkDescriptorBindingFlags flag =
   // VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT |
@@ -1838,7 +1776,7 @@ void GpuScene::init_appl_descriptors() {
                               &applSetLayout);
 
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 10},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4096}};
@@ -1868,28 +1806,7 @@ void GpuScene::init_appl_descriptors() {
 
   // information about the buffer we want to point at in the descriptor
 
-  VkDescriptorBufferInfo unibinfo;
-  // it will be the camera buffer
-  unibinfo.buffer = uniformBuffer;
-  // at 0 offset
-  unibinfo.offset = 0;
-  // of the size of a camera data struct
-  unibinfo.range = sizeof(FrameConstants) + sizeof(mat4) * 4;
 
-  VkWriteDescriptorSet uniformWrite = {};
-  uniformWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  uniformWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  uniformWrite.dstBinding = 0;
-  // of the global descriptor
-  uniformWrite.dstSet = applDescriptorSet;
-
-  uniformWrite.descriptorCount = 1;
-  uniformWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  uniformWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-  uniformWrite.pBufferInfo = &unibinfo;
 
   VkDescriptorBufferInfo binfo;
   binfo.buffer = applMaterialBuffer;
@@ -1902,7 +1819,7 @@ void GpuScene::init_appl_descriptors() {
   WriteMaterialToSet.pNext = nullptr;
 
   // we are going to write into binding number 0
-  WriteMaterialToSet.dstBinding = 1;
+  WriteMaterialToSet.dstBinding = 0;
   // of the global descriptor
   WriteMaterialToSet.dstSet = applDescriptorSet;
 
@@ -1916,7 +1833,7 @@ void GpuScene::init_appl_descriptors() {
   samplerinfo.sampler = textureSampler;
   VkWriteDescriptorSet setSampler = {};
   setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setSampler.dstBinding = 2;
+  setSampler.dstBinding = 1;
   setSampler.pNext = nullptr;
   setSampler.dstSet = applDescriptorSet;
   setSampler.dstArrayElement = 0;
@@ -1941,7 +1858,7 @@ void GpuScene::init_appl_descriptors() {
   setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWriteTexture.pNext = nullptr;
 
-  setWriteTexture.dstBinding = 3;
+  setWriteTexture.dstBinding = 2;
   // of the global descriptor
   setWriteTexture.dstSet = applDescriptorSet;
   setWriteTexture.dstArrayElement = 0;
@@ -1961,7 +1878,7 @@ void GpuScene::init_appl_descriptors() {
   meshChunksWrite.pNext = nullptr;
 
   // we are going to write into binding number 0
-  meshChunksWrite.dstBinding = 4;
+  meshChunksWrite.dstBinding = 3;
   // of the global descriptor
   meshChunksWrite.dstSet = applDescriptorSet;
 
@@ -1982,7 +1899,7 @@ void GpuScene::init_appl_descriptors() {
   chunkIndexBufferWrite.pNext = nullptr;
 
   // we are going to write into binding number 0
-  chunkIndexBufferWrite.dstBinding = 5;
+  chunkIndexBufferWrite.dstBinding = 4;
   // of the global descriptor
   chunkIndexBufferWrite.dstSet = applDescriptorSet;
 
@@ -1993,7 +1910,7 @@ void GpuScene::init_appl_descriptors() {
   chunkIndexBufferWrite.pBufferInfo = &chunkIndexBufferInfo;
 
   std::array<VkWriteDescriptorSet, bindingcount> writes = {
-      uniformWrite,    WriteMaterialToSet,        setSampler,
+      WriteMaterialToSet,        setSampler,
       setWriteTexture, meshChunksWrite, chunkIndexBufferWrite};
   // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite ,
   // setSampler };
@@ -2008,10 +1925,10 @@ void GpuScene::init_GlobaldescriptorSet() {
   camBufferBinding.binding = 0;
   camBufferBinding.descriptorCount = 1;
   // it's a uniform buffer binding
-  camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+  camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
   // we use it from the vertex shader
-  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding bindings[] = {camBufferBinding};
 
@@ -2032,7 +1949,7 @@ void GpuScene::init_GlobaldescriptorSet() {
   // other code ....
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -2056,7 +1973,7 @@ void GpuScene::init_GlobaldescriptorSet() {
   allocInfo.pSetLayouts = &globalSetLayout;
 
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                           &globalDescriptor);
+                           &globalDescriptorSet);
 
   // information about the buffer we want to point at in the descriptor
   VkDescriptorBufferInfo binfo;
@@ -2065,7 +1982,7 @@ void GpuScene::init_GlobaldescriptorSet() {
   // at 0 offset
   binfo.offset = 0;
   // of the size of a camera data struct
-  binfo.range = sizeof(FrameConstants) + sizeof(mat4) * 4;
+  binfo.range = sizeof(FrameData);
 
   VkWriteDescriptorSet setWrite = {};
   setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2074,16 +1991,12 @@ void GpuScene::init_GlobaldescriptorSet() {
   // we are going to write into binding number 0
   setWrite.dstBinding = 0;
   // of the global descriptor
-  setWrite.dstSet = globalDescriptor;
+  setWrite.dstSet = globalDescriptorSet;
 
   setWrite.descriptorCount = 1;
   setWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   setWrite.pBufferInfo = &binfo;
-
-  // vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0,
-  // nullptr);
 
   std::array<VkWriteDescriptorSet, 1> writes = {setWrite};
 
@@ -2184,8 +2097,7 @@ void GpuScene::CreateDepthTexture() {
                                               // initiallayout=preinitialized?
   imageInfo.initialLayout =
       VK_IMAGE_LAYOUT_UNDEFINED;   // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  imageInfo.format = VK_FORMAT_R32_SFLOAT; // TODO:or VK_FORMAT_D32_SFLOAT_S8_UINT? we
-                                   // don't need stencil currently anyway
+  imageInfo.format = VK_FORMAT_D32_SFLOAT;
   imageInfo.usage =
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2818,7 +2730,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
 
     VkBufferCreateInfo chunkIndicesBufferInfo{};
     chunkIndicesBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    chunkIndicesBufferInfo.size = sizeof(uint32_t) * applMesh->_chunkCount;
+    chunkIndicesBufferInfo.size = sizeof(uint32_t) * applMesh->_chunkCount * SHADOW_CASCADE_COUNT * 2;// *2 is for 2 different sets (opqaue and masked)
     chunkIndicesBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     chunkIndicesBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     chunkIndicesBufferInfo.flags = 0;
@@ -2844,39 +2756,6 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
     }
     vkBindBufferMemory(device.getLogicalDevice(), chunkIndicesBuffer,
                        chunkIndicesBufferMemory, 0);
-  }
-
-  {
-
-    VkBufferCreateInfo applInstanceBufferInfo{};
-    applInstanceBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    applInstanceBufferInfo.size = sizeof(uint32_t) * applMesh->_chunkCount;
-    applInstanceBufferInfo.usage =
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    applInstanceBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    applInstanceBufferInfo.flags = 0;
-    if (vkCreateBuffer(device.getLogicalDevice(), &applInstanceBufferInfo,
-                       nullptr, &applInstanceBuffer) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create writeindex buffer!");
-    }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device.getLogicalDevice(), applInstanceBuffer,
-                                  &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex =
-        device.findMemoryType(memRequirements.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                         &applInstanceBufferMemory) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate uniform buffer memory!");
-    }
-    vkBindBufferMemory(device.getLogicalDevice(), applInstanceBuffer,
-                       applInstanceBufferMemory, 0);
   }
 
   AAPLSubMesh *submeshes = (AAPLSubMesh *)uncompressData(
@@ -3258,7 +3137,7 @@ void GpuScene::CreateDeferredBasePass() {
 void GpuScene::CreateOccluderZPass() {
   // no color attachment only depth attachment
   VkAttachmentDescription depthAttachment{};
-  depthAttachment.format = VK_FORMAT_R32_SFLOAT; // TODO: should use the rt format?
+  depthAttachment.format = VK_FORMAT_D32_SFLOAT;
   depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
   depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -3398,7 +3277,7 @@ void GpuScene::CreateZdepthView() {
   createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   createInfo.image = _depthTexture;
   createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  createInfo.format = VK_FORMAT_R32_SFLOAT;
+  createInfo.format = VK_FORMAT_D32_SFLOAT;
   createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
   createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
   createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -3446,7 +3325,7 @@ void GpuScene::DrawOccluders(VkCommandBuffer commandBuffer) {
   //uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
 
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipelineLayout, 0, 1, &globalDescriptor, 0,
+                          pipelineLayout, 0, 1, &globalDescriptorSet, 0,
                           nullptr);
 
   // vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
@@ -3607,7 +3486,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     // vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
     // graphicsPipeline); vkCmdBindDescriptorSets(commandBuffer,
-    // VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptor,
+    // VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &globalDescriptorSet,
     // 0, nullptr); vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
     DrawChunksBasePass(commandBuffer);
@@ -3643,7 +3522,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   // vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
   // vkCmdBindIndexBuffer(commandBuffer,indexBuffer,0,VK_INDEX_TYPE_UINT16);
   // if the descriptor set data isn't change we can omit this?
-  // vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,epipelineLayout,0,1,&globalDescriptor,0,nullptr);
+  // vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,epipelineLayout,0,1,&globalDescriptorSet,0,nullptr);
   // if the constant isn't changed we can omit this?
   // mat4 scaleM = scale(modelScale);
   // mat4 withScale = transpose(maincamera->getObjectToCamera()) * scaleM;
@@ -3734,9 +3613,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                           ? deferredLightingPipeline_clusterlighting
                           : deferredLightingPipeline);
 
+    VkDescriptorSet deferredSets[] = {globalDescriptorSet, deferredLightingDescriptorSet};
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            deferredLightingPipelineLayout, 0, 1,
-                            &deferredLightingDescriptorSet, 0, nullptr);
+                            deferredLightingPipelineLayout, 0, 2,
+                            deferredSets, 0, nullptr);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     if (!useClusterLighting) {
       // point light
@@ -3765,9 +3645,8 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
           0; // static_cast<uint32_t>(clearValues.size());
       // forwardPassInfo.pClearValues = clearValues.data();
       VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
-                                  applTangentBuffer, applUVBuffer,
-                                  applInstanceBuffer};
-      VkDeviceSize offsets[] = {0, 0, 0, 0, 0};
+                                  applTangentBuffer, applUVBuffer};
+      VkDeviceSize offsets[] = {0, 0, 0, 0};
 
       vkCmdBindVertexBuffers(commandBuffer, 0,
                              sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
@@ -3781,10 +3660,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       // Stage 4: GPU indirect forward pass for transparent objects
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         drawclusterForwardPipelineIndirect);
-      uint32_t fwd_dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
+      VkDescriptorSet forwardDescriptorSets[] = {globalDescriptorSet,applDescriptorSet};
       vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              drawclusterBasePipelineLayout, 0, 1,
-                              &applDescriptorSet, 0, nullptr);
+                              drawclusterBasePipelineLayout, 0, 2,
+                              forwardDescriptorSets, 0, nullptr);
 
       uint32_t transparentOffset = (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount)
                                    * sizeof(VkDrawIndexedIndirectCommand);
@@ -3818,10 +3697,10 @@ void GpuScene::DrawChunk(const AAPLMeshChunk &chunk, VkCommandBuffer commandBuff
   vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
   // if the descriptor set data isn't change we can omit this?
-  uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
+  VkDescriptorSet drawChunkSets[] = {globalDescriptorSet, applDescriptorSet};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          drawclusterPipelineLayout, 0, 1, &applDescriptorSet,
-                          1, &dynamic_offset);
+                          drawclusterPipelineLayout, 0, 2, drawChunkSets,
+                          0, nullptr);
   // if the constant isn't changed we can omit this?
   // mat4 scaleM = scale(modelScale);
   // mat4 withScale = transpose(maincamera->getObjectToCamera()) * scaleM;
@@ -3834,9 +3713,8 @@ void GpuScene::DrawChunk(const AAPLMeshChunk &chunk, VkCommandBuffer commandBuff
 void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
 
   VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
-                              applTangentBuffer, applUVBuffer,
-                              applInstanceBuffer};
-  VkDeviceSize offsets[] = {0, 0, 0, 0, 0};
+                              applTangentBuffer, applUVBuffer};
+  VkDeviceSize offsets[] = {0, 0, 0, 0};
 
   vkCmdBindVertexBuffers(commandBuffer, 0,
                          sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
@@ -3845,9 +3723,10 @@ void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
 
   // Dynamic offset: skip past shadow cascade matrices to reach camera matrices
   uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
+  VkDescriptorSet baseDescriptorSets[] = {globalDescriptorSet,applDescriptorSet};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          drawclusterBasePipelineLayout, 0, 1,
-                          &applDescriptorSet, 1, &dynamic_offset);
+                          drawclusterBasePipelineLayout, 0, 2,
+                          baseDescriptorSets, 0, nullptr);
 
   // Opaque chunks: indirect draw from region [0, opaqueChunkCount)
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3871,9 +3750,8 @@ void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawclusterPipelineAlphaMask);
   VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
-                              applTangentBuffer, applUVBuffer,
-                              applInstanceBuffer};
-  VkDeviceSize offsets[] = {0, 0, 0, 0, 0};
+                              applTangentBuffer, applUVBuffer};
+  VkDeviceSize offsets[] = {0, 0, 0, 0};
 
   vkCmdBindVertexBuffers(commandBuffer, 0,
                          sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
@@ -3882,11 +3760,10 @@ void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
 
   // if the descriptor set data isn't change we can omit this?
 
-  uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
-
+  VkDescriptorSet drawSets[] = {globalDescriptorSet, applDescriptorSet};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          drawclusterPipelineLayout, 0, 1, &applDescriptorSet,
-                          1, &dynamic_offset);
+                          drawclusterPipelineLayout, 0, 2, drawSets,
+                          0, nullptr);
   constexpr int beginindex = 0;
   constexpr int indexClamp = 0xffffff;
   uint32_t occluded = 0;
@@ -4379,12 +4256,12 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = _depthTexture;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -4499,12 +4376,12 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = _depthTexture;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -5121,7 +4998,7 @@ void GpuScene::updateSamplerInDescriptors(VkImageView currentImage) {
   // we are going to write into binding number 0
   setWrite.dstBinding = 1;
   // of the global descriptor
-  setWrite.dstSet = globalDescriptor;
+  setWrite.dstSet = globalDescriptorSet;
 
   setWrite.descriptorCount = 1;
   // and the type is uniform buffer

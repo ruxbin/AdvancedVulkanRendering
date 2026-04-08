@@ -264,6 +264,28 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
     throw std::runtime_error("failed to create shadow render pass");
   }
 
+  // Pipeline layout: Set 0 = globalSetLayout (cam UBO, vertex stage),
+  //                  Set 1 = applSetLayout (materials, textures, chunkIndex)
+  {
+    VkDescriptorSetLayout shadowLayouts[] = {gpuScene.globalSetLayout,
+                                             gpuScene.applSetLayout};
+    VkPushConstantRange shadowPushConstant = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = sizeof(PerObjPush)};
+    VkPipelineLayoutCreateInfo shadowLayoutInfo{};
+    shadowLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    shadowLayoutInfo.setLayoutCount = 2;
+    shadowLayoutInfo.pSetLayouts = shadowLayouts;
+    shadowLayoutInfo.pushConstantRangeCount = 1;
+    shadowLayoutInfo.pPushConstantRanges = &shadowPushConstant;
+    if (vkCreatePipelineLayout(device.getLogicalDevice(), &shadowLayoutInfo,
+                               nullptr,
+                               &_shadowPassPipelineLayout) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create shadow pass pipeline layout!");
+    }
+  }
+
   // pipeline
 
  auto vsShaderShadowCode = readFile(
@@ -339,11 +361,6 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
       .stride = sizeof(float) * 2,
       .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
 
-  constexpr VkVertexInputBindingDescription drawClusterInputBindingInstance = {
-      .binding = 4,
-      .stride = sizeof(uint32_t),
-      .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE};
-
   constexpr VkVertexInputAttributeDescription drawclusterInputAttributes[] = {
       {.location = 0,
        .binding = 0,
@@ -360,9 +377,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
       {.location = 3,
        .binding = 3,
        .format = VK_FORMAT_R32G32_SFLOAT,
-       .offset = 0},
-
-      {.location = 4, .binding = 4, .format = VK_FORMAT_R32_UINT, .offset = 0}};
+       .offset = 0}};
 
   constexpr int inputChannelCount = sizeof(drawclusterInputAttributes) /
                                     sizeof(drawclusterInputAttributes[0]);
@@ -370,8 +385,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   constexpr std::array<VkVertexInputBindingDescription, inputChannelCount>
       drawculsterinputs = {
           drawClusterInputBindingPosition, drawClusterInputBindingNormal,
-          drawClusterInputBindingTangent, drawClusterInputBindingUV,
-          drawClusterInputBindingInstance};
+          drawClusterInputBindingTangent, drawClusterInputBindingUV};
 
   VkPipelineVertexInputStateCreateInfo drawclusterVertexInputInfo{};
   drawclusterVertexInputInfo.sType =
@@ -458,7 +472,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   drawclusterForwardPipelineInfo.pRasterizationState = &rasterizer;
   drawclusterForwardPipelineInfo.pMultisampleState = &multisampling;
   drawclusterForwardPipelineInfo.pColorBlendState = &colorBlendingAlpha;
-  drawclusterForwardPipelineInfo.layout = gpuScene.drawclusterPipelineLayout;
+  drawclusterForwardPipelineInfo.layout = _shadowPassPipelineLayout;
   drawclusterForwardPipelineInfo.renderPass = _shadowPass;
   drawclusterForwardPipelineInfo.subpass = 0;
   drawclusterForwardPipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
@@ -484,8 +498,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   drawclusterForwardPipelineInfoAlphaMask.pMultisampleState = &multisampling;
   drawclusterForwardPipelineInfoAlphaMask.pColorBlendState =
       &colorBlendingAlpha;
-  drawclusterForwardPipelineInfoAlphaMask.layout =
-      gpuScene.drawclusterPipelineLayout;
+  drawclusterForwardPipelineInfoAlphaMask.layout = _shadowPassPipelineLayout;
   drawclusterForwardPipelineInfoAlphaMask.renderPass = _shadowPass;
   drawclusterForwardPipelineInfoAlphaMask.subpass = 0;
   drawclusterForwardPipelineInfoAlphaMask.basePipelineHandle = VK_NULL_HANDLE;
@@ -615,9 +628,8 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
 
     VkBuffer vertexBuffers[] = {
         gpuScene.applVertexBuffer, gpuScene.applNormalBuffer,
-        gpuScene.applTangentBuffer, gpuScene.applUVBuffer,
-        _shadowInstanceBuffer};
-    VkDeviceSize vbOffsets[] = {0, 0, 0, 0, 0};
+        gpuScene.applTangentBuffer, gpuScene.applUVBuffer};
+    VkDeviceSize vbOffsets[] = {0, 0, 0, 0};
 
     vkCmdBindVertexBuffers(commandBuffer, 0,
                            sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
@@ -625,10 +637,10 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
                          VK_INDEX_TYPE_UINT32);
 
-    uint32_t shadow_dynamic_offset = sizeof(mat4) * 2 * cascade;
+    VkDescriptorSet shadowDescriptorSets[] = {gpuScene.globalDescriptorSet, gpuScene.applDescriptorSet};
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            gpuScene.drawclusterPipelineLayout, 0, 1,
-                            &gpuScene.applDescriptorSet, 1, &shadow_dynamic_offset);
+                            _shadowPassPipelineLayout, 0, 2,
+                            shadowDescriptorSets, 0, nullptr);
 
     // Buffer layout per cascade: [opaque region: cascadeMaxChunks][alphaMask region: cascadeMaxChunks]
     VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
@@ -637,7 +649,7 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
 
 	
     PerObjPush perobj = {.shadowindex = (uint32_t)cascade};
-    vkCmdPushConstants(commandBuffer, gpuScene.drawclusterPipelineLayout,
+    vkCmdPushConstants(commandBuffer, _shadowPassPipelineLayout,
                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(perobj), &perobj);
   
     // Opaque indirect draw
@@ -700,15 +712,6 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             _shadowWriteIndexBuffer, _shadowWriteIndexMemory);
 
-  createBuf(totalSlots * sizeof(uint32_t),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            _shadowChunkIndicesBuffer, _shadowChunkIndicesMemory);
-
-  createBuf(totalSlots * sizeof(uint32_t),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            _shadowInstanceBuffer, _shadowInstanceMemory);
 
   createBuf(sizeof(ShadowCullParams),
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -722,12 +725,12 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
       {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-      {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      //{5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
   };
 
   VkDescriptorSetLayoutCreateInfo layoutInfo{};
   layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  layoutInfo.bindingCount = 6;
+  layoutInfo.bindingCount = 5;
   layoutInfo.pBindings = layoutBindings;
   vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr,
                               &_shadowCullSetLayout);
@@ -756,23 +759,30 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
   VkDescriptorBufferInfo cullParamsInfo = {_shadowCullParamsBuffer, 0, sizeof(ShadowCullParams)};
   VkDescriptorBufferInfo meshChunksInfo = {gpuScene.meshChunksBuffer, 0, sizeof(AAPLMeshChunk) * gpuScene.applMesh->_chunkCount};
   VkDescriptorBufferInfo writeIdxInfo = {_shadowWriteIndexBuffer, 0, SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t)};
-  VkDescriptorBufferInfo chunkIdxInfo = {_shadowChunkIndicesBuffer, 0, totalSlots * sizeof(uint32_t)};
-  VkDescriptorBufferInfo instInfo = {_shadowInstanceBuffer, 0, totalSlots * sizeof(uint32_t)};
+  VkDescriptorBufferInfo chunkIdxInfo = {gpuScene.chunkIndicesBuffer, 0, totalSlots * sizeof(uint32_t)};
 
-  VkWriteDescriptorSet dsWrites[6] = {};
-  VkDescriptorBufferInfo* bufInfos[] = {&drawParamsInfo, &cullParamsInfo, &meshChunksInfo, &writeIdxInfo, &chunkIdxInfo, &instInfo};
+
+  VkWriteDescriptorSet dsWrites[5] = {};
+  constexpr int writecount = sizeof(dsWrites) / sizeof(dsWrites[0]);
+  std::vector<VkDescriptorBufferInfo> bufInfos;// = { drawParamsInfo, cullParamsInfo, meshChunksInfo, writeIdxInfo, chunkIdxInfo };
+  bufInfos.push_back(drawParamsInfo);
+  bufInfos.push_back(cullParamsInfo);
+  bufInfos.push_back(meshChunksInfo);
+  bufInfos.push_back(writeIdxInfo);
+  bufInfos.push_back(chunkIdxInfo);
   VkDescriptorType types[] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-  for (int b = 0; b < 6; ++b) {
+                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+  for (int b = 0; b < writecount; ++b) {
     dsWrites[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     dsWrites[b].dstSet = _shadowCullDescriptorSet;
     dsWrites[b].dstBinding = b;
     dsWrites[b].descriptorCount = 1;
     dsWrites[b].descriptorType = types[b];
-    dsWrites[b].pBufferInfo = bufInfos[b];
+    dsWrites[b].pBufferInfo = &bufInfos[b];
   }
-  vkUpdateDescriptorSets(device.getLogicalDevice(), 6, dsWrites, 0, nullptr);
+
+  vkUpdateDescriptorSets(device.getLogicalDevice(), writecount, dsWrites, 0, nullptr);
 
   // Compute pipeline
   VkPipelineLayoutCreateInfo pipeLayoutInfo{};

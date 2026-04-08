@@ -48,11 +48,11 @@ cbuffer cam
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
-[[vk::binding(1,0)]] StructuredBuffer<AAPLShaderMaterial> materials;
-[[vk::binding(2,0)]] SamplerState _LinearRepeatSampler;
-[[vk::binding(3,0)]] Texture2D<half4> _Textures[];  //bindless textures
-[[vk::binding(4,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks; 
-[[vk::binding(5,0)]] StructuredBuffer<uint> chunkIndex;
+[[vk::binding(0,1)]] StructuredBuffer<AAPLShaderMaterial> materials;
+[[vk::binding(1,1)]] SamplerState _LinearRepeatSampler;
+[[vk::binding(2,1)]] Texture2D<half4> _Textures[];  //bindless textures
+[[vk::binding(3,1)]] StructuredBuffer<AAPLMeshChunk> meshChunks; 
+[[vk::binding(4,1)]] StructuredBuffer<uint> chunkIndex;
 
 // [[vk::binding(0,1)]] Buffer<float3> positions;
 // [[vk::binding(1,1)]] Buffer<float3> normals;
@@ -73,8 +73,8 @@ struct VSInput
     [[vk::location(1)]] float3 normal:NORMAL;
     [[vk::location(2)]] float3 tangent:Tangent;
     [[vk::location(3)]] float2 uv:TEXCOORD0;
-    [[vk::location(4)]] uint drawcallid : BLENDINDICES;
-	//uint instancid: SV_InstanceID;
+    //[[vk::location(4)]] uint drawcallid : BLENDINDICES;
+	uint instancid: SV_InstanceID;
 };
 
 struct VSOutput
@@ -82,7 +82,7 @@ struct VSOutput
     float4 Position   : SV_POSITION; 
     //float4 Diffuse    : COLOR0;
     float2 TextureUV  : TEXCOORD0;
-    uint drawcallid : TEXCOORD1;
+    uint chunkid : TEXCOORD1;
 
 	half3 viewDir : TEXCOORD2;
     half3 normal : TEXCOORD3;
@@ -108,7 +108,7 @@ VSOutput RenderSceneVS( VSInput input)
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
-    Output.drawcallid = input.drawcallid;
+    Output.chunkid = chunkIndex[input.instancid];
 
     float4x4 invViewMatrix = cameraParams.invViewMatrix;
 
@@ -124,18 +124,18 @@ VSOutput RenderSceneVS( VSInput input)
 VSOutput RenderSceneVSShadow( VSInput input)
 {
     VSOutput Output;
-    float4x4 finalMatrix = mul(cameraParams.shadowMatrix[pushconstants.shadowIndex]projectionMatrix, cameraParams.shadowMatrix[pushconstants].viewMatrix);
+    float4x4 finalMatrix = mul(cameraParams.shadowMatrix[pushConstants.shadowIndex].shadowProjectionMatrix, cameraParams.shadowMatrix[pushConstants.shadowIndex].shadowViewMatrix);
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
-    Output.drawcallid = input.drawcallid;
+    Output.chunkid = chunkIndex[input.instancid];
 
     float4x4 invViewMatrix = cameraParams.invViewMatrix;
 
-    Output.viewDir = normalize(float3(invViewMatrix._m03, invViewMatrix._m13, invViewMatrix._m23) - input.position);
+    //Output.viewDir = normalize(float3(invViewMatrix._m03, invViewMatrix._m13, invViewMatrix._m23) - input.position);
     Output.wsPosition = float4(input.position, 1);
 
-	Output.normal = normalize(input.normal);
+	//Output.normal = normalize(input.normal);
 	Output.tangent = normalize(input.tangent);
 
     return Output;    
@@ -148,7 +148,7 @@ VSOutput RenderSceneVSShadow( VSInput input)
 PSOutput RenderSceneBasePass(VSOutput input)
 {
 	PSOutput output;
-    uint chunkindex = chunkIndex[input.drawcallid];
+    uint chunkindex = input.chunkid;
     uint materialIndex = meshChunks[chunkindex].materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
     half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
@@ -297,7 +297,7 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
 PSOutput RenderSceneBasePassAlphaMask(VSOutput input)
 {
     PSOutput output;
-    uint chunkindex = chunkIndex[input.drawcallid];
+    uint chunkindex = input.chunkid;
     uint materialIndex = meshChunks[chunkindex].materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
     half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
@@ -339,7 +339,7 @@ PSOutput RenderSceneBasePassAlphaMask(VSOutput input)
 // Reads material from SSBO via chunkIndex, no push constants
 half4 RenderSceneForwardPSIndirect(VSOutput input) : SV_Target
 {
-    uint chunkindex = chunkIndex[input.drawcallid];
+    uint chunkindex = input.chunkid;
     uint materialIndex = meshChunks[chunkindex].materialIndex;
     AAPLShaderMaterial material = materials[materialIndex];
     half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
@@ -381,7 +381,7 @@ void RenderSceneShadowDepthIndirect(VSOutput input)
 {
     if (specAlphaMask)
     {
-        uint chunkindex = chunkIndex[input.drawcallid];
+        uint chunkindex = input.chunkid;
         uint materialIndex = meshChunks[chunkindex].materialIndex;
         AAPLShaderMaterial material = materials[materialIndex];
         half4 baseColor = _Textures[material.albedo_texture_index].Sample(_LinearRepeatSampler, input.TextureUV);
