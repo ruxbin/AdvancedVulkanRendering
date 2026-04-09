@@ -305,15 +305,6 @@ void GpuScene::createComputePipeline() {
 
 void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   // TODO: shader management -- hot reload
-  auto vertShaderCode =
-      readFile((_rootPath / "shaders/vert.spv").generic_string());
-  auto fragShaderCode =
-      readFile((_rootPath / "shaders/frag.spv").generic_string());
-
-  auto evertShaderCode =
-      readFile((_rootPath / "shaders/edward.vs.spv").generic_string());
-  auto efragShaderCode =
-      readFile((_rootPath / "shaders/edward.ps.spv").generic_string());
 
   auto drawClusterVSShaderCode =
       readFile((_rootPath / "shaders/drawcluster.vs.spv").generic_string());
@@ -337,11 +328,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   auto deferredLightingPSShaderCode = readFile(
       (_rootPath / "shaders/deferredlighting.ps.spv").generic_string());
 
-  VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-  VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
-  VkShaderModule evertShaderModule = createShaderModule(evertShaderCode);
-  VkShaderModule efragShaderModule = createShaderModule(efragShaderCode);
 
   VkShaderModule drawclusterVSShaderModule =
       createShaderModule(drawClusterVSShaderCode);
@@ -363,33 +350,6 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   VkShaderModule deferredLightingPSShaderModule =
       createShaderModule(deferredLightingPSShaderCode);
 
-  VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-  vertShaderStageInfo.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-  vertShaderStageInfo.module = vertShaderModule;
-  vertShaderStageInfo.pName = "main";
-
-  VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-  fragShaderStageInfo.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  fragShaderStageInfo.module = fragShaderModule;
-  fragShaderStageInfo.pName = "main";
-
-  VkPipelineShaderStageCreateInfo evertShaderStageInfo{};
-  evertShaderStageInfo.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  evertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-  evertShaderStageInfo.module = evertShaderModule;
-  evertShaderStageInfo.pName = "RenderSceneVS";
-
-  VkPipelineShaderStageCreateInfo efragShaderStageInfo{};
-  efragShaderStageInfo.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  efragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  efragShaderStageInfo.module = efragShaderModule;
-  efragShaderStageInfo.pName = "RenderScenePS";
 
   VkPipelineShaderStageCreateInfo drawclusterVSShaderStageInfo{};
   drawclusterVSShaderStageInfo.sType =
@@ -490,10 +450,6 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   deferredLightingPSShaderStageInfo_clusterlighting.pSpecializationInfo =
       &specializationInfo_clusterlighting;
 
-  VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo,
-                                                    fragShaderStageInfo};
-  VkPipelineShaderStageCreateInfo eshaderStages[] = {evertShaderStageInfo,
-                                                     efragShaderStageInfo};
   VkPipelineShaderStageCreateInfo drawclusterShaderStages[] = {
       drawclusterVSShaderStageInfo, drawclusterPSShaderStageInfo};
 
@@ -653,7 +609,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   VkPushConstantRange drawclusterpushconstantRange = {
       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
       .offset = 0,
-      .size = sizeof(uint32_t)};
+      .size = sizeof(PerObjPush)};
   VkPipelineLayoutCreateInfo drawclusterpipelineLayoutInfo{};
   drawclusterpipelineLayoutInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -702,25 +658,6 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   depthStencilState1.depthWriteEnable = VK_FALSE;
   depthStencilState1.depthTestEnable = VK_FALSE;
   depthStencilState1.stencilTestEnable = VK_FALSE;
-
-  VkVertexInputBindingDescription edwardInputBinding = {
-      .binding = 0,
-      .stride = sizeof(float) * 3 * 2 + sizeof(float) * 2,
-      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
-
-  VkVertexInputAttributeDescription edwardInputAttributes[] = {
-      {.location = 0,
-       .binding = 0,
-       .format = VK_FORMAT_R32G32B32_SFLOAT,
-       .offset = 0},
-      {.location = 1,
-       .binding = 0,
-       .format = VK_FORMAT_R32G32B32_SFLOAT,
-       .offset = sizeof(float) * 3},
-      {.location = 2,
-       .binding = 0,
-       .format = VK_FORMAT_R32G32_SFLOAT,
-       .offset = sizeof(float) * 3 * 2}};
 
   VkPipelineVertexInputStateCreateInfo emptyVertexInputInfo{};
   emptyVertexInputInfo.sType =
@@ -1008,11 +945,6 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         "failed to create drawcluster base graphics pipeline!");
   }
 
-  vkDestroyShaderModule(device.getLogicalDevice(), fragShaderModule, nullptr);
-  vkDestroyShaderModule(device.getLogicalDevice(), vertShaderModule, nullptr);
-
-  vkDestroyShaderModule(device.getLogicalDevice(), evertShaderModule, nullptr);
-  vkDestroyShaderModule(device.getLogicalDevice(), efragShaderModule, nullptr);
 
   vkDestroyShaderModule(device.getLogicalDevice(), drawclusterVSShaderModule,
                         nullptr);
@@ -1302,34 +1234,27 @@ void GpuScene::init_deferredlighting_descriptors() {
   nearestClampSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   nearestClampSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-  VkDescriptorSetLayoutBinding frameDataBinding = {};
-  frameDataBinding.binding = 6;
-  frameDataBinding.descriptorCount = 1;
-  // it's a uniform buffer binding
-  frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-  frameDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
   VkDescriptorSetLayoutBinding shadowMapsBinding = {};
-  shadowMapsBinding.binding = 7;
+  shadowMapsBinding.binding = 6;
   shadowMapsBinding.descriptorCount = 1;
   shadowMapsBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   shadowMapsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding shadowMapsSamplerBinding = {};
-  shadowMapsSamplerBinding.binding = 8;
+  shadowMapsSamplerBinding.binding = 7;
   shadowMapsSamplerBinding.descriptorCount = 1;
   shadowMapsSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   shadowMapsSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding pointLightCullingDataBinding = {};
-  pointLightCullingDataBinding.binding = 9;
+  pointLightCullingDataBinding.binding = 8;
   pointLightCullingDataBinding.descriptorCount = 1;
   pointLightCullingDataBinding.descriptorType =
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   pointLightCullingDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorSetLayoutBinding lightIndicesBinding = {};
-  lightIndicesBinding.binding = 10;
+  lightIndicesBinding.binding = 9;
   lightIndicesBinding.descriptorCount = 1;
   lightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   lightIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -3684,31 +3609,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   }
 }
 
-void GpuScene::DrawChunk(const AAPLMeshChunk &chunk, VkCommandBuffer commandBuffer) {
-  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    drawclusterPipeline);
-  VkBuffer vertexBuffers[] = {applVertexBuffer, applNormalBuffer,
-                              applTangentBuffer, applUVBuffer};
-  VkDeviceSize offsets[] = {0, 0, 0, 0};
 
-  vkCmdBindVertexBuffers(commandBuffer, 0,
-                         sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
-                         vertexBuffers, offsets);
-  vkCmdBindIndexBuffer(commandBuffer, applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-  // if the descriptor set data isn't change we can omit this?
-  VkDescriptorSet drawChunkSets[] = {globalDescriptorSet, applDescriptorSet};
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          drawclusterPipelineLayout, 0, 2, drawChunkSets,
-                          0, nullptr);
-  // if the constant isn't changed we can omit this?
-  // mat4 scaleM = scale(modelScale);
-  // mat4 withScale = transpose(maincamera->getObjectToCamera()) * scaleM;
-  PerObjPush perobj = {.matindex = chunk.materialIndex};
-  vkCmdPushConstants(commandBuffer, epipelineLayout,
-                     VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
-  vkCmdDrawIndexed(commandBuffer, chunk.indexCount, 1, chunk.indexBegin, 0, 0);
-}
 
 void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
 

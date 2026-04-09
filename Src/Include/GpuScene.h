@@ -172,9 +172,6 @@ private:
   VkPipelineLayout pipelineLayout;
   VkPipeline graphicsPipeline;
 
-  VkPipelineLayout epipelineLayout;
-  VkPipeline egraphicsPipeline;
-
   // 多帧并行 (Frames in Flight)
   // framesInFlight 由 swapchain 图像数量决定，在初始化时设置
   uint32_t framesInFlight = 0;
@@ -298,7 +295,7 @@ private:
 
   LightCuller *_lightCuller = nullptr;
 
-  bool useClusterLighting = false;
+  bool useClusterLighting = true;
 
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;
@@ -375,7 +372,7 @@ public:
   void init_drawparams_descriptors();
 
   void init_deferredlighting_descriptors();
-  void DrawChunk(const AAPLMeshChunk &, VkCommandBuffer commandBuffer);
+
   void DrawChunks(VkCommandBuffer commandBuffer);
   void TriggerClusterLighting() { useClusterLighting = !useClusterLighting; }
 

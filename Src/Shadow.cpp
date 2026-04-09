@@ -194,7 +194,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
     VkWriteDescriptorSet setWriteTexture = {};
     setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     setWriteTexture.pNext = nullptr;
-    setWriteTexture.dstBinding = 7;
+    setWriteTexture.dstBinding = 6;
     setWriteTexture.dstSet = gpuScene.deferredLightingDescriptorSet;
     setWriteTexture.dstArrayElement = 0;
     setWriteTexture.descriptorCount = 1;
@@ -205,7 +205,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
     samplerinfo.sampler = _shadowMapSampler;
     VkWriteDescriptorSet setSampler = {};
     setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setSampler.dstBinding = 8;
+    setSampler.dstBinding = 7;
     setSampler.pNext = nullptr;
     setSampler.dstSet = gpuScene.deferredLightingDescriptorSet;
     setSampler.dstArrayElement = 0;
@@ -270,7 +270,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
     VkDescriptorSetLayout shadowLayouts[] = {gpuScene.globalSetLayout,
                                              gpuScene.applSetLayout};
     VkPushConstantRange shadowPushConstant = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
         .size = sizeof(PerObjPush)};
     VkPipelineLayoutCreateInfo shadowLayoutInfo{};
@@ -650,7 +650,7 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
 	
     PerObjPush perobj = {.shadowindex = (uint32_t)cascade};
     vkCmdPushConstants(commandBuffer, _shadowPassPipelineLayout,
-                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(perobj), &perobj);
+                     VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(perobj), &perobj);
   
     // Opaque indirect draw
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

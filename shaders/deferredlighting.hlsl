@@ -17,11 +17,11 @@ cbuffer cam
 [[vk::binding(4,1)]] Texture2D<float> inDepth;
 [[vk::binding(5,1)]] SamplerState _NearestClampSampler;
 
-[[vk::binding(7,1)]] Texture2DArray<float> shadowMaps;
-[[vk::binding(8,1)]] SamplerComparisonState shadowSampler;
-[[vk::binding(9,1)]]
+[[vk::binding(6,1)]] Texture2DArray<float> shadowMaps;
+[[vk::binding(7,1)]] SamplerComparisonState shadowSampler;
+[[vk::binding(8,1)]]
 StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
-[[vk::binding(10,1)]] StructuredBuffer<uint> lightIndices;
+[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
 
 struct VSOutput
 {

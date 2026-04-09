@@ -1089,7 +1089,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   setWrite_Deferredlighting.pNext = nullptr;
 
   // we are going to write into binding number 0
-  setWrite_Deferredlighting.dstBinding = 9;
+  setWrite_Deferredlighting.dstBinding = 8;
   // of the global descriptor
   setWrite_Deferredlighting.dstSet = gpuScene.deferredLightingDescriptorSet;
 
@@ -1194,7 +1194,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   setWriteIndices_deferredlighting.sType =
       VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWriteIndices_deferredlighting.pNext = nullptr;
-  setWriteIndices_deferredlighting.dstBinding = 10;
+  setWriteIndices_deferredlighting.dstBinding = 9;
   // of the global descriptor
   setWriteIndices_deferredlighting.dstSet =
       gpuScene.deferredLightingDescriptorSet;
