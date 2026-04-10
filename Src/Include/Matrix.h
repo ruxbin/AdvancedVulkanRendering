@@ -408,6 +408,70 @@ static mat4 scale(float x, float y, float z) {
 
 static mat4 scale(float s) { return scale(s, s, s); }
 
+struct quat {
+  float w, x, y, z;
+
+  quat() : w(1.0f), x(0.0f), y(0.0f), z(0.0f) {}
+  quat(float W, float X, float Y, float Z) : w(W), x(X), y(Y), z(Z) {}
+
+  quat operator*(float s) const { return quat(w * s, x * s, y * s, z * s); }
+  quat operator+(const quat &rhs) const {
+    return quat(w + rhs.w, x + rhs.x, y + rhs.y, z + rhs.z);
+  }
+  quat operator-() const { return quat(-w, -x, -y, -z); }
+
+  float dot(const quat &rhs) const {
+    return w * rhs.w + x * rhs.x + y * rhs.y + z * rhs.z;
+  }
+
+  quat normalized() const {
+    float len = sqrtf(w * w + x * x + y * y + z * z);
+    if (len < 1e-8f)
+      return quat();
+    float inv = 1.0f / len;
+    return quat(w * inv, x * inv, y * inv, z * inv);
+  }
+
+  mat4 toMat4() const {
+    mat4 m(1.0f);
+    float xx = x * x, yy = y * y, zz = z * z;
+    float xy = x * y, xz = x * z, yz = y * z;
+    float wx = w * x, wy = w * y, wz = w * z;
+    // column 0
+    m[0][0] = 1.0f - 2.0f * (yy + zz);
+    m[0][1] = 2.0f * (xy + wz);
+    m[0][2] = 2.0f * (xz - wy);
+    // column 1
+    m[1][0] = 2.0f * (xy - wz);
+    m[1][1] = 1.0f - 2.0f * (xx + zz);
+    m[1][2] = 2.0f * (yz + wx);
+    // column 2
+    m[2][0] = 2.0f * (xz + wy);
+    m[2][1] = 2.0f * (yz - wx);
+    m[2][2] = 1.0f - 2.0f * (xx + yy);
+    return m;
+  }
+
+  static quat slerp(const quat &a, const quat &b, float t) {
+    quat b2 = b;
+    float d = a.dot(b2);
+    if (d < 0.0f) {
+      b2 = -b2;
+      d = -d;
+    }
+    if (d > 0.9995f) {
+      return (a * (1.0f - t) + b2 * t).normalized();
+    }
+    float theta0 = acosf(d);
+    float theta = theta0 * t;
+    float sinTheta = sinf(theta);
+    float sinTheta0 = sinf(theta0);
+    float s0 = cosf(theta) - d * sinTheta / sinTheta0;
+    float s1 = sinTheta / sinTheta0;
+    return (a * s0 + b2 * s1).normalized();
+  }
+};
+
 static mat4 transpose(const mat4 &input) {
   mat4 m(1.0f);
   m.x.x = input.x.x;

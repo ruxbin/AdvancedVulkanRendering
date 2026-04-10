@@ -44,3 +44,8 @@ D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConduc
 
 REM compiling drawclustershadowVS
 D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadow -Fo drawclusterShadow.vs.spv
+
+REM Skinned mesh shaders
+D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 skinned.hlsl -fspv-debug=vulkan-with-source -E SkinnedVS -Fo skinned.vs.spv
+D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 skinned.hlsl -fspv-debug=vulkan-with-source -E SkinnedBasePS -Fo skinned.base.ps.spv
+D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 skinned.hlsl -fspv-debug=vulkan-with-source -E SkinnedForwardPS -Fo skinned.forward.ps.spv

@@ -4,6 +4,7 @@
 #include "AssetLoader.h"
 #include "Light.h"
 #include "Matrix.h"
+#include "SkinnedMesh.h"
 #include "VulkanSetup.h"
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
@@ -365,6 +366,8 @@ public:
 
   Camera *GetMainCamera() { return maincamera; }
 
+  void loadSkinnedMesh(const std::string &fbxPath);
+
   void init_GlobaldescriptorSet();
 
   void init_appl_descriptors();
@@ -623,6 +626,29 @@ public:
 
     vkBindBufferMemory(device.getLogicalDevice(), buffer, bufferMemory, 0);
   }
+  // Skinned mesh (FBX) rendering
+  SkinnedMeshData *_skinnedMeshData = nullptr;
+  SkinnedMeshInstance *_skinnedMeshInstance = nullptr;
+
+  VkDescriptorSetLayout skinnedSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool skinnedDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorSet skinnedDescriptorSet = VK_NULL_HANDLE;
+
+  VkPipelineLayout skinnedPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline skinnedBasePipeline = VK_NULL_HANDLE;
+  VkPipeline skinnedForwardPipeline = VK_NULL_HANDLE;
+
+  // Dummy white texture for meshes without diffuse texture
+  VkImage _skinnedDummyTexture = VK_NULL_HANDLE;
+  VkDeviceMemory _skinnedDummyTextureMemory = VK_NULL_HANDLE;
+  VkImageView _skinnedDummyTextureView = VK_NULL_HANDLE;
+
+  void createSkinnedMeshPipeline();
+  void initSkinnedDescriptors();
+  void drawSkinnedMesh(VkCommandBuffer commandBuffer);
+  void drawSkinnedMeshForward(VkCommandBuffer commandBuffer);
+  void createSkinnedDummyTexture();
+
   friend class Shadow;
   friend class PointLight;
   friend class SpotLight;

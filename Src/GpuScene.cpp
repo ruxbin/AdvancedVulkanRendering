@@ -1,6 +1,7 @@
 
 #include "GpuScene.h"
 #include "AssetLoader.h"
+#include "FbxLoader.h"
 #include "Light.h"
 #include "ObjLoader.h"
 #include "Shadow.h"
@@ -12,6 +13,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
@@ -3351,6 +3353,16 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     throw std::runtime_error("failed to begin recording command buffer!");
   }
 
+  // Update skinned mesh animation
+  if (_skinnedMeshInstance && _skinnedMeshInstance->playing) {
+    static auto lastSkinnedTime = std::chrono::high_resolution_clock::now();
+    auto now = std::chrono::high_resolution_clock::now();
+    float dt = std::chrono::duration<float>(now - lastSkinnedTime).count();
+    lastSkinnedTime = now;
+    _skinnedMeshInstance->updateAnimation(dt);
+    _skinnedMeshInstance->uploadBoneMatrices(device.getLogicalDevice());
+  }
+
   // Draw occluders first for Hi-Z generation
   DrawOccluders(commandBuffer);
 
@@ -3415,6 +3427,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     // 0, nullptr); vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
     DrawChunksBasePass(commandBuffer);
+    drawSkinnedMesh(commandBuffer);
 
     vkCmdEndRenderPass(commandBuffer);
   }
@@ -4908,4 +4921,544 @@ void GpuScene::updateSamplerInDescriptors(VkImageView currentImage) {
   // setWrite.pBufferInfo = &binfo;
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+}
+
+static uint32_t findMemoryTypeStatic(VkPhysicalDevice physDevice,
+                                      uint32_t typeFilter,
+                                      VkMemoryPropertyFlags properties) {
+  VkPhysicalDeviceMemoryProperties memProperties;
+  vkGetPhysicalDeviceMemoryProperties(physDevice, &memProperties);
+  for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+    if ((typeFilter & (1 << i)) &&
+        (memProperties.memoryTypes[i].propertyFlags & properties) ==
+            properties) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+void GpuScene::createSkinnedDummyTexture() {
+  // 1x1 white pixel
+  unsigned char whitePixel[4] = {255, 255, 255, 255};
+
+  VkBuffer stagingBuffer;
+  VkDeviceMemory stagingMemory;
+  createBuffer(4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               stagingBuffer, stagingMemory);
+  void *data;
+  vkMapMemory(device.getLogicalDevice(), stagingMemory, 0, 4, 0, &data);
+  memcpy(data, whitePixel, 4);
+  vkUnmapMemory(device.getLogicalDevice(), stagingMemory);
+
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.extent = {1, 1, 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = 1;
+  imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imageInfo.usage =
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+                &_skinnedDummyTexture);
+
+  VkMemoryRequirements memReqs;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _skinnedDummyTexture,
+                                &memReqs);
+  VkMemoryAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocInfo.allocationSize = memReqs.size;
+  allocInfo.memoryTypeIndex = device.findMemoryType(
+      memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                    &_skinnedDummyTextureMemory);
+  vkBindImageMemory(device.getLogicalDevice(), _skinnedDummyTexture,
+                     _skinnedDummyTextureMemory, 0);
+
+  // Transition + copy
+  VkCommandBufferAllocateInfo cmdAllocInfo{};
+  cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cmdAllocInfo.commandPool = device.getCommandPool();
+  cmdAllocInfo.commandBufferCount = 1;
+  VkCommandBuffer cmdBuf;
+  vkAllocateCommandBuffers(device.getLogicalDevice(), &cmdAllocInfo, &cmdBuf);
+  VkCommandBufferBeginInfo beginInfo{};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmdBuf, &beginInfo);
+
+  VkImageMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = _skinnedDummyTexture;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  barrier.srcAccessMask = 0;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
+
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {1, 1, 1};
+  vkCmdCopyBufferToImage(cmdBuf, stagingBuffer, _skinnedDummyTexture,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
+
+  vkEndCommandBuffer(cmdBuf);
+  VkSubmitInfo submitInfo{};
+  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &cmdBuf;
+  vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+  vkQueueWaitIdle(device.getGraphicsQueue());
+  vkFreeCommandBuffers(device.getLogicalDevice(), device.getCommandPool(), 1,
+                        &cmdBuf);
+  vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
+  vkFreeMemory(device.getLogicalDevice(), stagingMemory, nullptr);
+
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = _skinnedDummyTexture;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr,
+                     &_skinnedDummyTextureView);
+}
+
+void GpuScene::initSkinnedDescriptors() {
+  // Create descriptor set layout
+  VkDescriptorSetLayoutBinding bindings[3] = {};
+
+  // Binding 0: bone matrices SSBO (vertex stage)
+  bindings[0].binding = 0;
+  bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  bindings[0].descriptorCount = 1;
+  bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+  // Binding 1: sampler (fragment stage)
+  bindings[1].binding = 1;
+  bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  bindings[1].descriptorCount = 1;
+  bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  // Binding 2: diffuse texture (fragment stage)
+  bindings[2].binding = 2;
+  bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  bindings[2].descriptorCount = 1;
+  bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layoutInfo.bindingCount = 3;
+  layoutInfo.pBindings = bindings;
+
+  vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr,
+                               &skinnedSetLayout);
+
+  // Create descriptor pool
+  VkDescriptorPoolSize poolSizes[3] = {};
+  poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+  poolSizes[1] = {VK_DESCRIPTOR_TYPE_SAMPLER, 1};
+  poolSizes[2] = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1};
+
+  VkDescriptorPoolCreateInfo poolInfo{};
+  poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolInfo.poolSizeCount = 3;
+  poolInfo.pPoolSizes = poolSizes;
+  poolInfo.maxSets = 1;
+
+  vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr,
+                          &skinnedDescriptorPool);
+
+  // Allocate descriptor set
+  VkDescriptorSetAllocateInfo dsAllocInfo{};
+  dsAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsAllocInfo.descriptorPool = skinnedDescriptorPool;
+  dsAllocInfo.descriptorSetCount = 1;
+  dsAllocInfo.pSetLayouts = &skinnedSetLayout;
+
+  vkAllocateDescriptorSets(device.getLogicalDevice(), &dsAllocInfo,
+                            &skinnedDescriptorSet);
+
+  // Update descriptor set
+  VkDescriptorBufferInfo boneBufferInfo{};
+  boneBufferInfo.buffer = _skinnedMeshInstance->boneMatrixBuffer;
+  boneBufferInfo.offset = 0;
+  boneBufferInfo.range = MAX_BONES * sizeof(mat4);
+
+  VkDescriptorImageInfo samplerInfo{};
+  samplerInfo.sampler = textureSampler;
+
+  // Find the first diffuse texture or use dummy
+  VkImageView diffuseView = _skinnedDummyTextureView;
+  if (_skinnedMeshData && !_skinnedMeshData->materials.empty()) {
+    for (const auto &mat : _skinnedMeshData->materials) {
+      if (mat.hasDiffuseTexture && mat.diffuseImageView != VK_NULL_HANDLE) {
+        diffuseView = mat.diffuseImageView;
+        break;
+      }
+    }
+  }
+
+  VkDescriptorImageInfo textureInfo{};
+  textureInfo.imageView = diffuseView;
+  textureInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkWriteDescriptorSet writes[3] = {};
+
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[0].dstSet = skinnedDescriptorSet;
+  writes[0].dstBinding = 0;
+  writes[0].descriptorCount = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  writes[0].pBufferInfo = &boneBufferInfo;
+
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[1].dstSet = skinnedDescriptorSet;
+  writes[1].dstBinding = 1;
+  writes[1].descriptorCount = 1;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  writes[1].pImageInfo = &samplerInfo;
+
+  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[2].dstSet = skinnedDescriptorSet;
+  writes[2].dstBinding = 2;
+  writes[2].descriptorCount = 1;
+  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  writes[2].pImageInfo = &textureInfo;
+
+  vkUpdateDescriptorSets(device.getLogicalDevice(), 3, writes, 0, nullptr);
+}
+
+void GpuScene::createSkinnedMeshPipeline() {
+  auto skinnedVSCode =
+      readFile((_rootPath / "shaders/skinned.vs.spv").generic_string());
+  auto skinnedBasePSCode =
+      readFile((_rootPath / "shaders/skinned.base.ps.spv").generic_string());
+  auto skinnedForwardPSCode =
+      readFile((_rootPath / "shaders/skinned.forward.ps.spv").generic_string());
+
+  VkShaderModule skinnedVSModule = createShaderModule(skinnedVSCode);
+  VkShaderModule skinnedBasePSModule = createShaderModule(skinnedBasePSCode);
+  VkShaderModule skinnedForwardPSModule =
+      createShaderModule(skinnedForwardPSCode);
+
+  VkPipelineShaderStageCreateInfo vsStage{};
+  vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+  vsStage.module = skinnedVSModule;
+  vsStage.pName = "SkinnedVS";
+
+  VkPipelineShaderStageCreateInfo basePSStage{};
+  basePSStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  basePSStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  basePSStage.module = skinnedBasePSModule;
+  basePSStage.pName = "SkinnedBasePS";
+
+  VkPipelineShaderStageCreateInfo forwardPSStage{};
+  forwardPSStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  forwardPSStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  forwardPSStage.module = skinnedForwardPSModule;
+  forwardPSStage.pName = "SkinnedForwardPS";
+
+  VkPipelineShaderStageCreateInfo baseStages[] = {vsStage, basePSStage};
+  VkPipelineShaderStageCreateInfo forwardStages[] = {vsStage, forwardPSStage};
+
+  // Vertex input: single interleaved buffer with 6 attributes
+  VkVertexInputBindingDescription skinnedBinding = {
+      .binding = 0,
+      .stride = sizeof(SkinnedVertex),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
+
+  VkVertexInputAttributeDescription skinnedAttributes[] = {
+      {.location = 0,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .offset = offsetof(SkinnedVertex, position)},
+      {.location = 1,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .offset = offsetof(SkinnedVertex, normal)},
+      {.location = 2,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32B32_SFLOAT,
+       .offset = offsetof(SkinnedVertex, tangent)},
+      {.location = 3,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32_SFLOAT,
+       .offset = offsetof(SkinnedVertex, uv)},
+      {.location = 4,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32B32A32_UINT,
+       .offset = offsetof(SkinnedVertex, boneIDs)},
+      {.location = 5,
+       .binding = 0,
+       .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+       .offset = offsetof(SkinnedVertex, boneWeights)}};
+
+  VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+  vertexInputInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInputInfo.vertexBindingDescriptionCount = 1;
+  vertexInputInfo.pVertexBindingDescriptions = &skinnedBinding;
+  vertexInputInfo.vertexAttributeDescriptionCount = 6;
+  vertexInputInfo.pVertexAttributeDescriptions = skinnedAttributes;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+  VkViewport viewport{};
+  viewport.x = 0.0f;
+  viewport.y = 0.0f;
+  viewport.width = (float)device.getSwapChainExtent().width;
+  viewport.height = (float)device.getSwapChainExtent().height;
+  viewport.minDepth = 0.0f;
+  viewport.maxDepth = 1.0f;
+
+  VkRect2D scissor{};
+  scissor.offset = {0, 0};
+  scissor.extent = device.getSwapChainExtent();
+
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.pViewports = &viewport;
+  viewportState.scissorCount = 1;
+  viewportState.pScissors = &scissor;
+
+  VkPipelineRasterizationStateCreateInfo rasterizer{};
+  rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterizer.depthClampEnable = VK_FALSE;
+  rasterizer.rasterizerDiscardEnable = VK_FALSE;
+  rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+  rasterizer.lineWidth = 1.0f;
+  rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizer.depthBiasEnable = VK_FALSE;
+
+  VkPipelineMultisampleStateCreateInfo multisampling{};
+  multisampling.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisampling.sampleShadingEnable = VK_FALSE;
+  multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthWriteEnable = VK_TRUE;
+  depthStencil.depthTestEnable = VK_TRUE;
+  depthStencil.stencilTestEnable = VK_FALSE;
+  depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER; // reverse-Z
+
+  // 4 color attachments for GBuffer (base pass)
+  VkPipelineColorBlendAttachmentState colorBlendAttachments[4]{};
+  for (int i = 0; i < 4; i++) {
+    colorBlendAttachments[i].colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachments[i].blendEnable = VK_FALSE;
+  }
+
+  VkPipelineColorBlendStateCreateInfo colorBlending{};
+  colorBlending.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlending.logicOpEnable = VK_FALSE;
+  colorBlending.attachmentCount = 4;
+  colorBlending.pAttachments = colorBlendAttachments;
+
+  // Pipeline layout
+  struct SkinnedPushConstants {
+    mat4 worldMatrix;
+    uint32_t materialFlags;
+  };
+
+  VkDescriptorSetLayout layouts[] = {globalSetLayout, skinnedSetLayout};
+  VkPushConstantRange pushRange = {
+      .stageFlags =
+          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+      .offset = 0,
+      .size = sizeof(SkinnedPushConstants)};
+
+  VkPipelineLayoutCreateInfo layoutCreateInfo{};
+  layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutCreateInfo.setLayoutCount = 2;
+  layoutCreateInfo.pSetLayouts = layouts;
+  layoutCreateInfo.pushConstantRangeCount = 1;
+  layoutCreateInfo.pPushConstantRanges = &pushRange;
+
+  vkCreatePipelineLayout(device.getLogicalDevice(), &layoutCreateInfo, nullptr,
+                          &skinnedPipelineLayout);
+
+  // Base pass pipeline (GBuffer write)
+  VkGraphicsPipelineCreateInfo pipelineInfo{};
+  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineInfo.stageCount = 2;
+  pipelineInfo.pStages = baseStages;
+  pipelineInfo.pVertexInputState = &vertexInputInfo;
+  pipelineInfo.pInputAssemblyState = &inputAssembly;
+  pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pRasterizationState = &rasterizer;
+  pipelineInfo.pMultisampleState = &multisampling;
+  pipelineInfo.pColorBlendState = &colorBlending;
+  pipelineInfo.pDepthStencilState = &depthStencil;
+  pipelineInfo.layout = skinnedPipelineLayout;
+  pipelineInfo.renderPass = _basePass;
+  pipelineInfo.subpass = 0;
+  pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                &pipelineInfo, nullptr,
+                                &skinnedBasePipeline) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create skinned base pipeline!");
+  }
+
+  // Forward pass pipeline (single color output)
+  VkPipelineColorBlendAttachmentState forwardBlendAttachment{};
+  forwardBlendAttachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  forwardBlendAttachment.blendEnable = VK_FALSE;
+
+  VkPipelineColorBlendStateCreateInfo forwardBlending{};
+  forwardBlending.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  forwardBlending.logicOpEnable = VK_FALSE;
+  forwardBlending.attachmentCount = 1;
+  forwardBlending.pAttachments = &forwardBlendAttachment;
+
+  pipelineInfo.pStages = forwardStages;
+  pipelineInfo.pColorBlendState = &forwardBlending;
+  pipelineInfo.renderPass = _forwardLightingPass;
+
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                &pipelineInfo, nullptr,
+                                &skinnedForwardPipeline) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create skinned forward pipeline!");
+  }
+
+  vkDestroyShaderModule(device.getLogicalDevice(), skinnedVSModule, nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), skinnedBasePSModule,
+                         nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), skinnedForwardPSModule,
+                         nullptr);
+}
+
+void GpuScene::loadSkinnedMesh(const std::string &fbxPath) {
+  _skinnedMeshData = FbxLoader::loadFbx(
+      fbxPath, device.getLogicalDevice(), device.getPhysicalDevice(),
+      device.getCommandPool(), device.getGraphicsQueue(),
+      findMemoryTypeStatic);
+
+  if (!_skinnedMeshData) {
+    spdlog::error("Failed to load FBX: {}", fbxPath);
+    return;
+  }
+
+  _skinnedMeshInstance = new SkinnedMeshInstance();
+  _skinnedMeshInstance->init(_skinnedMeshData, device.getLogicalDevice(),
+                              device.getPhysicalDevice(),
+                              findMemoryTypeStatic);
+
+  createSkinnedDummyTexture();
+  initSkinnedDescriptors();
+  createSkinnedMeshPipeline();
+
+  spdlog::info("Skinned mesh loaded and pipeline created");
+}
+
+void GpuScene::drawSkinnedMesh(VkCommandBuffer commandBuffer) {
+  if (!_skinnedMeshInstance || !_skinnedMeshInstance->meshData ||
+      skinnedBasePipeline == VK_NULL_HANDLE)
+    return;
+
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    skinnedBasePipeline);
+
+  VkBuffer vertexBuffers[] = {_skinnedMeshInstance->meshData->vertexBuffer};
+  VkDeviceSize offsets[] = {0};
+  vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+  vkCmdBindIndexBuffer(commandBuffer,
+                       _skinnedMeshInstance->meshData->indexBuffer, 0,
+                       VK_INDEX_TYPE_UINT32);
+
+  VkDescriptorSet sets[] = {globalDescriptorSet, skinnedDescriptorSet};
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          skinnedPipelineLayout, 0, 2, sets, 0, nullptr);
+
+  struct {
+    mat4 worldMatrix;
+    uint32_t materialFlags;
+  } pc;
+  pc.worldMatrix = transpose(_skinnedMeshInstance->worldTransform);
+  pc.materialFlags = 1; // has diffuse
+
+  vkCmdPushConstants(
+      commandBuffer, skinnedPipelineLayout,
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+      &pc);
+
+  for (const auto &submesh : _skinnedMeshInstance->meshData->submeshes) {
+    vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.indexOffset,
+                     0, 0);
+  }
+}
+
+void GpuScene::drawSkinnedMeshForward(VkCommandBuffer commandBuffer) {
+  if (!_skinnedMeshInstance || !_skinnedMeshInstance->meshData ||
+      skinnedForwardPipeline == VK_NULL_HANDLE)
+    return;
+
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    skinnedForwardPipeline);
+
+  VkBuffer vertexBuffers[] = {_skinnedMeshInstance->meshData->vertexBuffer};
+  VkDeviceSize offsets[] = {0};
+  vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+  vkCmdBindIndexBuffer(commandBuffer,
+                       _skinnedMeshInstance->meshData->indexBuffer, 0,
+                       VK_INDEX_TYPE_UINT32);
+
+  VkDescriptorSet sets[] = {globalDescriptorSet, skinnedDescriptorSet};
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          skinnedPipelineLayout, 0, 2, sets, 0, nullptr);
+
+  struct {
+    mat4 worldMatrix;
+    uint32_t materialFlags;
+  } pc;
+  pc.worldMatrix = transpose(_skinnedMeshInstance->worldTransform);
+  pc.materialFlags = 1;
+
+  vkCmdPushConstants(
+      commandBuffer, skinnedPipelineLayout,
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
+      &pc);
+
+  for (const auto &submesh : _skinnedMeshInstance->meshData->submeshes) {
+    vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.indexOffset,
+                     0, 0);
+  }
 }

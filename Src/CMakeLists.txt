@@ -29,11 +29,14 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Shadow.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Light.cpp
     ${CMAKE_CURRENT_LIST_DIR}/AssetLoader.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/FbxLoader.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SkinnedMesh.cpp
 )
 
 
 add_executable(${OUTPUT_NAME} ${SOURCES})
 
 target_link_libraries(${OUTPUT_NAME}
-    ${LIBRARIES})
+    ${LIBRARIES}
+    assimp::assimp)
 
