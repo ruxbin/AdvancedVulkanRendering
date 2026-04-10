@@ -2715,6 +2715,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   init_deferredlighting_descriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
+  createOccluderWireframePipeline();
   createComputePipeline();
 
   _shadow = new Shadow(device,*this,1024);
@@ -3597,6 +3598,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                                     writeIndexBuffer, 2 * sizeof(uint32_t),
                                     applMesh->_transparentChunkCount,
                                     sizeof(VkDrawIndexedIndirectCommand));
+
+      // Debug: draw occluder wireframe overlay
+      drawOccludersWireframe(commandBuffer);
 
       vkCmdEndRenderPass(commandBuffer);
     }
@@ -4908,4 +4912,140 @@ void GpuScene::updateSamplerInDescriptors(VkImageView currentImage) {
   // setWrite.pBufferInfo = &binfo;
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+}
+
+void GpuScene::createOccluderWireframePipeline() {
+  auto vsCode =
+      readFile((_rootPath / "shaders/occluders.vs.spv").generic_string());
+  auto psCode = readFile(
+      (_rootPath / "shaders/occluders.wireframe.ps.spv").generic_string());
+
+  VkShaderModule vsModule = createShaderModule(vsCode);
+  VkShaderModule psModule = createShaderModule(psCode);
+
+  VkPipelineShaderStageCreateInfo vsStage{};
+  vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+  vsStage.module = vsModule;
+  vsStage.pName = "RenderSceneVS";
+
+  VkPipelineShaderStageCreateInfo psStage{};
+  psStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  psStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  psStage.module = psModule;
+  psStage.pName = "WireframePS";
+
+  VkPipelineShaderStageCreateInfo stages[] = {vsStage, psStage};
+
+  VkVertexInputBindingDescription binding = {
+      .binding = 0,
+      .stride = sizeof(float) * 3,
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
+  VkVertexInputAttributeDescription attr = {
+      .location = 0,
+      .binding = 0,
+      .format = VK_FORMAT_R32G32B32_SFLOAT,
+      .offset = 0};
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInput.vertexBindingDescriptionCount = 1;
+  vertexInput.pVertexBindingDescriptions = &binding;
+  vertexInput.vertexAttributeDescriptionCount = 1;
+  vertexInput.pVertexAttributeDescriptions = &attr;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+  VkViewport viewport{};
+  viewport.width = (float)device.getSwapChainExtent().width;
+  viewport.height = (float)device.getSwapChainExtent().height;
+  viewport.maxDepth = 1.0f;
+  VkRect2D scissor{{0, 0}, device.getSwapChainExtent()};
+
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.pViewports = &viewport;
+  viewportState.scissorCount = 1;
+  viewportState.pScissors = &scissor;
+
+  VkPipelineRasterizationStateCreateInfo rasterizer{};
+  rasterizer.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+  rasterizer.lineWidth = 1.0f;
+  rasterizer.cullMode = VK_CULL_MODE_NONE;
+  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+  VkPipelineMultisampleStateCreateInfo multisampling{};
+  multisampling.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthTestEnable = VK_TRUE;
+  depthStencil.depthWriteEnable = VK_FALSE;
+  depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  blendAttachment.blendEnable = VK_FALSE;
+
+  VkPipelineColorBlendStateCreateInfo colorBlending{};
+  colorBlending.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlending.attachmentCount = 1;
+  colorBlending.pAttachments = &blendAttachment;
+
+  VkGraphicsPipelineCreateInfo pipelineInfo{};
+  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineInfo.stageCount = 2;
+  pipelineInfo.pStages = stages;
+  pipelineInfo.pVertexInputState = &vertexInput;
+  pipelineInfo.pInputAssemblyState = &inputAssembly;
+  pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pRasterizationState = &rasterizer;
+  pipelineInfo.pMultisampleState = &multisampling;
+  pipelineInfo.pDepthStencilState = &depthStencil;
+  pipelineInfo.pColorBlendState = &colorBlending;
+  pipelineInfo.layout = pipelineLayout; // reuse existing (globalSetLayout only)
+  pipelineInfo.renderPass = _forwardLightingPass;
+  pipelineInfo.subpass = 0;
+
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                &pipelineInfo, nullptr,
+                                &occluderWireframePipeline) != VK_SUCCESS) {
+    throw std::runtime_error(
+        "failed to create occluder wireframe pipeline!");
+  }
+
+  vkDestroyShaderModule(device.getLogicalDevice(), vsModule, nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), psModule, nullptr);
+}
+
+void GpuScene::drawOccludersWireframe(VkCommandBuffer commandBuffer) {
+  if (occluderWireframePipeline == VK_NULL_HANDLE)
+    return;
+
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    occluderWireframePipeline);
+
+  VkBuffer vertexBuffers[] = {_occludersVertBuffer};
+  VkDeviceSize offsets[] = {0};
+  vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+  vkCmdBindIndexBuffer(commandBuffer, _occludersIndexBuffer, 0,
+                       VK_INDEX_TYPE_UINT32);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipelineLayout, 0, 1, &globalDescriptorSet, 0,
+                          nullptr);
+  vkCmdDrawIndexed(commandBuffer, sceneFile["occluder_indices"].size(), 1, 0, 0,
+                   0);
 }

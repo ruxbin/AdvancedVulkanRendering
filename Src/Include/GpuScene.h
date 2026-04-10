@@ -287,6 +287,11 @@ private:
   VkPipelineLayout drawOccluderPipelineLayout;
   VkPipeline drawOccluderPipeline;
 
+  // Debug wireframe occluder overlay
+  VkPipeline occluderWireframePipeline = VK_NULL_HANDLE;
+  void createOccluderWireframePipeline();
+  void drawOccludersWireframe(VkCommandBuffer commandBuffer);
+
   Shadow *_shadow;
   std::vector<PointLight> _pointLights;
   std::vector<SpotLight> _spotLights;

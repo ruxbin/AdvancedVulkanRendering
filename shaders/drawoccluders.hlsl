@@ -28,5 +28,11 @@ VSOutput RenderSceneVS( VSInput input)
     float4x4 finalMatrix = mul(cameraParams.projectionMatrix, cameraParams.viewMatrix);
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
-    return Output;    
+    return Output;
+}
+
+// Debug wireframe output - green color
+float4 WireframePS(VSOutput input) : SV_Target
+{
+    return float4(0.0, 1.0, 0.0, 1.0);
 }
