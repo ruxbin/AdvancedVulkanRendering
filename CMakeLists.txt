@@ -65,6 +65,20 @@ link_directories(ThirdParty/lzfse/build/Debug)
 link_directories(ThirdParty/lzfse/build)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/Src/Include)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/ThirdParty/json/single_include)
+
+# Assimp for FBX loading
+include(FetchContent)
+FetchContent_Declare(assimp
+    GIT_REPOSITORY https://github.com/assimp/assimp.git
+    GIT_TAG v5.4.3
+)
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(assimp)
+include_directories(${assimp_SOURCE_DIR}/include ${assimp_BINARY_DIR}/include)
+
 add_subdirectory(Src/)
 #add_subdirectory(Examples/)
 
