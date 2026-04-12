@@ -19,9 +19,9 @@ cbuffer cam
 
 [[vk::binding(6,1)]] Texture2DArray<float> shadowMaps;
 [[vk::binding(7,1)]] SamplerComparisonState shadowSampler;
-[[vk::binding(8,1)]]
-StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
-[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
+//[[vk::binding(8,1)]]
+//StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
+//[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
 
 struct VSOutput
 {
@@ -112,7 +112,7 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     float shadow = evaluateCascadeShadows(cameraParams, worldPosition, false);
     
     half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow;
-    if(useClusterLighting)
+    /*if(useClusterLighting)
     {
 	//get the cluster index
 	uint xClusterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
@@ -128,7 +128,7 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 
 		result += lightingShaderPointSpot(surfaceData,depth,worldPosition,frameConstants,cameraParams,posRadiusSqr,pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].color.xyz);
 	}
-    }
+    }*/
     
     return half4(result, 1.f);
     

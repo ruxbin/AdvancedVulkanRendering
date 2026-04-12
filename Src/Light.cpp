@@ -1212,7 +1212,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   VkWriteDescriptorSet setTraditionalDebug;
   setTraditionalDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setTraditionalDebug.pNext = nullptr;
-  setTraditionalDebug.dstBinding = 7;
+  setTraditionalDebug.dstBinding = 8;
   setTraditionalDebug.dstSet = coarseCullDescriptorSet;
   setTraditionalDebug.dstArrayElement = 0;
   setTraditionalDebug.descriptorCount = 1;

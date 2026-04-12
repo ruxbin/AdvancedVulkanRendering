@@ -188,8 +188,8 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass) {
   rasterizer.rasterizerDiscardEnable = VK_FALSE;
   rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
   rasterizer.lineWidth = 1.0f;
-  rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizer.cullMode = VK_CULL_MODE_NONE;
+  rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
   rasterizer.depthBiasEnable = VK_FALSE;
 
   VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -424,13 +424,6 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   drawclusterForwardIndirectPSStageInfo.module = drawclusterForwardIndirectPSModule;
   drawclusterForwardIndirectPSStageInfo.pName = "RenderSceneForwardPSIndirect";
 
-  VkPipelineShaderStageCreateInfo deferredLightingPSShaderStageInfo{};
-  deferredLightingPSShaderStageInfo.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  deferredLightingPSShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  deferredLightingPSShaderStageInfo.module = deferredLightingPSShaderModule;
-  deferredLightingPSShaderStageInfo.pName = "DeferredLighting";
-
   VkBool32 useClusterLighting = true;
   VkSpecializationInfo specializationInfo_clusterlighting = {};
   specializationInfo_clusterlighting.mapEntryCount = 1;
@@ -463,7 +456,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       drawclusterVSShaderStageInfo, drawclusterForwardPSShaderStageInfo};
 
   VkPipelineShaderStageCreateInfo deferredLightingPassStages[] = {
-      deferredLightingVSShaderStageInfo, deferredLightingPSShaderStageInfo};
+      deferredLightingVSShaderStageInfo, deferredLightingPSShaderStageInfo_clusterlighting};
 
   VkPipelineShaderStageCreateInfo deferredLightingPassStages_clusterlighting[] =
       {deferredLightingVSShaderStageInfo,
@@ -1560,7 +1553,7 @@ void GpuScene::init_drawparams_descriptors() {
   chunkIndicesBufferInfo.buffer = chunkIndicesBuffer;
   // at 0 offset
   chunkIndicesBufferInfo.offset = 0;
-  chunkIndicesBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount;
+  chunkIndicesBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount * 2 *SHADOW_CASCADE_COUNT;
 
   VkWriteDescriptorSet chunkIndicesBufferWrite = {};
   chunkIndicesBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1817,7 +1810,7 @@ void GpuScene::init_appl_descriptors() {
   chunkIndexBufferInfo.buffer = chunkIndicesBuffer;
   // at 0 offset
   chunkIndexBufferInfo.offset = 0;
-  chunkIndexBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount;
+  chunkIndexBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount * 2 * SHADOW_CASCADE_COUNT;
 
   VkWriteDescriptorSet chunkIndexBufferWrite = {};
   chunkIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2788,6 +2781,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
     vkUnmapMemory(device.getLogicalDevice(), pointLightBufferMemory);
 
     PointLight::InitRHI(device, *this);
+    _shadow->InitGPUShadowResources(device,*this);
   }
 
   // spot light
@@ -3298,6 +3292,39 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
 
+
+    {
+            const Frustum &cascadeFrustum = maincamera->getFrustum();
+    // TODO: compute proper cascade frustum from shadow VP matrix
+  uint32_t opaqueCount = applMesh->_opaqueChunkCount;
+  uint32_t alphaMaskedCount = applMesh->_alphaMaskedChunkCount;
+  uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
+    // Upload shadow cull params
+    {
+      void *data;
+      vkMapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemory, 0,
+                  sizeof(Shadow::ShadowCullParams), 0, &data);
+      memcpy((char *)data + 0, &opaqueCount, sizeof(uint32_t));
+      memcpy((char *)data + 4, &alphaMaskedCount, sizeof(uint32_t));
+      memcpy((char *)data + 8, &cascadeMaxChunks, sizeof(uint32_t));
+      uint32_t cascadeIdx = SHADOW_CASCADE_COUNT;
+      memcpy((char *)data + 12, &cascadeIdx, sizeof(uint32_t));
+      memcpy((char *)data + 16, &cascadeFrustum, sizeof(Frustum));
+      vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemory);
+    }
+
+    // Reset write counters for this cascade
+    for (int cascade = 0; cascade < SHADOW_CASCADE_COUNT; ++cascade)
+    {
+      void *data;
+      vkMapMemory(device.getLogicalDevice(), _shadow->_shadowWriteIndexMemory,
+                  cascade * 2 * sizeof(uint32_t), 2 * sizeof(uint32_t), 0, &data);
+      uint32_t zeros[2] = {0, 0};
+      memcpy(data, zeros, 2 * sizeof(uint32_t));
+      vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowWriteIndexMemory);
+    }
+    }
+
     // spdlog::info("{} {}", sizeof(gpuCullParams), offsetof(gpuCullParams,
     // frustum));
     {
@@ -3352,6 +3379,8 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     throw std::runtime_error("failed to begin recording command buffer!");
   }
 
+  {_shadow->RenderShadowMap(commandBuffer, *this, device); }
+
   // Draw occluders first for Hi-Z generation
   DrawOccluders(commandBuffer);
 
@@ -3387,7 +3416,6 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
   vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
-  { _shadow->RenderShadowMap(commandBuffer, *this, device); }
 
   {
     VkRenderPassBeginInfo renderPassInfo{};
@@ -3465,6 +3493,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     for (int i = 0; i < 4; i++)
       transitionImageLayout(_gbuffers[i], _gbufferFormat[i],
                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, commandBuffer);
+
+    transitionShaderMapLayout(_shadow->_shadowMaps, SHADOW_FORMAT,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, commandBuffer);
 
     if (useClusterLighting) {
@@ -4916,7 +4948,7 @@ void GpuScene::updateSamplerInDescriptors(VkImageView currentImage) {
 
 void GpuScene::createOccluderWireframePipeline() {
   auto vsCode =
-      readFile((_rootPath / "shaders/occluders.vs.spv").generic_string());
+      readFile((_rootPath / "shaders/occluders.wireframe.vs.spv").generic_string());
   auto psCode = readFile(
       (_rootPath / "shaders/occluders.wireframe.ps.spv").generic_string());
 

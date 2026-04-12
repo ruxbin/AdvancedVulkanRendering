@@ -300,7 +300,7 @@ private:
 
   LightCuller *_lightCuller = nullptr;
 
-  bool useClusterLighting = true;
+  bool useClusterLighting = false;
 
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;
@@ -388,6 +388,35 @@ public:
   void updateSamplerInDescriptors(VkImageView currentImage);
 
   void ConfigureMaterial(const AAPLMaterial &, AAPLShaderMaterial &);
+
+  void transitionShaderMapLayout(VkImage image, VkFormat format,
+                             VkImageLayout oldLayout,
+                             VkImageLayout newLayout,
+                             VkCommandBuffer commandBuffer) const{
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 3;//SHADOW_CASCADE_COUNT;
+
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+              
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+
+  }
 
   void transitionImageLayout(VkImage image, VkFormat format,
                              VkImageLayout oldLayout,

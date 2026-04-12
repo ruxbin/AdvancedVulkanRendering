@@ -184,7 +184,7 @@ PSOutput RenderSceneBasePass(VSOutput input)
 	return output;
 }
 
-
+//deprecated - cpu push constant version
 PSOutput RenderSceneBasePS(VSOutput input)
 {
     PSOutput output;

@@ -227,7 +227,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   shadowDepthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   shadowDepthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   shadowDepthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  shadowDepthAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  shadowDepthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   VkAttachmentReference depthAttachmentRef{};
   depthAttachmentRef.attachment = 0;
@@ -292,21 +292,13 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
       (gpuScene.RootPath() / "shaders/drawclusterShadow.vs.spv").generic_string());
   
   auto drawClusterPSShaderCodeDepthOnly =
-      readFile((gpuScene.RootPath() / "shaders/drawcluster.depth.ps.spv")
+      readFile((gpuScene.RootPath() / "shaders/drawcluster.shadow.indirect.ps.spv")
                    .generic_string());
 
   VkShaderModule vertShaderModule = gpuScene.createShaderModule(vsShaderShadowCode);
   VkShaderModule drawclusterPSShaderModuleDepthOnly =
       gpuScene.createShaderModule(drawClusterPSShaderCodeDepthOnly);
   // TODO: merge with GpuScene::createShaderModule
-  VkPipelineShaderStageCreateInfo drawclusterPSShaderStageInfoDepthOnly{};
-  drawclusterPSShaderStageInfoDepthOnly.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  drawclusterPSShaderStageInfoDepthOnly.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  drawclusterPSShaderStageInfoDepthOnly.module =
-      drawclusterPSShaderModuleDepthOnly;
-  drawclusterPSShaderStageInfoDepthOnly.pName = "RenderSceneDepthOnly";
-
   VkSpecializationMapEntry mapEntry = {};
   mapEntry.constantID = 0; // matches constant_id in GLSL and SpecId in SPIR-V
   mapEntry.offset = 0;
@@ -333,7 +325,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
       VK_SHADER_STAGE_FRAGMENT_BIT;
   drawclusterPSShaderStageInfoAlphaMaskDepthOnly.module =
       drawclusterPSShaderModuleDepthOnly;
-  drawclusterPSShaderStageInfoAlphaMaskDepthOnly.pName = "RenderSceneDepthOnly";
+  drawclusterPSShaderStageInfoAlphaMaskDepthOnly.pName = "RenderSceneShadowDepthIndirect";
   drawclusterPSShaderStageInfoAlphaMaskDepthOnly.pSpecializationInfo =
       &specializationInfo;
 
@@ -554,36 +546,7 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
   uint32_t alphaMaskedCount = gpuScene.applMesh->_alphaMaskedChunkCount;
   uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
 
-  for (int cascade = 0; cascade < SHADOW_CASCADE_COUNT; ++cascade) {
-    // Use camera frustum for shadow culling (conservative)
-    const Frustum &cascadeFrustum = gpuScene.maincamera->getFrustum();
-    // TODO: compute proper cascade frustum from shadow VP matrix
-
-    // Upload shadow cull params
-    {
-      void *data;
-      vkMapMemory(device.getLogicalDevice(), _shadowCullParamsMemory, 0,
-                  sizeof(ShadowCullParams), 0, &data);
-      memcpy((char *)data + 0, &opaqueCount, sizeof(uint32_t));
-      memcpy((char *)data + 4, &alphaMaskedCount, sizeof(uint32_t));
-      memcpy((char *)data + 8, &cascadeMaxChunks, sizeof(uint32_t));
-      uint32_t cascadeIdx = cascade;
-      memcpy((char *)data + 12, &cascadeIdx, sizeof(uint32_t));
-      memcpy((char *)data + 16, &cascadeFrustum, sizeof(Frustum));
-      vkUnmapMemory(device.getLogicalDevice(), _shadowCullParamsMemory);
-    }
-
-    // Reset write counters for this cascade
-    {
-      void *data;
-      vkMapMemory(device.getLogicalDevice(), _shadowWriteIndexMemory,
-                  cascade * 2 * sizeof(uint32_t), 2 * sizeof(uint32_t), 0, &data);
-      uint32_t zeros[2] = {0, 0};
-      memcpy(data, zeros, 2 * sizeof(uint32_t));
-      vkUnmapMemory(device.getLogicalDevice(), _shadowWriteIndexMemory);
-    }
-
-    // Dispatch ShadowCull compute shader
+  // Dispatch ShadowCull compute shader
     uint32_t groupx = (cascadeMaxChunks + 127) / 128;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       _shadowCullPipeline);
@@ -592,7 +555,7 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
                             &_shadowCullDescriptorSet, 0, nullptr);
     vkCmdDispatch(commandBuffer, groupx, 1, 1);
 
-    // Barrier: compute → indirect draw
+// Barrier: compute → indirect draw
     VkMemoryBarrier2 memBarrier = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .pNext = nullptr,
@@ -611,6 +574,29 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     };
     vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 
+     VkBuffer vertexBuffers[] = {
+        gpuScene.applVertexBuffer, gpuScene.applNormalBuffer,
+        gpuScene.applTangentBuffer, gpuScene.applUVBuffer};
+    VkDeviceSize vbOffsets[] = {0, 0, 0, 0};
+
+    vkCmdBindVertexBuffers(commandBuffer, 0,
+                           sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
+                           vertexBuffers, vbOffsets);
+    vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
+                         VK_INDEX_TYPE_UINT32);
+
+    VkDescriptorSet shadowDescriptorSets[] = {gpuScene.globalDescriptorSet, gpuScene.applDescriptorSet};
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            _shadowPassPipelineLayout, 0, 2,
+                            shadowDescriptorSets, 0, nullptr);
+
+  for (int cascade = 0; cascade < SHADOW_CASCADE_COUNT; ++cascade) {
+    // Use camera frustum for shadow culling (conservative)
+
+
+    
+    
+
     // Begin shadow render pass
     std::array<VkClearValue, 1> clearValues{};
     clearValues[0].depthStencil = {1.0f, 0};
@@ -626,21 +612,7 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
 
     vkCmdBeginRenderPass(commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    VkBuffer vertexBuffers[] = {
-        gpuScene.applVertexBuffer, gpuScene.applNormalBuffer,
-        gpuScene.applTangentBuffer, gpuScene.applUVBuffer};
-    VkDeviceSize vbOffsets[] = {0, 0, 0, 0};
-
-    vkCmdBindVertexBuffers(commandBuffer, 0,
-                           sizeof(vertexBuffers) / sizeof(vertexBuffers[0]),
-                           vertexBuffers, vbOffsets);
-    vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
-                         VK_INDEX_TYPE_UINT32);
-
-    VkDescriptorSet shadowDescriptorSets[] = {gpuScene.globalDescriptorSet, gpuScene.applDescriptorSet};
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            _shadowPassPipelineLayout, 0, 2,
-                            shadowDescriptorSets, 0, nullptr);
+   
 
     // Buffer layout per cascade: [opaque region: cascadeMaxChunks][alphaMask region: cascadeMaxChunks]
     VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
@@ -681,7 +653,7 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
   uint32_t opaqueCount = gpuScene.applMesh->_opaqueChunkCount;
   uint32_t alphaMaskedCount = gpuScene.applMesh->_alphaMaskedChunkCount;
   uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
-  uint32_t totalSlots = SHADOW_CASCADE_COUNT * cascadeMaxChunks * 2;
+  uint32_t totalSlots = SHADOW_CASCADE_COUNT * gpuScene.applMesh->_chunkCount * 2;
 
   auto createBuf = [&](VkDeviceSize size, VkBufferUsageFlags usage,
                        VkMemoryPropertyFlags props, VkBuffer &buf,

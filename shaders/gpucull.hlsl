@@ -28,7 +28,7 @@
 // --- Hi-Z Occlusion Test ---
 bool IsOccludedByHiZ(AAPLBoundingBox3 aabb)
 {
-    if (hizMipLevels == 0)
+    //if (hizMipLevels == 0)
         return false;
 
     float minX = 1.0, minY = 1.0, maxX = 0.0, maxY = 0.0;

@@ -6,7 +6,7 @@
     uint opaqueChunkCount;
     uint alphaMaskedChunkCount;
     uint cascadeMaxChunks; // max chunks per category per cascade
-    uint cascadeIndex;
+    uint cascadeCount;
     Frustum cascadeFrustum;
 };
 [[vk::binding(2,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks;
@@ -33,27 +33,32 @@ void ShadowCull(uint3 DTid : SV_DispatchThreadID)
     uint indexBegin = meshChunks[chunkIndex].indexBegin;
 
     // Base offset for this cascade in the shared buffer
-    uint cascadeBaseOpaque = cascadeIndex * cascadeMaxChunks * 2;
-    uint cascadeBaseAlphaMask = cascadeBaseOpaque + cascadeMaxChunks;
+    [unroll]
+    for(uint cascadeIndex=0;cascadeIndex<cascadeCount;cascadeIndex++)
+    {
+        uint cascadeBaseOpaque = cascadeIndex * cascadeMaxChunks * 2;
+        uint cascadeBaseAlphaMask = cascadeBaseOpaque + cascadeMaxChunks;
 
-    if (chunkIndex < opaqueChunkCount)
-    {
-        uint insertIndex;
-        InterlockedAdd(shadowWriteIndex[cascadeIndex * 2 + 0], 1, insertIndex);
-        uint globalIdx = cascadeBaseOpaque + insertIndex;
-        DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, globalIdx };
-        shadowDrawParams[globalIdx] = cmd;
-        shadowChunkIndices[globalIdx] = chunkIndex;
-//        shadowInstanceMap[globalIdx] = globalIdx;
+        if (chunkIndex < opaqueChunkCount)
+        {
+            uint insertIndex;
+            InterlockedAdd(shadowWriteIndex[cascadeIndex * 2 + 0], 1, insertIndex);
+            uint globalIdx = cascadeBaseOpaque + insertIndex;
+            DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, globalIdx };
+            shadowDrawParams[globalIdx] = cmd;
+            shadowChunkIndices[globalIdx] = chunkIndex;
+//            shadowInstanceMap[globalIdx] = globalIdx;
+        }
+        else
+        {
+            uint insertIndex;
+            InterlockedAdd(shadowWriteIndex[cascadeIndex * 2 + 1], 1, insertIndex);
+            uint globalIdx = cascadeBaseAlphaMask + insertIndex;
+            DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, globalIdx };
+            shadowDrawParams[globalIdx] = cmd;
+            shadowChunkIndices[globalIdx] = chunkIndex;
+//            shadowInstanceMap[globalIdx] = globalIdx;
+        }
     }
-    else
-    {
-        uint insertIndex;
-        InterlockedAdd(shadowWriteIndex[cascadeIndex * 2 + 1], 1, insertIndex);
-        uint globalIdx = cascadeBaseAlphaMask + insertIndex;
-        DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, globalIdx };
-        shadowDrawParams[globalIdx] = cmd;
-        shadowChunkIndices[globalIdx] = chunkIndex;
-//        shadowInstanceMap[globalIdx] = globalIdx;
-    }
+    
 }
