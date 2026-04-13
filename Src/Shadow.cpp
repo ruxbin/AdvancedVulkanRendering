@@ -227,7 +227,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   shadowDepthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   shadowDepthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   shadowDepthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  shadowDepthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  shadowDepthAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkAttachmentReference depthAttachmentRef{};
   depthAttachmentRef.attachment = 0;
@@ -239,15 +239,21 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   subpass.pColorAttachments = nullptr;
   subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-  VkSubpassDependency dependency{};
-  dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-  dependency.dstSubpass = 0;
-  dependency.srcAccessMask = 0;
-  dependency.srcStageMask =
-      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT; // TODO: is dependency mask
-                                                  // right?
-  dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  VkSubpassDependency dependencies[2] = {};
+  // Entry: wait for previous frame's shader read before depth write
+  dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+  dependencies[0].dstSubpass = 0;
+  dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  dependencies[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  // Exit: depth write → shader read (finalLayout transition to SHADER_READ_ONLY)
+  dependencies[1].srcSubpass = 0;
+  dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+  dependencies[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
   std::array<VkAttachmentDescription, 1> attachments = {shadowDepthAttachment};
   VkRenderPassCreateInfo renderPassInfo{};
@@ -256,8 +262,8 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   renderPassInfo.pAttachments = attachments.data();
   renderPassInfo.subpassCount = 1;
   renderPassInfo.pSubpasses = &subpass;
-  renderPassInfo.dependencyCount = 1;
-  renderPassInfo.pDependencies = &dependency;
+  renderPassInfo.dependencyCount = 2;
+  renderPassInfo.pDependencies = dependencies;
 
   if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr,
                          &_shadowPass) != VK_SUCCESS) {

@@ -2995,7 +2995,7 @@ void GpuScene::CreateDeferredBasePass() {
     gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     gbufferAttachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     gbufferAttachments[i].finalLayout =
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   }
 
   VkAttachmentDescription depthAttachment{};
@@ -3025,16 +3025,24 @@ void GpuScene::CreateDeferredBasePass() {
   subpass.pColorAttachments = gbufferAttachmentRefs;
   subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-  VkSubpassDependency dependency{};
-  dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-  dependency.dstSubpass = 0;
-  dependency.srcAccessMask = 0;
-  dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+  VkSubpassDependency dependencies[2] = {};
+  // Entry dependency: external → subpass 0
+  dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+  dependencies[0].dstSubpass = 0;
+  dependencies[0].srcAccessMask = 0;
+  dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+  dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+  dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  // Exit dependency: subpass 0 → external (GBuffer finalLayout transition → shader read)
+  dependencies[1].srcSubpass = 0;
+  dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+  dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
   std::array<VkAttachmentDescription, 5> attachments = {
       gbufferAttachments[0], gbufferAttachments[1], gbufferAttachments[2],
@@ -3045,8 +3053,8 @@ void GpuScene::CreateDeferredBasePass() {
   renderPassInfo.pAttachments = attachments.data();
   renderPassInfo.subpassCount = 1;
   renderPassInfo.pSubpasses = &subpass;
-  renderPassInfo.dependencyCount = 1;
-  renderPassInfo.pDependencies = &dependency;
+  renderPassInfo.dependencyCount = 2;
+  renderPassInfo.pDependencies = dependencies;
 
   if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr,
                          &_basePass) != VK_SUCCESS) {
@@ -3485,19 +3493,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   // short),1,0,0,0);
 
   {
-    // TODO: test with subpass dependency
-    // transition the image layout
-    // notice:换成device的transitionImageLayout会报错,validation layer
-    // 关于barrier只在同一个commandbuffer中记录imageview的layout，跨commandbuffer会报错~
-
-    for (int i = 0; i < 4; i++)
-      transitionImageLayout(_gbuffers[i], _gbufferFormat[i],
-                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, commandBuffer);
-
-    transitionShaderMapLayout(_shadow->_shadowMaps, SHADOW_FORMAT,
-                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, commandBuffer);
+    // GBuffer layout transition is now handled by render pass finalLayout
+    // (SHADER_READ_ONLY_OPTIMAL) + exit subpass dependency
+    // Shadow map layout transition is handled by shadow render pass finalLayout
 
     if (useClusterLighting) {
       // don't need to write stencil anymore
@@ -3513,7 +3511,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       barrier.subresourceRange.levelCount = 1;
       barrier.subresourceRange.baseArrayLayer = 0;
       barrier.subresourceRange.layerCount = 1;
-      barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
       vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
@@ -4290,7 +4288,7 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
     // Last mip was written in GENERAL, transition it too
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = (_hizMipLevels > 1) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_GENERAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

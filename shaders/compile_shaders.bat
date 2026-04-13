@@ -44,3 +44,9 @@ D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConduc
 
 REM compiling drawclustershadowVS
 D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadow -Fo drawclusterShadow.vs.spv
+
+REM compiling drawoccludersvs
+D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -E RenderSceneVS drawoccluders.hlsl -T vs_6_0 -Fo occluders.wireframe.vs.spv
+
+REM compiling drawoccludersps
+D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -E WireframePS drawoccluders.hlsl -T ps_6_0 -Fo occluders.wireframe.ps.spv
