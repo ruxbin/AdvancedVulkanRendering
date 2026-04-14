@@ -556,9 +556,11 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     uint32_t groupx = (cascadeMaxChunks + 127) / 128;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       _shadowCullPipeline);
+    uint32_t currentFrame = gpuScene.currentFrame;
+
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             _shadowCullPipelineLayout, 0, 1,
-                            &_shadowCullDescriptorSet, 0, nullptr);
+                            &_shadowCullDescriptorSets[currentFrame], 0, nullptr);
     vkCmdDispatch(commandBuffer, groupx, 1, 1);
 
 // Barrier: compute → indirect draw
@@ -591,7 +593,7 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0,
                          VK_INDEX_TYPE_UINT32);
 
-    VkDescriptorSet shadowDescriptorSets[] = {gpuScene.globalDescriptorSet, gpuScene.applDescriptorSet};
+    VkDescriptorSet shadowDescriptorSets[] = {gpuScene.globalDescriptorSets[currentFrame], gpuScene.applDescriptorSets[currentFrame]};
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             _shadowPassPipelineLayout, 0, 2,
                             shadowDescriptorSets, 0, nullptr);
@@ -634,9 +636,9 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       _shadowPassPipeline);
     vkCmdDrawIndexedIndirectCount(commandBuffer,
-                                  _shadowDrawParamsBuffer,
+                                  _shadowDrawParamsBuffers[currentFrame],
                                   cascadeBaseOpaque * stride,
-                                  _shadowWriteIndexBuffer,
+                                  _shadowWriteIndexBuffers[currentFrame],
                                   cascade * 2 * sizeof(uint32_t),
                                   opaqueCount, stride);
 
@@ -644,9 +646,9 @@ void Shadow::RenderShadowMap(VkCommandBuffer &commandBuffer,
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       _shadowPassPipelineAlphaMask);
     vkCmdDrawIndexedIndirectCount(commandBuffer,
-                                  _shadowDrawParamsBuffer,
+                                  _shadowDrawParamsBuffers[currentFrame],
                                   cascadeBaseAlphaMask * stride,
-                                  _shadowWriteIndexBuffer,
+                                  _shadowWriteIndexBuffers[currentFrame],
                                   (cascade * 2 + 1) * sizeof(uint32_t),
                                   alphaMaskedCount, stride);
 
@@ -660,6 +662,8 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
   uint32_t alphaMaskedCount = gpuScene.applMesh->_alphaMaskedChunkCount;
   uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
   uint32_t totalSlots = SHADOW_CASCADE_COUNT * gpuScene.applMesh->_chunkCount * 2;
+
+  uint32_t framesInFlight = gpuScene.framesInFlight;
 
   auto createBuf = [&](VkDeviceSize size, VkBufferUsageFlags usage,
                        VkMemoryPropertyFlags props, VkBuffer &buf,
@@ -680,21 +684,29 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
     vkBindBufferMemory(device.getLogicalDevice(), buf, mem, 0);
   };
 
-  createBuf(totalSlots * sizeof(VkDrawIndexedIndirectCommand),
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            _shadowDrawParamsBuffer, _shadowDrawParamsMemory);
+  _shadowDrawParamsBuffers.resize(framesInFlight);
+  _shadowDrawParamsMemories.resize(framesInFlight);
+  _shadowWriteIndexBuffers.resize(framesInFlight);
+  _shadowWriteIndexMemories.resize(framesInFlight);
+  _shadowCullParamsBuffers.resize(framesInFlight);
+  _shadowCullParamsMemories.resize(framesInFlight);
 
-  createBuf(SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            _shadowWriteIndexBuffer, _shadowWriteIndexMemory);
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    createBuf(totalSlots * sizeof(VkDrawIndexedIndirectCommand),
+              VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+              _shadowDrawParamsBuffers[f], _shadowDrawParamsMemories[f]);
 
+    createBuf(SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t),
+              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+              _shadowWriteIndexBuffers[f], _shadowWriteIndexMemories[f]);
 
-  createBuf(sizeof(ShadowCullParams),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            _shadowCullParamsBuffer, _shadowCullParamsMemory);
+    createBuf(sizeof(ShadowCullParams),
+              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+              _shadowCullParamsBuffers[f], _shadowCullParamsMemories[f]);
+  }
 
   // Descriptor set layout (matches shadowcull.hlsl)
   VkDescriptorSetLayoutBinding layoutBindings[] = {
@@ -714,53 +726,57 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
                               &_shadowCullSetLayout);
 
   std::vector<VkDescriptorPoolSize> poolSizes = {
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10}};
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 * framesInFlight}};
   VkDescriptorPoolCreateInfo poolInfo{};
   poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  poolInfo.maxSets = 10;
+  poolInfo.maxSets = 10 * framesInFlight;
   poolInfo.poolSizeCount = poolSizes.size();
   poolInfo.pPoolSizes = poolSizes.data();
   vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr,
                          &_shadowCullDescriptorPool);
 
+  _shadowCullDescriptorSets.resize(framesInFlight);
+  std::vector<VkDescriptorSetLayout> layouts(framesInFlight, _shadowCullSetLayout);
+
   VkDescriptorSetAllocateInfo dsAlloc{};
   dsAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   dsAlloc.descriptorPool = _shadowCullDescriptorPool;
-  dsAlloc.descriptorSetCount = 1;
-  dsAlloc.pSetLayouts = &_shadowCullSetLayout;
+  dsAlloc.descriptorSetCount = framesInFlight;
+  dsAlloc.pSetLayouts = layouts.data();
   vkAllocateDescriptorSets(device.getLogicalDevice(), &dsAlloc,
-                           &_shadowCullDescriptorSet);
+                           _shadowCullDescriptorSets.data());
 
-  // Write descriptors
-  VkDescriptorBufferInfo drawParamsInfo = {_shadowDrawParamsBuffer, 0, totalSlots * sizeof(VkDrawIndexedIndirectCommand)};
-  VkDescriptorBufferInfo cullParamsInfo = {_shadowCullParamsBuffer, 0, sizeof(ShadowCullParams)};
-  VkDescriptorBufferInfo meshChunksInfo = {gpuScene.meshChunksBuffer, 0, sizeof(AAPLMeshChunk) * gpuScene.applMesh->_chunkCount};
-  VkDescriptorBufferInfo writeIdxInfo = {_shadowWriteIndexBuffer, 0, SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t)};
-  VkDescriptorBufferInfo chunkIdxInfo = {gpuScene.chunkIndicesBuffer, 0, totalSlots * sizeof(uint32_t)};
+  // Write descriptors for each frame
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkDescriptorBufferInfo drawParamsInfo = {_shadowDrawParamsBuffers[f], 0, totalSlots * sizeof(VkDrawIndexedIndirectCommand)};
+    VkDescriptorBufferInfo cullParamsInfo = {_shadowCullParamsBuffers[f], 0, sizeof(ShadowCullParams)};
+    VkDescriptorBufferInfo meshChunksInfo = {gpuScene.meshChunksBuffer, 0, sizeof(AAPLMeshChunk) * gpuScene.applMesh->_chunkCount};
+    VkDescriptorBufferInfo writeIdxInfo = {_shadowWriteIndexBuffers[f], 0, SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t)};
+    VkDescriptorBufferInfo chunkIdxInfo = {gpuScene.chunkIndicesBuffers[f], 0, totalSlots * sizeof(uint32_t)};
 
+    VkWriteDescriptorSet dsWrites[5] = {};
+    constexpr int writecount = sizeof(dsWrites) / sizeof(dsWrites[0]);
+    std::vector<VkDescriptorBufferInfo> bufInfos;
+    bufInfos.push_back(drawParamsInfo);
+    bufInfos.push_back(cullParamsInfo);
+    bufInfos.push_back(meshChunksInfo);
+    bufInfos.push_back(writeIdxInfo);
+    bufInfos.push_back(chunkIdxInfo);
+    VkDescriptorType types[] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    for (int b = 0; b < writecount; ++b) {
+      dsWrites[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      dsWrites[b].dstSet = _shadowCullDescriptorSets[f];
+      dsWrites[b].dstBinding = b;
+      dsWrites[b].descriptorCount = 1;
+      dsWrites[b].descriptorType = types[b];
+      dsWrites[b].pBufferInfo = &bufInfos[b];
+    }
 
-  VkWriteDescriptorSet dsWrites[5] = {};
-  constexpr int writecount = sizeof(dsWrites) / sizeof(dsWrites[0]);
-  std::vector<VkDescriptorBufferInfo> bufInfos;// = { drawParamsInfo, cullParamsInfo, meshChunksInfo, writeIdxInfo, chunkIdxInfo };
-  bufInfos.push_back(drawParamsInfo);
-  bufInfos.push_back(cullParamsInfo);
-  bufInfos.push_back(meshChunksInfo);
-  bufInfos.push_back(writeIdxInfo);
-  bufInfos.push_back(chunkIdxInfo);
-  VkDescriptorType types[] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-  for (int b = 0; b < writecount; ++b) {
-    dsWrites[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    dsWrites[b].dstSet = _shadowCullDescriptorSet;
-    dsWrites[b].dstBinding = b;
-    dsWrites[b].descriptorCount = 1;
-    dsWrites[b].descriptorType = types[b];
-    dsWrites[b].pBufferInfo = &bufInfos[b];
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writecount, dsWrites, 0, nullptr);
   }
-
-  vkUpdateDescriptorSets(device.getLogicalDevice(), writecount, dsWrites, 0, nullptr);
 
   // Compute pipeline
   VkPipelineLayoutCreateInfo pipeLayoutInfo{};

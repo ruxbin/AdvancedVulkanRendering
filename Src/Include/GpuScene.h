@@ -135,33 +135,33 @@ private:
 
   VkDescriptorSetLayout globalSetLayout;
   VkDescriptorPool descriptorPool;
-  VkDescriptorSet globalDescriptorSet;
+  std::vector<VkDescriptorSet> globalDescriptorSets; // per-frame
 
   VkDescriptorSetLayout applSetLayout;
   VkDescriptorPool applDescriptorPool;
-  VkDescriptorSet applDescriptorSet;
+  std::vector<VkDescriptorSet> applDescriptorSets; // per-frame
 
   VkDescriptorSetLayout gpuCullSetLayout;
   VkDescriptorPool gpuCullDescriptorPool;
-  VkDescriptorSet gpuCullDescriptorSet;
+  std::vector<VkDescriptorSet> gpuCullDescriptorSets; // per-frame
 
   VkDescriptorSetLayout deferredLightingSetLayout;
   VkDescriptorPool deferredLightingDescriptorPool;
   VkDescriptorSet deferredLightingDescriptorSet;
 
-  VkBuffer uniformBuffer;
-  VkDeviceMemory uniformBufferMemory;
+  std::vector<VkBuffer> uniformBuffers;         // per-frame
+  std::vector<VkDeviceMemory> uniformBufferMemories; // per-frame
 
-  VkBuffer drawParamsBuffer;
-  VkDeviceMemory drawParamsBufferMemory;
-  VkBuffer cullParamsBuffer;
-  VkDeviceMemory cullParamsBufferMemory;
+  std::vector<VkBuffer> drawParamsBuffers;       // per-frame
+  std::vector<VkDeviceMemory> drawParamsBufferMemories;
+  std::vector<VkBuffer> cullParamsBuffers;        // per-frame
+  std::vector<VkDeviceMemory> cullParamsBufferMemories;
   VkBuffer meshChunksBuffer;
   VkDeviceMemory meshChunksBufferMemory;
-  VkBuffer writeIndexBuffer;
-  VkDeviceMemory writeIndexBufferMemory;
-  VkBuffer chunkIndicesBuffer;
-  VkDeviceMemory chunkIndicesBufferMemory;
+  std::vector<VkBuffer> writeIndexBuffers;       // per-frame
+  std::vector<VkDeviceMemory> writeIndexBufferMemories;
+  std::vector<VkBuffer> chunkIndicesBuffers;     // per-frame
+  std::vector<VkDeviceMemory> chunkIndicesBufferMemories;
 
   VkBuffer vertexBuffer;
   VkDeviceMemory vertexBufferMemory;
@@ -541,34 +541,38 @@ public:
   void *loadMipTexture(const AAPLTextureData &texturedata, int, unsigned int &);
 
   void createUniformBuffer() {
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = sizeof(FrameData);
-    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    bufferInfo.flags = 0;
-    if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
-                       &uniformBuffer) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create uniform buffer!");
-    }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device.getLogicalDevice(), uniformBuffer,
-                                  &memRequirements);
+    uniformBuffers.resize(framesInFlight);
+    uniformBufferMemories.resize(framesInFlight);
+    for (uint32_t i = 0; i < framesInFlight; ++i) {
+      VkBufferCreateInfo bufferInfo{};
+      bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bufferInfo.size = sizeof(FrameData);
+      bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+      bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      bufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
+                         &uniformBuffers[i]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create uniform buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), uniformBuffers[i],
+                                    &memRequirements);
 
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex =
-        device.findMemoryType(memRequirements.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          device.findMemoryType(memRequirements.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                         &uniformBufferMemory) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate uniform buffer memory!");
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &uniformBufferMemories[i]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate uniform buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), uniformBuffers[i],
+                         uniformBufferMemories[i], 0);
     }
-    vkBindBufferMemory(device.getLogicalDevice(), uniformBuffer,
-                       uniformBufferMemory, 0);
   }
 
   void createNearestClampSampler() {

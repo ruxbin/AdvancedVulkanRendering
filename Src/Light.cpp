@@ -13,7 +13,7 @@ VkPipeline PointLight::drawPointLightPipelineStencil = nullptr;
 
 VkDescriptorPool PointLight::pointLightingDescriptorPool = nullptr;
 VkDescriptorSetLayout PointLight::drawPointLightDescriptorSetLayout = nullptr;
-VkDescriptorSet PointLight::drawPointLightDescriptorSet = nullptr;
+std::vector<VkDescriptorSet> PointLight::drawPointLightDescriptorSets;
 
 std::vector<PointLightData> PointLight::pointLightData;
 std::vector<SpotLightData> SpotLight::spotLightData;
@@ -199,141 +199,118 @@ void PointLight::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
                                 &PointLight::drawPointLightDescriptorSetLayout);
 
     std::vector<VkDescriptorPoolSize> sizes = {
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3},
-        {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12 * gpuScene.framesInFlight},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3 * gpuScene.framesInFlight},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 3 * gpuScene.framesInFlight},
     };
 
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.flags = 0;
-    pool_info.maxSets = 2;
+    pool_info.maxSets = 2 * gpuScene.framesInFlight;
     pool_info.poolSizeCount = (uint32_t)sizes.size();
     pool_info.pPoolSizes = sizes.data();
 
     vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
                            &PointLight::pointLightingDescriptorPool);
 
+    PointLight::drawPointLightDescriptorSets.resize(gpuScene.framesInFlight);
+    std::vector<VkDescriptorSetLayout> layouts(gpuScene.framesInFlight, PointLight::drawPointLightDescriptorSetLayout);
+
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.pNext = nullptr;
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    // using the pool we just set
     allocInfo.descriptorPool = PointLight::pointLightingDescriptorPool;
-    // only 1 descriptor
-    allocInfo.descriptorSetCount = 1;
-    // using the global data layout
-    allocInfo.pSetLayouts = &PointLight::drawPointLightDescriptorSetLayout;
+    allocInfo.descriptorSetCount = gpuScene.framesInFlight;
+    allocInfo.pSetLayouts = layouts.data();
 
     vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                             &PointLight::drawPointLightDescriptorSet);
+                             PointLight::drawPointLightDescriptorSets.data());
 
-    //--------------------write the descriptset ----------
-    //
-    //
-    // information about the buffer we want to point at in the descriptor
-    VkDescriptorBufferInfo binfo;
-    // it will be the camera buffer
-    binfo.buffer = gpuScene.uniformBuffer;
-    // at 0 offset
-    binfo.offset = 0;
-    // of the size of a camera data struct
-    binfo.range = sizeof(FrameData);
+    for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+      VkDescriptorBufferInfo binfo;
+      binfo.buffer = gpuScene.uniformBuffers[f];
+      binfo.offset = 0;
+      binfo.range = sizeof(FrameData);
 
-    VkWriteDescriptorSet setWrite = {};
-    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setWrite.pNext = nullptr;
+      VkWriteDescriptorSet setWrite = {};
+      setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      setWrite.pNext = nullptr;
+      setWrite.dstBinding = 6;
+      setWrite.dstSet = PointLight::drawPointLightDescriptorSets[f];
+      setWrite.descriptorCount = 1;
+      setWrite.dstArrayElement = 0;
+      setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+      setWrite.pBufferInfo = &binfo;
 
-    // we are going to write into binding number 0
-    setWrite.dstBinding = 6;
-    // of the global descriptor
-    setWrite.dstSet = PointLight::drawPointLightDescriptorSet;
+      VkDescriptorBufferInfo binfo1;
+      binfo1.buffer = PointLight::pointLightDynamicUniformBuffer;
+      binfo1.offset = 0;
+      binfo1.range = sizeof(PointLightData);
 
-    setWrite.descriptorCount = 1;
-    setWrite.dstArrayElement = 0;
-    // and the type is uniform buffer
-    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    setWrite.pBufferInfo = &binfo;
+      VkWriteDescriptorSet setWrite1 = {};
+      setWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      setWrite1.pNext = nullptr;
+      setWrite1.dstBinding = 7;
+      setWrite1.dstSet = PointLight::drawPointLightDescriptorSets[f];
+      setWrite1.descriptorCount = 1;
+      setWrite1.dstArrayElement = 0;
+      setWrite1.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+      setWrite1.pBufferInfo = &binfo1;
 
-    VkDescriptorBufferInfo binfo1;
-    // it will be the camera buffer
-    binfo1.buffer = PointLight::pointLightDynamicUniformBuffer;
-    // at 0 offset
-    binfo1.offset = 0;
-    // of the size of a camera data struct
-    binfo1.range = sizeof(PointLightData);
+      VkDescriptorImageInfo samplerinfo;
+      samplerinfo.sampler = gpuScene.nearestClampSampler;
+      VkWriteDescriptorSet setSampler = {};
+      setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      setSampler.dstBinding = 5;
+      setSampler.pNext = nullptr;
+      setSampler.dstSet = PointLight::drawPointLightDescriptorSets[f];
+      setSampler.dstArrayElement = 0;
+      setSampler.descriptorCount = 1;
+      setSampler.pImageInfo = &samplerinfo;
+      setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
-    VkWriteDescriptorSet setWrite1 = {};
-    setWrite1.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setWrite1.pNext = nullptr;
+      std::array<VkDescriptorImageInfo, 4> imageinfo{};
+      for (int texturei = 0; texturei < 4; ++texturei) {
+        imageinfo[texturei].imageView = gpuScene._gbuffersView[texturei];
+        imageinfo[texturei].imageLayout =
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      }
 
-    // we are going to write into binding number 0
-    setWrite1.dstBinding = 7;
-    // of the global descriptor
-    setWrite1.dstSet = PointLight::drawPointLightDescriptorSet;
+      VkWriteDescriptorSet setWriteTexture[4] = {};
+      for (int i = 0; i < 4; i++) {
+        setWriteTexture[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        setWriteTexture[i].pNext = nullptr;
+        setWriteTexture[i].dstBinding = i;
+        setWriteTexture[i].dstSet = PointLight::drawPointLightDescriptorSets[f];
+        setWriteTexture[i].dstArrayElement = 0;
+        setWriteTexture[i].descriptorCount = 1;
+        setWriteTexture[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        setWriteTexture[i].pImageInfo = &imageinfo[i];
+      }
 
-    setWrite1.descriptorCount = 1;
-    setWrite1.dstArrayElement = 0;
-    // and the type is uniform buffer
-    setWrite1.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    setWrite1.pBufferInfo = &binfo1;
+      VkDescriptorImageInfo depthImageInfo{};
+      depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+      depthImageInfo.imageLayout =
+          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+      VkWriteDescriptorSet setWriteDepth;
+      setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      setWriteDepth.pNext = nullptr;
+      setWriteDepth.dstBinding = 4;
+      setWriteDepth.dstSet = PointLight::drawPointLightDescriptorSets[f];
+      setWriteDepth.dstArrayElement = 0;
+      setWriteDepth.descriptorCount = 1;
+      setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      setWriteDepth.pImageInfo = &depthImageInfo;
 
-    VkDescriptorImageInfo samplerinfo;
-    samplerinfo.sampler = gpuScene.nearestClampSampler;
-    VkWriteDescriptorSet setSampler = {};
-    setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setSampler.dstBinding = 5;
-    setSampler.pNext = nullptr;
-    setSampler.dstSet = PointLight::drawPointLightDescriptorSet;
-    setSampler.dstArrayElement = 0;
-    setSampler.descriptorCount = 1;
-    setSampler.pImageInfo = &samplerinfo;
-    setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+      std::array<VkWriteDescriptorSet, 8> writes = {
+          setWriteTexture[0], setWriteTexture[1], setWriteTexture[2],
+          setWriteTexture[3], setWriteDepth,      setSampler,
+          setWrite,           setWrite1};
 
-    std::array<VkDescriptorImageInfo, 4> imageinfo{};
-    // imageinfo.resize(textures.size());
-    for (int texturei = 0; texturei < 4; ++texturei) {
-      imageinfo[texturei].imageView = gpuScene._gbuffersView[texturei];
-      imageinfo[texturei].imageLayout =
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      // imageinfo[texturei].sampler = textureSampler;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
+                             writes.data(), 0, nullptr);
     }
-
-    VkWriteDescriptorSet setWriteTexture[4] = {};
-    for (int i = 0; i < 4; i++) {
-      setWriteTexture[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      setWriteTexture[i].pNext = nullptr;
-
-      setWriteTexture[i].dstBinding = i;
-      // of the global descriptor
-      setWriteTexture[i].dstSet = PointLight::drawPointLightDescriptorSet;
-      setWriteTexture[i].dstArrayElement = 0;
-
-      setWriteTexture[i].descriptorCount = 1;
-      setWriteTexture[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      setWriteTexture[i].pImageInfo = &imageinfo[i];
-    }
-
-    VkDescriptorImageInfo depthImageInfo{};
-    depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
-    depthImageInfo.imageLayout =
-        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
-    VkWriteDescriptorSet setWriteDepth;
-    setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    setWriteDepth.pNext = nullptr;
-    setWriteDepth.dstBinding = 4;
-    setWriteDepth.dstSet = PointLight::drawPointLightDescriptorSet;
-    setWriteDepth.dstArrayElement = 0;
-    setWriteDepth.descriptorCount = 1;
-    setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    setWriteDepth.pImageInfo = &depthImageInfo;
-
-    std::array<VkWriteDescriptorSet, 8> writes = {
-        setWriteTexture[0], setWriteTexture[1], setWriteTexture[2],
-        setWriteTexture[3], setWriteDepth,      setSampler,
-        setWrite,           setWrite1};
-
-    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
-                           writes.data(), 0, nullptr);
 
     VkPipelineLayoutCreateInfo pointLightingPipelineLayoutInfo{};
     pointLightingPipelineLayoutInfo.sType =
@@ -615,7 +592,7 @@ void PointLight::Draw(VkCommandBuffer &commandBuffer,
   uint32_t dynamicoffsets[2] = {0, _dynamicOffset};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           drawPointLightPipelineLayout, 0, 1,
-                          &drawPointLightDescriptorSet, 2, dynamicoffsets);
+                          &drawPointLightDescriptorSets[gpuScene.currentFrame], 2, dynamicoffsets);
   vkCmdDrawIndexed(commandBuffer, SPHERE_INDEX_COUNT, 1, 0, 0, 0);
 
   // lighting
@@ -1017,7 +994,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
 
   VkDescriptorBufferInfo binfo;
   // it will be the camera buffer
-  binfo.buffer = gpuScene.uniformBuffer;
+  binfo.buffer = gpuScene.uniformBuffers[0]; // TODO: per-frame LightCuller descriptor sets
   // at 0 offset
   binfo.offset = 0;
   // of the size of a camera data struct
@@ -1040,7 +1017,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
 
   VkDescriptorBufferInfo binfo1;
   // it will be the camera buffer
-  binfo1.buffer = gpuScene.cullParamsBuffer;
+  binfo1.buffer = gpuScene.cullParamsBuffers[0]; // TODO: per-frame LightCuller descriptor sets
   // at 0 offset
   binfo1.offset = 0;
   // of the size of a camera data struct

@@ -1435,182 +1435,154 @@ void GpuScene::init_drawparams_descriptors() {
                               &gpuCullSetLayout);
 
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 10 * framesInFlight},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
-  pool_info.maxSets = 10;
+  pool_info.maxSets = 10 * framesInFlight;
   pool_info.poolSizeCount = (uint32_t)sizes.size();
   pool_info.pPoolSizes = sizes.data();
 
   vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
                          &gpuCullDescriptorPool);
 
+  gpuCullDescriptorSets.resize(framesInFlight);
+  std::vector<VkDescriptorSetLayout> layouts(framesInFlight, gpuCullSetLayout);
+
   VkDescriptorSetAllocateInfo allocInfo = {};
   allocInfo.pNext = nullptr;
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  // using the pool we just set
   allocInfo.descriptorPool = gpuCullDescriptorPool;
-  // only 1 descriptor
-  allocInfo.descriptorSetCount = 1;
-  // using the global data layout
-  allocInfo.pSetLayouts = &gpuCullSetLayout;
+  allocInfo.descriptorSetCount = framesInFlight;
+  allocInfo.pSetLayouts = layouts.data();
 
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                           &gpuCullDescriptorSet);
+                           gpuCullDescriptorSets.data());
 
-  // information about the buffer we want to point at in the descriptor
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkDescriptorBufferInfo drawParamsBufferInfo;
+    drawParamsBufferInfo.buffer = drawParamsBuffers[f];
+    drawParamsBufferInfo.offset = 0;
+    drawParamsBufferInfo.range =
+        applMesh->_chunkCount * sizeof(VkDrawIndexedIndirectCommand);
 
-  VkDescriptorBufferInfo drawParamsBufferInfo;
-  drawParamsBufferInfo.buffer = drawParamsBuffer;
-  drawParamsBufferInfo.offset = 0;
-  drawParamsBufferInfo.range =
-      applMesh->_chunkCount * sizeof(VkDrawIndexedIndirectCommand);
+    VkWriteDescriptorSet drawParamsWrite = {};
+    drawParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    drawParamsWrite.pNext = nullptr;
+    drawParamsWrite.dstBinding = 0;
+    drawParamsWrite.dstSet = gpuCullDescriptorSets[f];
+    drawParamsWrite.descriptorCount = 1;
+    drawParamsWrite.dstArrayElement = 0;
+    drawParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    drawParamsWrite.pBufferInfo = &drawParamsBufferInfo;
 
-  VkWriteDescriptorSet drawParamsWrite = {};
-  drawParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  drawParamsWrite.pNext = nullptr;
+    VkDescriptorBufferInfo cullParamsBufferInfo;
+    cullParamsBufferInfo.buffer = cullParamsBuffers[f];
+    cullParamsBufferInfo.offset = 0;
+    cullParamsBufferInfo.range = sizeof(GPUCullParams);
 
-  // we are going to write into binding number 0
-  drawParamsWrite.dstBinding = 0;
-  // of the global descriptor
-  drawParamsWrite.dstSet = gpuCullDescriptorSet;
+    VkWriteDescriptorSet cullParamsWrite = {};
+    cullParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cullParamsWrite.pNext = nullptr;
+    cullParamsWrite.dstBinding = 1;
+    cullParamsWrite.dstSet = gpuCullDescriptorSets[f];
+    cullParamsWrite.descriptorCount = 1;
+    cullParamsWrite.dstArrayElement = 0;
+    cullParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    cullParamsWrite.pBufferInfo = &cullParamsBufferInfo;
 
-  drawParamsWrite.descriptorCount = 1;
-  drawParamsWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  drawParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  drawParamsWrite.pBufferInfo = &drawParamsBufferInfo;
+    VkDescriptorBufferInfo meshChunksBufferInfo;
+    meshChunksBufferInfo.buffer = meshChunksBuffer;
+    meshChunksBufferInfo.offset = 0;
+    meshChunksBufferInfo.range = sizeof(AAPLMeshChunk) * applMesh->_chunkCount;
 
-  VkDescriptorBufferInfo cullParamsBufferInfo;
-  cullParamsBufferInfo.buffer = cullParamsBuffer;
-  // at 0 offset
-  cullParamsBufferInfo.offset = 0;
-  cullParamsBufferInfo.range = sizeof(GPUCullParams);
+    VkWriteDescriptorSet meshChunksBufferWrite = {};
+    meshChunksBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    meshChunksBufferWrite.pNext = nullptr;
+    meshChunksBufferWrite.dstBinding = 2;
+    meshChunksBufferWrite.dstSet = gpuCullDescriptorSets[f];
+    meshChunksBufferWrite.descriptorCount = 1;
+    meshChunksBufferWrite.dstArrayElement = 0;
+    meshChunksBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    meshChunksBufferWrite.pBufferInfo = &meshChunksBufferInfo;
 
-  VkWriteDescriptorSet cullParamsWrite = {};
-  cullParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  cullParamsWrite.pNext = nullptr;
+    VkDescriptorBufferInfo writeIndexBufferDescInfo;
+    writeIndexBufferDescInfo.buffer = writeIndexBuffers[f];
+    writeIndexBufferDescInfo.offset = 0;
+    writeIndexBufferDescInfo.range = 3 * sizeof(uint32_t);
 
-  // we are going to write into binding number 0
-  cullParamsWrite.dstBinding = 1;
-  // of the global descriptor
-  cullParamsWrite.dstSet = gpuCullDescriptorSet;
+    VkWriteDescriptorSet writeIndexBufferWrite = {};
+    writeIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writeIndexBufferWrite.pNext = nullptr;
+    writeIndexBufferWrite.dstBinding = 3;
+    writeIndexBufferWrite.dstSet = gpuCullDescriptorSets[f];
+    writeIndexBufferWrite.descriptorCount = 1;
+    writeIndexBufferWrite.dstArrayElement = 0;
+    writeIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writeIndexBufferWrite.pBufferInfo = &writeIndexBufferDescInfo;
 
-  cullParamsWrite.descriptorCount = 1;
-  cullParamsWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  cullParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  cullParamsWrite.pBufferInfo = &cullParamsBufferInfo;
+    VkDescriptorBufferInfo chunkIndicesBufferInfo;
+    chunkIndicesBufferInfo.buffer = chunkIndicesBuffers[f];
+    chunkIndicesBufferInfo.offset = 0;
+    chunkIndicesBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount * 2 *SHADOW_CASCADE_COUNT;
 
-  VkDescriptorBufferInfo meshChunksBufferInfo;
-  meshChunksBufferInfo.buffer = meshChunksBuffer;
-  // at 0 offset
-  meshChunksBufferInfo.offset = 0;
-  meshChunksBufferInfo.range = sizeof(AAPLMeshChunk) * applMesh->_chunkCount;
+    VkWriteDescriptorSet chunkIndicesBufferWrite = {};
+    chunkIndicesBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    chunkIndicesBufferWrite.pNext = nullptr;
+    chunkIndicesBufferWrite.dstBinding = 4;
+    chunkIndicesBufferWrite.dstSet = gpuCullDescriptorSets[f];
+    chunkIndicesBufferWrite.descriptorCount = 1;
+    chunkIndicesBufferWrite.dstArrayElement = 0;
+    chunkIndicesBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    chunkIndicesBufferWrite.pBufferInfo = &chunkIndicesBufferInfo;
 
-  VkWriteDescriptorSet meshChunksBufferWrite = {};
-  meshChunksBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  meshChunksBufferWrite.pNext = nullptr;
+    // Hi-Z descriptor writes (will be updated later when Hi-Z resources are created)
+    VkDescriptorImageInfo hizImageInfo{};
+    hizImageInfo.imageView = _hizTextureView; // may be VK_NULL_HANDLE initially
+    hizImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-  // we are going to write into binding number 0
-  meshChunksBufferWrite.dstBinding = 2;
-  // of the global descriptor
-  meshChunksBufferWrite.dstSet = gpuCullDescriptorSet;
+    VkWriteDescriptorSet hizTextureWrite = {};
+    hizTextureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    hizTextureWrite.pNext = nullptr;
+    hizTextureWrite.dstBinding = 6;
+    hizTextureWrite.dstSet = gpuCullDescriptorSets[f];
+    hizTextureWrite.descriptorCount = 1;
+    hizTextureWrite.dstArrayElement = 0;
+    hizTextureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    hizTextureWrite.pImageInfo = &hizImageInfo;
 
-  meshChunksBufferWrite.descriptorCount = 1;
-  meshChunksBufferWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  meshChunksBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  meshChunksBufferWrite.pBufferInfo = &meshChunksBufferInfo;
+    VkDescriptorImageInfo hizSamplerInfo{};
+    hizSamplerInfo.sampler = _hizSampler; // may be VK_NULL_HANDLE initially
 
-  VkDescriptorBufferInfo writeIndexBufferDescInfo;
-  writeIndexBufferDescInfo.buffer = writeIndexBuffer;
-  writeIndexBufferDescInfo.offset = 0;
-  writeIndexBufferDescInfo.range = 3 * sizeof(uint32_t);
+    VkWriteDescriptorSet hizSamplerWrite = {};
+    hizSamplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    hizSamplerWrite.pNext = nullptr;
+    hizSamplerWrite.dstBinding = 7;
+    hizSamplerWrite.dstSet = gpuCullDescriptorSets[f];
+    hizSamplerWrite.descriptorCount = 1;
+    hizSamplerWrite.dstArrayElement = 0;
+    hizSamplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    hizSamplerWrite.pImageInfo = &hizSamplerInfo;
 
-  VkWriteDescriptorSet writeIndexBufferWrite = {};
-  writeIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writeIndexBufferWrite.pNext = nullptr;
+    std::vector<VkWriteDescriptorSet> writes = {
+        drawParamsWrite,       cullParamsWrite,
+        meshChunksBufferWrite, writeIndexBufferWrite,
+        chunkIndicesBufferWrite};
 
-  // we are going to write into binding number 0
-  writeIndexBufferWrite.dstBinding = 3;
-  // of the global descriptor
-  writeIndexBufferWrite.dstSet = gpuCullDescriptorSet;
+    // Only write Hi-Z descriptors if resources are ready
+    if (_hizTextureView != VK_NULL_HANDLE && _hizSampler != VK_NULL_HANDLE) {
+      writes.push_back(hizTextureWrite);
+      writes.push_back(hizSamplerWrite);
+    }
 
-  writeIndexBufferWrite.descriptorCount = 1;
-  writeIndexBufferWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  writeIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  writeIndexBufferWrite.pBufferInfo = &writeIndexBufferDescInfo;
-
-  VkDescriptorBufferInfo chunkIndicesBufferInfo;
-  chunkIndicesBufferInfo.buffer = chunkIndicesBuffer;
-  // at 0 offset
-  chunkIndicesBufferInfo.offset = 0;
-  chunkIndicesBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount * 2 *SHADOW_CASCADE_COUNT;
-
-  VkWriteDescriptorSet chunkIndicesBufferWrite = {};
-  chunkIndicesBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  chunkIndicesBufferWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  chunkIndicesBufferWrite.dstBinding = 4;
-  // of the global descriptor
-  chunkIndicesBufferWrite.dstSet = gpuCullDescriptorSet;
-
-  chunkIndicesBufferWrite.descriptorCount = 1;
-  chunkIndicesBufferWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  chunkIndicesBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  chunkIndicesBufferWrite.pBufferInfo = &chunkIndicesBufferInfo;
-
-  // Hi-Z descriptor writes (will be updated later when Hi-Z resources are created)
-  VkDescriptorImageInfo hizImageInfo{};
-  hizImageInfo.imageView = _hizTextureView; // may be VK_NULL_HANDLE initially
-  hizImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-  VkWriteDescriptorSet hizTextureWrite = {};
-  hizTextureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  hizTextureWrite.pNext = nullptr;
-  hizTextureWrite.dstBinding = 6;
-  hizTextureWrite.dstSet = gpuCullDescriptorSet;
-  hizTextureWrite.descriptorCount = 1;
-  hizTextureWrite.dstArrayElement = 0;
-  hizTextureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  hizTextureWrite.pImageInfo = &hizImageInfo;
-
-  VkDescriptorImageInfo hizSamplerInfo{};
-  hizSamplerInfo.sampler = _hizSampler; // may be VK_NULL_HANDLE initially
-
-  VkWriteDescriptorSet hizSamplerWrite = {};
-  hizSamplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  hizSamplerWrite.pNext = nullptr;
-  hizSamplerWrite.dstBinding = 7;
-  hizSamplerWrite.dstSet = gpuCullDescriptorSet;
-  hizSamplerWrite.descriptorCount = 1;
-  hizSamplerWrite.dstArrayElement = 0;
-  hizSamplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-  hizSamplerWrite.pImageInfo = &hizSamplerInfo;
-
-  std::vector<VkWriteDescriptorSet> writes = {
-      drawParamsWrite,       cullParamsWrite,
-      meshChunksBufferWrite, writeIndexBufferWrite,
-      chunkIndicesBufferWrite};
-
-  // Only write Hi-Z descriptors if resources are ready
-  if (_hizTextureView != VK_NULL_HANDLE && _hizSampler != VK_NULL_HANDLE) {
-    writes.push_back(hizTextureWrite);
-    writes.push_back(hizSamplerWrite);
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
+                           writes.data(), 0, nullptr);
   }
-
-  vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
-                         writes.data(), 0, nullptr);
 }
 
 void GpuScene::init_appl_descriptors() {
@@ -1694,147 +1666,117 @@ void GpuScene::init_appl_descriptors() {
                               &applSetLayout);
 
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 10 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4096}};
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
-  pool_info.maxSets = 10;
+  pool_info.maxSets = 10 * framesInFlight;
   pool_info.poolSizeCount = (uint32_t)sizes.size();
   pool_info.pPoolSizes = sizes.data();
 
   vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
                          &applDescriptorPool);
 
+  applDescriptorSets.resize(framesInFlight);
+  std::vector<VkDescriptorSetLayout> layouts(framesInFlight, applSetLayout);
+
   VkDescriptorSetAllocateInfo allocInfo = {};
   allocInfo.pNext = nullptr;
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  // using the pool we just set
   allocInfo.descriptorPool = applDescriptorPool;
-  // only 1 descriptor
-  allocInfo.descriptorSetCount = 1;
-  // using the global data layout
-  allocInfo.pSetLayouts = &applSetLayout;
+  allocInfo.descriptorSetCount = framesInFlight;
+  allocInfo.pSetLayouts = layouts.data();
 
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                           &applDescriptorSet);
+                           applDescriptorSets.data());
 
-  // information about the buffer we want to point at in the descriptor
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkDescriptorBufferInfo binfo;
+    binfo.buffer = applMaterialBuffer;
+    binfo.offset = 0;
+    binfo.range = sizeof(AAPLShaderMaterial) * materials.size();
 
+    VkWriteDescriptorSet WriteMaterialToSet = {};
+    WriteMaterialToSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    WriteMaterialToSet.pNext = nullptr;
+    WriteMaterialToSet.dstBinding = 0;
+    WriteMaterialToSet.dstSet = applDescriptorSets[f];
+    WriteMaterialToSet.descriptorCount = 1;
+    WriteMaterialToSet.dstArrayElement = 0;
+    WriteMaterialToSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    WriteMaterialToSet.pBufferInfo = &binfo;
 
+    VkDescriptorImageInfo samplerinfo;
+    samplerinfo.sampler = textureSampler;
+    VkWriteDescriptorSet setSampler = {};
+    setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setSampler.dstBinding = 1;
+    setSampler.pNext = nullptr;
+    setSampler.dstSet = applDescriptorSets[f];
+    setSampler.dstArrayElement = 0;
+    setSampler.descriptorCount = 1;
+    setSampler.pImageInfo = &samplerinfo;
+    setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
-  VkDescriptorBufferInfo binfo;
-  binfo.buffer = applMaterialBuffer;
-  // at 0 offset
-  binfo.offset = 0;
-  binfo.range = sizeof(AAPLShaderMaterial) * materials.size();
+    std::vector<VkDescriptorImageInfo> imageinfo;
+    for (int texturei = 0; texturei < textures.size(); ++texturei) {
+      VkDescriptorImageInfo dii = {.imageView = textures[texturei].second,
+                                   .imageLayout =
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      imageinfo.push_back(dii);
+    }
 
-  VkWriteDescriptorSet WriteMaterialToSet = {};
-  WriteMaterialToSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  WriteMaterialToSet.pNext = nullptr;
+    VkWriteDescriptorSet setWriteTexture = {};
+    setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWriteTexture.pNext = nullptr;
+    setWriteTexture.dstBinding = 2;
+    setWriteTexture.dstSet = applDescriptorSets[f];
+    setWriteTexture.dstArrayElement = 0;
+    setWriteTexture.descriptorCount = textures.size();
+    setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setWriteTexture.pImageInfo = imageinfo.data();
 
-  // we are going to write into binding number 0
-  WriteMaterialToSet.dstBinding = 0;
-  // of the global descriptor
-  WriteMaterialToSet.dstSet = applDescriptorSet;
+    VkDescriptorBufferInfo meshChunksBufferInfo;
+    meshChunksBufferInfo.buffer = meshChunksBuffer;
+    meshChunksBufferInfo.offset = 0;
+    meshChunksBufferInfo.range = sizeof(AAPLMeshChunk) * applMesh->_chunkCount;
 
-  WriteMaterialToSet.descriptorCount = 1;
-  WriteMaterialToSet.dstArrayElement = 0;
-  // and the type is uniform buffer
-  WriteMaterialToSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  WriteMaterialToSet.pBufferInfo = &binfo;
+    VkWriteDescriptorSet meshChunksWrite = {};
+    meshChunksWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    meshChunksWrite.pNext = nullptr;
+    meshChunksWrite.dstBinding = 3;
+    meshChunksWrite.dstSet = applDescriptorSets[f];
+    meshChunksWrite.descriptorCount = 1;
+    meshChunksWrite.dstArrayElement = 0;
+    meshChunksWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    meshChunksWrite.pBufferInfo = &meshChunksBufferInfo;
 
-  VkDescriptorImageInfo samplerinfo;
-  samplerinfo.sampler = textureSampler;
-  VkWriteDescriptorSet setSampler = {};
-  setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setSampler.dstBinding = 1;
-  setSampler.pNext = nullptr;
-  setSampler.dstSet = applDescriptorSet;
-  setSampler.dstArrayElement = 0;
-  setSampler.descriptorCount = 1;
-  setSampler.pImageInfo = &samplerinfo;
-  setSampler.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    VkDescriptorBufferInfo chunkIndexBufferInfo;
+    chunkIndexBufferInfo.buffer = chunkIndicesBuffers[f];
+    chunkIndexBufferInfo.offset = 0;
+    chunkIndexBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount * 2 * SHADOW_CASCADE_COUNT;
 
-  std::vector<VkDescriptorImageInfo> imageinfo;
-  // imageinfo.resize(textures.size());
-  for (int texturei = 0; texturei < textures.size(); ++texturei) {
-    // imageinfo[texturei].imageView = textures[texturei].second;
-    // imageinfo[texturei].imageLayout =
-    // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; imageinfo[texturei].sampler =
-    // textureSampler;
-    VkDescriptorImageInfo dii = {.imageView = textures[texturei].second,
-                                 .imageLayout =
-                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    imageinfo.push_back(dii);
+    VkWriteDescriptorSet chunkIndexBufferWrite = {};
+    chunkIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    chunkIndexBufferWrite.pNext = nullptr;
+    chunkIndexBufferWrite.dstBinding = 4;
+    chunkIndexBufferWrite.dstSet = applDescriptorSets[f];
+    chunkIndexBufferWrite.descriptorCount = 1;
+    chunkIndexBufferWrite.dstArrayElement = 0;
+    chunkIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    chunkIndexBufferWrite.pBufferInfo = &chunkIndexBufferInfo;
+
+    std::array<VkWriteDescriptorSet, bindingcount> writes = {
+        WriteMaterialToSet,        setSampler,
+        setWriteTexture, meshChunksWrite, chunkIndexBufferWrite};
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
+                           writes.data(), 0, nullptr);
   }
-
-  VkWriteDescriptorSet setWriteTexture = {};
-  setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWriteTexture.pNext = nullptr;
-
-  setWriteTexture.dstBinding = 2;
-  // of the global descriptor
-  setWriteTexture.dstSet = applDescriptorSet;
-  setWriteTexture.dstArrayElement = 0;
-
-  setWriteTexture.descriptorCount = textures.size();
-  setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  setWriteTexture.pImageInfo = imageinfo.data();
-
-  VkDescriptorBufferInfo meshChunksBufferInfo;
-  meshChunksBufferInfo.buffer = meshChunksBuffer;
-  // at 0 offset
-  meshChunksBufferInfo.offset = 0;
-  meshChunksBufferInfo.range = sizeof(AAPLMeshChunk) * applMesh->_chunkCount;
-
-  VkWriteDescriptorSet meshChunksWrite = {};
-  meshChunksWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  meshChunksWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  meshChunksWrite.dstBinding = 3;
-  // of the global descriptor
-  meshChunksWrite.dstSet = applDescriptorSet;
-
-  meshChunksWrite.descriptorCount = 1;
-  meshChunksWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  meshChunksWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  meshChunksWrite.pBufferInfo = &meshChunksBufferInfo;
-
-  VkDescriptorBufferInfo chunkIndexBufferInfo;
-  chunkIndexBufferInfo.buffer = chunkIndicesBuffer;
-  // at 0 offset
-  chunkIndexBufferInfo.offset = 0;
-  chunkIndexBufferInfo.range = sizeof(uint32_t) * applMesh->_chunkCount * 2 * SHADOW_CASCADE_COUNT;
-
-  VkWriteDescriptorSet chunkIndexBufferWrite = {};
-  chunkIndexBufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  chunkIndexBufferWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  chunkIndexBufferWrite.dstBinding = 4;
-  // of the global descriptor
-  chunkIndexBufferWrite.dstSet = applDescriptorSet;
-
-  chunkIndexBufferWrite.descriptorCount = 1;
-  chunkIndexBufferWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  chunkIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  chunkIndexBufferWrite.pBufferInfo = &chunkIndexBufferInfo;
-
-  std::array<VkWriteDescriptorSet, bindingcount> writes = {
-      WriteMaterialToSet,        setSampler,
-      setWriteTexture, meshChunksWrite, chunkIndexBufferWrite};
-  // std::array< VkWriteDescriptorSet, 3> writes = { uniformWrite, setWrite ,
-  // setSampler };
-
-  vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
-                         writes.data(), 0, nullptr);
 }
 
 void GpuScene::init_GlobaldescriptorSet() {
@@ -1867,59 +1809,50 @@ void GpuScene::init_GlobaldescriptorSet() {
   // other code ....
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 * framesInFlight},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pool_info.flags = 0;
-  pool_info.maxSets = 10;
+  pool_info.maxSets = 10 * framesInFlight;
   pool_info.poolSizeCount = (uint32_t)sizes.size();
   pool_info.pPoolSizes = sizes.data();
 
   vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
                          &descriptorPool);
 
+  globalDescriptorSets.resize(framesInFlight);
+  std::vector<VkDescriptorSetLayout> layouts(framesInFlight, globalSetLayout);
+
   VkDescriptorSetAllocateInfo allocInfo = {};
   allocInfo.pNext = nullptr;
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  // using the pool we just set
   allocInfo.descriptorPool = descriptorPool;
-  // only 1 descriptor
-  allocInfo.descriptorSetCount = 1;
-  // using the global data layout
-  allocInfo.pSetLayouts = &globalSetLayout;
+  allocInfo.descriptorSetCount = framesInFlight;
+  allocInfo.pSetLayouts = layouts.data();
 
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                           &globalDescriptorSet);
+                           globalDescriptorSets.data());
 
-  // information about the buffer we want to point at in the descriptor
-  VkDescriptorBufferInfo binfo;
-  // it will be the camera buffer
-  binfo.buffer = uniformBuffer;
-  // at 0 offset
-  binfo.offset = 0;
-  // of the size of a camera data struct
-  binfo.range = sizeof(FrameData);
+  for (uint32_t i = 0; i < framesInFlight; ++i) {
+    VkDescriptorBufferInfo binfo;
+    binfo.buffer = uniformBuffers[i];
+    binfo.offset = 0;
+    binfo.range = sizeof(FrameData);
 
-  VkWriteDescriptorSet setWrite = {};
-  setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite.pNext = nullptr;
+    VkWriteDescriptorSet setWrite = {};
+    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite.pNext = nullptr;
+    setWrite.dstBinding = 0;
+    setWrite.dstSet = globalDescriptorSets[i];
+    setWrite.descriptorCount = 1;
+    setWrite.dstArrayElement = 0;
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setWrite.pBufferInfo = &binfo;
 
-  // we are going to write into binding number 0
-  setWrite.dstBinding = 0;
-  // of the global descriptor
-  setWrite.dstSet = globalDescriptorSet;
-
-  setWrite.descriptorCount = 1;
-  setWrite.dstArrayElement = 0;
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  setWrite.pBufferInfo = &binfo;
-
-  std::array<VkWriteDescriptorSet, 1> writes = {setWrite};
-
-  vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
-                         writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+  }
 }
 
 void GpuScene::CreateTextures() {
@@ -2549,131 +2482,146 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   }
 
   {
-    VkBufferCreateInfo drawParamsBufferInfo{};
-    drawParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    drawParamsBufferInfo.size =
-        sizeof(VkDrawIndexedIndirectCommand) * applMesh->_chunkCount;
-    drawParamsBufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    drawParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    drawParamsBufferInfo.flags = 0;
-    if (vkCreateBuffer(device.getLogicalDevice(), &drawParamsBufferInfo,
-                       nullptr, &drawParamsBuffer) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create uniform buffer!");
-    }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device.getLogicalDevice(), drawParamsBuffer,
-                                  &memRequirements);
+    drawParamsBuffers.resize(framesInFlight);
+    drawParamsBufferMemories.resize(framesInFlight);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+      VkBufferCreateInfo drawParamsBufferInfo{};
+      drawParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      drawParamsBufferInfo.size =
+          sizeof(VkDrawIndexedIndirectCommand) * applMesh->_chunkCount;
+      drawParamsBufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      drawParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      drawParamsBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &drawParamsBufferInfo,
+                         nullptr, &drawParamsBuffers[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create drawparams buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), drawParamsBuffers[f],
+                                    &memRequirements);
 
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex =
-        device.findMemoryType(memRequirements.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          device.findMemoryType(memRequirements.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                         &drawParamsBufferMemory) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate drawparams buffer memory!");
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &drawParamsBufferMemories[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate drawparams buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), drawParamsBuffers[f],
+                         drawParamsBufferMemories[f], 0);
     }
-    vkBindBufferMemory(device.getLogicalDevice(), drawParamsBuffer,
-                       drawParamsBufferMemory, 0);
   }
 
   {
-    VkBufferCreateInfo cullParamsBufferInfo{};
-    cullParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    cullParamsBufferInfo.size = sizeof(GPUCullParams);
-    cullParamsBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    cullParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    cullParamsBufferInfo.flags = 0;
-    if (vkCreateBuffer(device.getLogicalDevice(), &cullParamsBufferInfo,
-                       nullptr, &cullParamsBuffer) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create uniform buffer!");
-    }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device.getLogicalDevice(), cullParamsBuffer,
-                                  &memRequirements);
+    cullParamsBuffers.resize(framesInFlight);
+    cullParamsBufferMemories.resize(framesInFlight);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+      VkBufferCreateInfo cullParamsBufferInfo{};
+      cullParamsBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      cullParamsBufferInfo.size = sizeof(GPUCullParams);
+      cullParamsBufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+      cullParamsBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      cullParamsBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &cullParamsBufferInfo,
+                         nullptr, &cullParamsBuffers[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create cull params buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), cullParamsBuffers[f],
+                                    &memRequirements);
 
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex =
-        device.findMemoryType(memRequirements.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          device.findMemoryType(memRequirements.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                         &cullParamsBufferMemory) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate uniform buffer memory!");
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &cullParamsBufferMemories[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate cull params buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), cullParamsBuffers[f],
+                         cullParamsBufferMemories[f], 0);
     }
-    vkBindBufferMemory(device.getLogicalDevice(), cullParamsBuffer,
-                       cullParamsBufferMemory, 0);
   }
 
   {
-    VkBufferCreateInfo writeIndexBufferInfo{};
-    writeIndexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    writeIndexBufferInfo.size = 3 * sizeof(uint32_t); // opaque, alphaMask, transparent counts
-    writeIndexBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-    writeIndexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    writeIndexBufferInfo.flags = 0;
-    if (vkCreateBuffer(device.getLogicalDevice(), &writeIndexBufferInfo,
-                       nullptr, &writeIndexBuffer) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create writeindex buffer!");
-    }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device.getLogicalDevice(), writeIndexBuffer,
-                                  &memRequirements);
+    writeIndexBuffers.resize(framesInFlight);
+    writeIndexBufferMemories.resize(framesInFlight);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+      VkBufferCreateInfo writeIndexBufferInfo{};
+      writeIndexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      writeIndexBufferInfo.size = 3 * sizeof(uint32_t); // opaque, alphaMask, transparent counts
+      writeIndexBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                   VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+      writeIndexBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      writeIndexBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &writeIndexBufferInfo,
+                         nullptr, &writeIndexBuffers[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create writeindex buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), writeIndexBuffers[f],
+                                    &memRequirements);
 
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex =
-        device.findMemoryType(memRequirements.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          device.findMemoryType(memRequirements.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                         &writeIndexBufferMemory) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate uniform buffer memory!");
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &writeIndexBufferMemories[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate writeindex buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), writeIndexBuffers[f],
+                         writeIndexBufferMemories[f], 0);
     }
-    vkBindBufferMemory(device.getLogicalDevice(), writeIndexBuffer,
-                       writeIndexBufferMemory, 0);
   }
 
   {
+    chunkIndicesBuffers.resize(framesInFlight);
+    chunkIndicesBufferMemories.resize(framesInFlight);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+      VkBufferCreateInfo chunkIndicesBufferInfo{};
+      chunkIndicesBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      chunkIndicesBufferInfo.size = sizeof(uint32_t) * applMesh->_chunkCount * SHADOW_CASCADE_COUNT * 2;// *2 is for 2 different sets (opqaue and masked)
+      chunkIndicesBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      chunkIndicesBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      chunkIndicesBufferInfo.flags = 0;
+      if (vkCreateBuffer(device.getLogicalDevice(), &chunkIndicesBufferInfo,
+                         nullptr, &chunkIndicesBuffers[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create chunkindices buffer!");
+      }
+      VkMemoryRequirements memRequirements;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), chunkIndicesBuffers[f],
+                                    &memRequirements);
 
-    VkBufferCreateInfo chunkIndicesBufferInfo{};
-    chunkIndicesBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    chunkIndicesBufferInfo.size = sizeof(uint32_t) * applMesh->_chunkCount * SHADOW_CASCADE_COUNT * 2;// *2 is for 2 different sets (opqaue and masked)
-    chunkIndicesBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    chunkIndicesBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    chunkIndicesBufferInfo.flags = 0;
-    if (vkCreateBuffer(device.getLogicalDevice(), &chunkIndicesBufferInfo,
-                       nullptr, &chunkIndicesBuffer) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create writeindex buffer!");
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memRequirements.size;
+      allocInfo.memoryTypeIndex =
+          device.findMemoryType(memRequirements.memoryTypeBits,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                           &chunkIndicesBufferMemories[f]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate chunkindices buffer memory!");
+      }
+      vkBindBufferMemory(device.getLogicalDevice(), chunkIndicesBuffers[f],
+                         chunkIndicesBufferMemories[f], 0);
     }
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device.getLogicalDevice(), chunkIndicesBuffer,
-                                  &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex =
-        device.findMemoryType(memRequirements.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                         &chunkIndicesBufferMemory) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate uniform buffer memory!");
-    }
-    vkBindBufferMemory(device.getLogicalDevice(), chunkIndicesBuffer,
-                       chunkIndicesBufferMemory, 0);
   }
 
   AAPLSubMesh *submeshes = (AAPLSubMesh *)uncompressData(
@@ -3253,10 +3201,8 @@ void GpuScene::DrawOccluders(VkCommandBuffer commandBuffer) {
   //uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
 
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipelineLayout, 0, 1, &globalDescriptorSet, 0,
+                          pipelineLayout, 0, 1, &globalDescriptorSets[currentFrame], 0,
                           nullptr);
-
-  // vkCmdPushConstants(commandBuffer,pipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),objtocamera.value_ptr());
   vkCmdDrawIndexed(commandBuffer, sceneFile["occluder_indices"].size(), 1, 0, 0,
                    0);
   vkCmdEndRenderPass(commandBuffer);
@@ -3273,7 +3219,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     frameConstants.physicalSize = vec2(device.getSwapChainExtent().width,
                                        device.getSwapChainExtent().height);
     void *data1;
-    vkMapMemory(device.getLogicalDevice(), uniformBufferMemory, 0,
+    vkMapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame], 0,
                 sizeof(FrameData), 0, &data1);
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
       memcpy(data1,
@@ -3298,7 +3244,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
-    vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemory);
+    vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
 
 
     {
@@ -3310,7 +3256,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     // Upload shadow cull params
     {
       void *data;
-      vkMapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemory, 0,
+      vkMapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemories[currentFrame], 0,
                   sizeof(Shadow::ShadowCullParams), 0, &data);
       memcpy((char *)data + 0, &opaqueCount, sizeof(uint32_t));
       memcpy((char *)data + 4, &alphaMaskedCount, sizeof(uint32_t));
@@ -3318,18 +3264,18 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       uint32_t cascadeIdx = SHADOW_CASCADE_COUNT;
       memcpy((char *)data + 12, &cascadeIdx, sizeof(uint32_t));
       memcpy((char *)data + 16, &cascadeFrustum, sizeof(Frustum));
-      vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemory);
+      vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemories[currentFrame]);
     }
 
     // Reset write counters for this cascade
     for (int cascade = 0; cascade < SHADOW_CASCADE_COUNT; ++cascade)
     {
       void *data;
-      vkMapMemory(device.getLogicalDevice(), _shadow->_shadowWriteIndexMemory,
+      vkMapMemory(device.getLogicalDevice(), _shadow->_shadowWriteIndexMemories[currentFrame],
                   cascade * 2 * sizeof(uint32_t), 2 * sizeof(uint32_t), 0, &data);
       uint32_t zeros[2] = {0, 0};
       memcpy(data, zeros, 2 * sizeof(uint32_t));
-      vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowWriteIndexMemory);
+      vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowWriteIndexMemories[currentFrame]);
     }
     }
 
@@ -3346,7 +3292,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       mat4 viewProj = maincamera->getProjectMatrix() * maincamera->getObjectToCamera();
       mat4 viewProjT = transpose(viewProj);
 
-      vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemory, 0,
+      vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemories[currentFrame], 0,
                   sizeof(GPUCullParams), 0, &data1);
       // GPUCullParams layout matches HLSL cbuffer:
       // offset 0:  opaqueChunkCount
@@ -3369,15 +3315,15 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       memcpy((char *)data1 + 32, viewProjT.value_ptr(), sizeof(mat4));
       memcpy((char *)data1 + 96, &maincamera->getFrustum(), sizeof(Frustum));
 
-      vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemory);
+      vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemories[currentFrame]);
     }
 
     // Reset all 3 write counters (opaque, alphaMask, transparent)
     uint32_t zeroCounters[3] = {0, 0, 0};
-    vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemory, 0,
+    vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemories[currentFrame], 0,
                 3 * sizeof(uint32_t), 0, &data1);
     memcpy(data1, zeroCounters, 3 * sizeof(uint32_t));
-    vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemory);
+    vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemories[currentFrame]);
   }
 
   VkCommandBufferBeginInfo beginInfo{};
@@ -3402,7 +3348,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                     encodeDrawBufferPipeline);
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           encodeDrawBufferPipelineLayout, 0, 1,
-                          &gpuCullDescriptorSet, 0, nullptr);
+                          &gpuCullDescriptorSets[currentFrame], 0, nullptr);
   vkCmdDispatch(commandBuffer, groupx, 1, 1);
 
   VkMemoryBarrier2 memoryBarrier = {
@@ -3569,7 +3515,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                           ? deferredLightingPipeline_clusterlighting
                           : deferredLightingPipeline);
 
-    VkDescriptorSet deferredSets[] = {globalDescriptorSet, deferredLightingDescriptorSet};
+    VkDescriptorSet deferredSets[] = {globalDescriptorSets[currentFrame], deferredLightingDescriptorSet};
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             deferredLightingPipelineLayout, 0, 2,
                             deferredSets, 0, nullptr);
@@ -3616,16 +3562,16 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       // Stage 4: GPU indirect forward pass for transparent objects
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         drawclusterForwardPipelineIndirect);
-      VkDescriptorSet forwardDescriptorSets[] = {globalDescriptorSet,applDescriptorSet};
+      VkDescriptorSet forwardDescriptorSets[] = {globalDescriptorSets[currentFrame],applDescriptorSets[currentFrame]};
       vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               drawclusterBasePipelineLayout, 0, 2,
                               forwardDescriptorSets, 0, nullptr);
 
       uint32_t transparentOffset = (applMesh->_opaqueChunkCount + applMesh->_alphaMaskedChunkCount)
                                    * sizeof(VkDrawIndexedIndirectCommand);
-      vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer,
+      vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffers[currentFrame],
                                     transparentOffset,
-                                    writeIndexBuffer, 2 * sizeof(uint32_t),
+                                    writeIndexBuffers[currentFrame], 2 * sizeof(uint32_t),
                                     applMesh->_transparentChunkCount,
                                     sizeof(VkDrawIndexedIndirectCommand));
 
@@ -3658,7 +3604,7 @@ void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
 
   // Dynamic offset: skip past shadow cascade matrices to reach camera matrices
   uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
-  VkDescriptorSet baseDescriptorSets[] = {globalDescriptorSet,applDescriptorSet};
+  VkDescriptorSet baseDescriptorSets[] = {globalDescriptorSets[currentFrame],applDescriptorSets[currentFrame]};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           drawclusterBasePipelineLayout, 0, 2,
                           baseDescriptorSets, 0, nullptr);
@@ -3666,17 +3612,17 @@ void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
   // Opaque chunks: indirect draw from region [0, opaqueChunkCount)
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawclusterBasePipeline);
-  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer, 0,
-                                writeIndexBuffer, 0,
+  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffers[currentFrame], 0,
+                                writeIndexBuffers[currentFrame], 0,
                                 applMesh->_opaqueChunkCount,
                                 sizeof(VkDrawIndexedIndirectCommand));
 
   // Alpha-masked chunks: indirect draw from region [opaqueChunkCount, opaqueChunkCount + alphaMaskedChunkCount)
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawclusterBasePipelineAlphaMask);
-  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer,
+  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffers[currentFrame],
                                 applMesh->_opaqueChunkCount * sizeof(VkDrawIndexedIndirectCommand),
-                                writeIndexBuffer, sizeof(uint32_t),
+                                writeIndexBuffers[currentFrame], sizeof(uint32_t),
                                 applMesh->_alphaMaskedChunkCount,
                                 sizeof(VkDrawIndexedIndirectCommand));
 }
@@ -3695,7 +3641,7 @@ void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
 
   // if the descriptor set data isn't change we can omit this?
 
-  VkDescriptorSet drawSets[] = {globalDescriptorSet, applDescriptorSet};
+  VkDescriptorSet drawSets[] = {globalDescriptorSets[currentFrame], applDescriptorSets[currentFrame]};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           drawclusterPipelineLayout, 0, 2, drawSets,
                           0, nullptr);
@@ -3731,8 +3677,8 @@ void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
   // captured = true;
   spdlog::log(spdlog::level::info, "occlued chunks: {}", occluded);
 #else
-  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffer, 0,
-                                writeIndexBuffer, 0, applMesh->_chunkCount,
+  vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffers[currentFrame], 0,
+                                writeIndexBuffers[currentFrame], 0, applMesh->_chunkCount,
                                 sizeof(VkDrawIndexedIndirectCommand));
 #endif
 }
@@ -3991,32 +3937,34 @@ void GpuScene::createHiZResources() {
   samplerInfo.maxLod = static_cast<float>(_hizMipLevels);
   vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &_hizSampler);
 
-  // Update gpuCullDescriptorSet with Hi-Z bindings
-  VkDescriptorImageInfo hizImageInfo{};
-  hizImageInfo.imageView = _hizTextureView;
-  hizImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  // Update all per-frame gpuCullDescriptorSets with Hi-Z bindings
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkDescriptorImageInfo hizImageInfo{};
+    hizImageInfo.imageView = _hizTextureView;
+    hizImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-  VkWriteDescriptorSet hizTexWrite{};
-  hizTexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  hizTexWrite.dstBinding = 6;
-  hizTexWrite.dstSet = gpuCullDescriptorSet;
-  hizTexWrite.descriptorCount = 1;
-  hizTexWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  hizTexWrite.pImageInfo = &hizImageInfo;
+    VkWriteDescriptorSet hizTexWrite{};
+    hizTexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    hizTexWrite.dstBinding = 6;
+    hizTexWrite.dstSet = gpuCullDescriptorSets[f];
+    hizTexWrite.descriptorCount = 1;
+    hizTexWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    hizTexWrite.pImageInfo = &hizImageInfo;
 
-  VkDescriptorImageInfo hizSampInfo{};
-  hizSampInfo.sampler = _hizSampler;
+    VkDescriptorImageInfo hizSampInfo{};
+    hizSampInfo.sampler = _hizSampler;
 
-  VkWriteDescriptorSet hizSampWrite{};
-  hizSampWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  hizSampWrite.dstBinding = 7;
-  hizSampWrite.dstSet = gpuCullDescriptorSet;
-  hizSampWrite.descriptorCount = 1;
-  hizSampWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-  hizSampWrite.pImageInfo = &hizSampInfo;
+    VkWriteDescriptorSet hizSampWrite{};
+    hizSampWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    hizSampWrite.dstBinding = 7;
+    hizSampWrite.dstSet = gpuCullDescriptorSets[f];
+    hizSampWrite.descriptorCount = 1;
+    hizSampWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    hizSampWrite.pImageInfo = &hizSampInfo;
 
-  VkWriteDescriptorSet writes[] = {hizTexWrite, hizSampWrite};
-  vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+    VkWriteDescriptorSet writes[] = {hizTexWrite, hizSampWrite};
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+  }
 
   spdlog::info("Hi-Z resources created: {}x{}, {} mip levels", width, height, _hizMipLevels);
 
@@ -4333,7 +4281,7 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
 
 void GpuScene::createSyncObjects() {
   // framesInFlight 由 swapchain 图像数量决定
-  framesInFlight = device.getSwapChainImageCount();
+    framesInFlight =  device.getSwapChainImageCount();
   
   imageAvailableSemaphores.resize(framesInFlight);
   renderFinishedSemaphores.resize(framesInFlight);
@@ -4921,27 +4869,23 @@ void GpuScene::updateSamplerInDescriptors(VkImageView currentImage) {
   if (updated)
     return;
   updated = true;
-  VkDescriptorImageInfo imageinfo;
-  imageinfo.imageView = currentImage;
-  imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  imageinfo.sampler = textureSampler;
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkDescriptorImageInfo imageinfo;
+    imageinfo.imageView = currentImage;
+    imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageinfo.sampler = textureSampler;
 
-  VkWriteDescriptorSet setWrite = {};
-  setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite.pNext = nullptr;
+    VkWriteDescriptorSet setWrite = {};
+    setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setWrite.pNext = nullptr;
+    setWrite.dstBinding = 1;
+    setWrite.dstSet = globalDescriptorSets[f];
+    setWrite.descriptorCount = 1;
+    setWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    setWrite.pImageInfo = &imageinfo;
 
-  // we are going to write into binding number 0
-  setWrite.dstBinding = 1;
-  // of the global descriptor
-  setWrite.dstSet = globalDescriptorSet;
-
-  setWrite.descriptorCount = 1;
-  // and the type is uniform buffer
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-  setWrite.pImageInfo = &imageinfo;
-  // setWrite.pBufferInfo = &binfo;
-
-  vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &setWrite, 0, nullptr);
+  }
 }
 
 void GpuScene::createOccluderWireframePipeline() {
@@ -5074,7 +5018,7 @@ void GpuScene::drawOccludersWireframe(VkCommandBuffer commandBuffer) {
   vkCmdBindIndexBuffer(commandBuffer, _occludersIndexBuffer, 0,
                        VK_INDEX_TYPE_UINT32);
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipelineLayout, 0, 1, &globalDescriptorSet, 0,
+                          pipelineLayout, 0, 1, &globalDescriptorSets[currentFrame], 0,
                           nullptr);
   vkCmdDrawIndexed(commandBuffer, sceneFile["occluder_indices"].size(), 1, 0, 0,
                    0);

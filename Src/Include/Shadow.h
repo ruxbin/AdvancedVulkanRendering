@@ -29,18 +29,18 @@ private:
   VkSampler _shadowMapSampler;
   void InitRHI(const VulkanDevice &, const GpuScene &);
 
-  // GPU-Driven Shadow (Stage 2)
-  VkBuffer _shadowDrawParamsBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory _shadowDrawParamsMemory = VK_NULL_HANDLE;
-  VkBuffer _shadowWriteIndexBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory _shadowWriteIndexMemory = VK_NULL_HANDLE;
+  // GPU-Driven Shadow (Stage 2) — per-frame resources
+  std::vector<VkBuffer> _shadowDrawParamsBuffers;
+  std::vector<VkDeviceMemory> _shadowDrawParamsMemories;
+  std::vector<VkBuffer> _shadowWriteIndexBuffers;
+  std::vector<VkDeviceMemory> _shadowWriteIndexMemories;
 
-  VkBuffer _shadowCullParamsBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory _shadowCullParamsMemory = VK_NULL_HANDLE;
+  std::vector<VkBuffer> _shadowCullParamsBuffers;
+  std::vector<VkDeviceMemory> _shadowCullParamsMemories;
 
   VkDescriptorSetLayout _shadowCullSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool _shadowCullDescriptorPool = VK_NULL_HANDLE;
-  VkDescriptorSet _shadowCullDescriptorSet = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> _shadowCullDescriptorSets;
 
   VkPipelineLayout _shadowCullPipelineLayout = VK_NULL_HANDLE;
   VkPipeline _shadowCullPipeline = VK_NULL_HANDLE;

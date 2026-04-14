@@ -35,7 +35,7 @@ public:
 
   static VkDescriptorPool pointLightingDescriptorPool;
   static VkDescriptorSetLayout drawPointLightDescriptorSetLayout;
-  static VkDescriptorSet drawPointLightDescriptorSet;
+  static std::vector<VkDescriptorSet> drawPointLightDescriptorSets; // per-frame
   static std::vector<PointLightData> pointLightData;
 
   static void CommonDrawSetup(VkCommandBuffer &);
