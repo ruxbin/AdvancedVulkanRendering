@@ -5,7 +5,8 @@
 [[vk::binding(1,0)]] RWTexture2D<float> hizMip0;
 
 struct PushConstants {
-    uint2 mipSize;
+    uint2 srcSize;   // source mip dimensions
+    uint2 dstSize;   // output mip dimensions
 };
 
 [[vk::push_constant]] PushConstants pushConstants;
@@ -13,26 +14,45 @@ struct PushConstants {
 [numthreads(8, 8, 1)]
 void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= pushConstants.mipSize.x || DTid.y >= pushConstants.mipSize.y)
+    if (DTid.x >= pushConstants.dstSize.x || DTid.y >= pushConstants.dstSize.y)
         return;
     hizMip0[DTid.xy] = depthTexture.Load(int3(DTid.xy, 0));
 }
 
-// --- Downsample Hi-Z (MIN for reverse-Z) ---
+// --- Downsample Hi-Z (MIN for reverse-Z, with edge handling for odd sizes) ---
 [[vk::binding(0,1)]] Texture2D<float> prevMip;
 [[vk::binding(1,1)]] RWTexture2D<float> currentMip;
 
 [numthreads(8, 8, 1)]
 void DownsampleHiZ(uint3 DTid : SV_DispatchThreadID)
 {
-    if (DTid.x >= pushConstants.mipSize.x || DTid.y >= pushConstants.mipSize.y)
+    if (DTid.x >= pushConstants.dstSize.x || DTid.y >= pushConstants.dstSize.y)
         return;
 
-    float d00 = prevMip.Load(int3(DTid.xy * 2 + uint2(0, 0), 0));
-    float d10 = prevMip.Load(int3(DTid.xy * 2 + uint2(1, 0), 0));
-    float d01 = prevMip.Load(int3(DTid.xy * 2 + uint2(0, 1), 0));
-    float d11 = prevMip.Load(int3(DTid.xy * 2 + uint2(1, 1), 0));
+    uint2 src = DTid.xy * 2;
 
-    // MIN: keep farthest visible surface (smallest depth in reverse-Z)
-    currentMip[DTid.xy] = min(min(d00, d10), min(d01, d11));
+    // Standard 2x2 block - MIN keeps farthest visible surface in reverse-Z
+    float d = prevMip.Load(int3(src, 0));
+    d = min(d, prevMip.Load(int3(src + uint2(1, 0), 0)));
+    d = min(d, prevMip.Load(int3(src + uint2(0, 1), 0)));
+    d = min(d, prevMip.Load(int3(src + uint2(1, 1), 0)));
+
+    // Edge handling: when source has odd dimensions, the last output texel
+    // covers a 3-pixel span. Sample the extra column/row/corner to avoid
+    // depth leaks at pyramid edges.
+    bool edge_x = (DTid.x * 2 == pushConstants.srcSize.x - 3);
+    bool edge_y = (DTid.y * 2 == pushConstants.srcSize.y - 3);
+
+    if (edge_x) {
+        d = min(d, prevMip.Load(int3(src + uint2(2, 0), 0)));
+        d = min(d, prevMip.Load(int3(src + uint2(2, 1), 0)));
+    }
+    if (edge_y) {
+        d = min(d, prevMip.Load(int3(src + uint2(0, 2), 0)));
+        d = min(d, prevMip.Load(int3(src + uint2(1, 2), 0)));
+    }
+    if (edge_x && edge_y)
+        d = min(d, prevMip.Load(int3(src + uint2(2, 2), 0)));
+
+    currentMip[DTid.xy] = d;
 }

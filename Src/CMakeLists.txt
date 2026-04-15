@@ -19,6 +19,10 @@ include_directories(${SDL2_INCLUDE_DIRS})
 #include_directories(${CMAKE_CURRENT_LIST_DIR}/../ThirdParty/spdlog/include)#TODO something like sdl2
 set(ROOT_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../../)
 
+# ImGui
+set(IMGUI_DIR ${CMAKE_CURRENT_LIST_DIR}/../thirdparty/imgui)
+include_directories(${IMGUI_DIR} ${IMGUI_DIR}/backends)
+
 set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Camera.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Window.cpp
@@ -29,6 +33,13 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Shadow.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Light.cpp
     ${CMAKE_CURRENT_LIST_DIR}/AssetLoader.cpp
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
 )
 
 

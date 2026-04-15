@@ -56,6 +56,7 @@ struct AAPLFrameConstants
     float localLightIntensity;
     float nearPlane;
     float farPlane;
+    uint frameCounter;
     float2 physicalSize;
 };
 
@@ -65,6 +66,7 @@ struct CameraParamsBuffer
     float4x4 viewMatrix;
     float4x4 invViewMatrix;
     float4x4 invViewProjectionMatrix;
+    float4x4 invProjectionMatrix;
 };
 
 #define SHADOW_CASCADE_COUNT 3
@@ -83,10 +85,11 @@ struct CameraParamsBufferFull
     float4x4 viewMatrix;
     float4x4 invViewMatrix;
     float4x4 invViewProjectionMatrix;
+    float4x4 invProjectionMatrix;
 };
 
 
-// Point light information for culling.
+
 
 struct AAPLPointLightCullingData
 {

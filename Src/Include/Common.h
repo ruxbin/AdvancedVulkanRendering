@@ -65,6 +65,7 @@ struct uniformBufferData {
   mat4 viewMatrix;
   mat4 invViewMatrix;
   mat4 invViewProjectionMatrix;
+  mat4 invProjectionMatrix;
 };
 
 struct FrameConstants {
@@ -75,6 +76,7 @@ struct FrameConstants {
   float localLightIntensity;
   float nearPlane;
   float farPlane;
+  uint32_t frameCounter;
   alignas(16) vec2 physicalSize;
 };
 

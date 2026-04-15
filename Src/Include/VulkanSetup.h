@@ -44,6 +44,7 @@ VkFramebuffer getSwapChainFrameBuffer(int i) const {return swapChainFramebuffers
 VkSwapchainKHR getSwapChain() const {return swapChain;}
 VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
+VkInstance getInstance() const {return vkInstance;}
 VkImageView getWindowDepthImageView()const{return depthImageView;}
 VkImageView getWindowDepthOnlyImageView()const { return depthOnlyImageView; }
 VkFormat getWindowDepthFormat()const{return depthFormat;}

@@ -19,6 +19,7 @@ cbuffer cam
 
 [[vk::binding(6,1)]] Texture2DArray<float> shadowMaps;
 [[vk::binding(7,1)]] SamplerComparisonState shadowSampler;
+[[vk::binding(10,1)]] Texture2D<float> aoTexture;
 //[[vk::binding(8,1)]]
 //StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
 //[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
@@ -110,8 +111,10 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     float4 worldPosition = worldPositionForTexcoord(input.TextureUV, depth, cameraParams);
     
     float shadow = evaluateCascadeShadows(cameraParams, worldPosition, false);
-    
-    half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow;
+
+    float ao = aoTexture.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
+
+    half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow * ao;
     /*if(useClusterLighting)
     {
 	//get the cluster index

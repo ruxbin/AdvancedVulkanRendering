@@ -17,6 +17,7 @@
 
 
 class Shadow;
+union SDL_Event;
 
 struct AAPLTextureData {
   std::string _path;
@@ -325,6 +326,45 @@ private:
   void createHiZResources();
   void generateHiZPyramid(VkCommandBuffer commandBuffer);
 
+  // Scalable Ambient Obscurance (SAO)
+  VkImage _saoDepthPyramid = VK_NULL_HANDLE;
+  VkDeviceMemory _saoDepthPyramidMemory = VK_NULL_HANDLE;
+  VkImageView _saoDepthPyramidView = VK_NULL_HANDLE;
+  std::vector<VkImageView> _saoMipViews;
+  uint32_t _saoMipLevels = 0;
+  uint32_t _saoWidth = 0, _saoHeight = 0;
+  VkDescriptorSet _saoCopyDescriptorSet = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> _saoDownsampleDescriptorSets;
+
+  VkImage _aoTexture = VK_NULL_HANDLE;
+  VkDeviceMemory _aoTextureMemory = VK_NULL_HANDLE;
+  VkImageView _aoTextureView = VK_NULL_HANDLE;
+
+  VkDescriptorSetLayout _saoSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool _saoDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorSet _saoDescriptorSet = VK_NULL_HANDLE;
+  VkPipelineLayout _saoPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline _saoPipeline = VK_NULL_HANDLE;
+
+  void createSAOResources();
+  void generateSAODepthPyramid(VkCommandBuffer cmd);
+  void dispatchSAO(VkCommandBuffer cmd);
+
+  // ImGui overlay
+  VkDescriptorPool _imguiDescriptorPool = VK_NULL_HANDLE;
+  bool _imguiInitialized = false;
+  struct CullingStats {
+    uint32_t visibleOpaque = 0;
+    uint32_t visibleAlphaMask = 0;
+    uint32_t visibleTransparent = 0;
+    uint32_t totalOpaque = 0;
+    uint32_t totalAlphaMask = 0;
+    uint32_t totalTransparent = 0;
+  } _cullingStats;
+  void initImGui(SDL_Window *window);
+  void readbackCullingStats(uint32_t previousFrame);
+  void renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+
   void createRenderOccludersPipeline(VkRenderPass renderPass);
 
   void createCommandBuffers(VkCommandPool commandPool) {
@@ -354,6 +394,8 @@ public:
   void recreateSwapChain();
   void setFramebufferResized(bool resized) { framebufferResized = resized; }
   const std::filesystem::path &RootPath() const { return _rootPath; }
+  void InitImGui(SDL_Window *window) { initImGui(window); }
+  void ProcessImGuiEvent(SDL_Event *event);
 
   VkShaderModule createShaderModule(const std::vector<char> &code) const;
 

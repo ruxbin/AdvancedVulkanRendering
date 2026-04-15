@@ -83,6 +83,7 @@ int main(int nargs, char **args) {
   VulkanDevice vk(window);
 
   GpuScene gpuScene(currentPath, vk);
+  gpuScene.InitImGui(window);
 
   SDL_Event e;
   bool quit = false;
@@ -103,6 +104,7 @@ int main(int nargs, char **args) {
         std::chrono::system_clock::now();
 
     while (SDL_PollEvent(&e)) {
+      gpuScene.ProcessImGuiEvent(&e);
 
       if (e.type == SDL_QUIT)
         quit = true;

@@ -7,6 +7,9 @@
 #include "ThirdParty/lzfse.h"
 #include "VulkanCompat.h"
 #include "VulkanSetup.h"
+#include "imgui.h"
+#include "imgui_impl_sdl2.h"
+#include "imgui_impl_vulkan.h"
 
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -1252,6 +1255,12 @@ void GpuScene::init_deferredlighting_descriptors() {
   lightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   lightIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  VkDescriptorSetLayoutBinding aoBinding = {};
+  aoBinding.binding = 10;
+  aoBinding.descriptorCount = 1;
+  aoBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  aoBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {albedoBinding,
                                              normalBinding,
                                              emessiveBinding,
@@ -1261,7 +1270,8 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              shadowMapsBinding,
                                              shadowMapsSamplerBinding,
                                              pointLightCullingDataBinding,
-                                             lightIndicesBinding};
+                                             lightIndicesBinding,
+                                             aoBinding};
 
   VkDescriptorSetLayoutCreateInfo setinfo = {};
   setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2654,6 +2664,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   init_drawparams_descriptors();
   createHiZResources(); // Stage 3: creates Hi-Z texture and updates gpuCullDescriptorSet
   init_deferredlighting_descriptors();
+  createSAOResources();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
   createOccluderWireframePipeline();
@@ -3216,6 +3227,8 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   {
     frameConstants.nearPlane = maincamera->Near();
     frameConstants.farPlane = maincamera->Far();
+    static uint32_t sFrameCounter = 0;
+    frameConstants.frameCounter = sFrameCounter++;
     frameConstants.physicalSize = vec2(device.getSwapChainExtent().width,
                                        device.getSwapChainExtent().height);
     void *data1;
@@ -3242,6 +3255,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     memcpy(data1,
            transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(),
            (size_t)sizeof(mat4));
+    data1 = ((mat4 *)data1) + 1;
+    // invProjectionMatrix
+    mat4 invProj = inverse(maincamera->getProjectMatrix());
+    memcpy(data1, transpose(invProj).value_ptr(), (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
@@ -3470,6 +3487,13 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     }
   }
 
+  // SAO: generate depth pyramid from full scene depth, then dispatch SAO compute
+  {
+    // Window depth is already in DEPTH_READ_ONLY layout from above transition
+    generateSAODepthPyramid(commandBuffer);
+    dispatchSAO(commandBuffer);
+  }
+
   // deferred lighting pass
   {
     if (useClusterLighting) {
@@ -3577,6 +3601,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
       // Debug: draw occluder wireframe overlay
       drawOccludersWireframe(commandBuffer);
+
+      // ImGui overlay (rendered last in forward pass)
+      renderImGuiOverlay(commandBuffer, imageIndex);
 
       vkCmdEndRenderPass(commandBuffer);
     }
@@ -3716,6 +3743,10 @@ void GpuScene::Draw() {
 
   // 只有在成功获取 image 后才 reset fence，避免死锁
   vkResetFences(device.getLogicalDevice(), 1, &inFlightFences[currentFrame]);
+
+  // Readback culling stats from previous frame (already completed on GPU)
+  uint32_t previousFrame = (currentFrame + framesInFlight - 1) % framesInFlight;
+  readbackCullingStats(previousFrame);
 
   // 使用当前帧的 command buffer
   VkCommandBuffer& currentCmdBuffer = commandBuffers[currentFrame];
@@ -3998,7 +4029,7 @@ void GpuScene::createHiZResources() {
   VkPushConstantRange hizPushRange{};
   hizPushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   hizPushRange.offset = 0;
-  hizPushRange.size = sizeof(uint32_t) * 2; // uint2 mipSize
+  hizPushRange.size = sizeof(uint32_t) * 4; // uint4 {srcSize, dstSize}
 
   VkPipelineLayoutCreateInfo hizPipeLayoutInfo{};
   hizPipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -4183,13 +4214,14 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
 
   // 3. Dispatch CopyDepthToHiZ: occluder depth → Hi-Z mip 0
   {
-    uint32_t mipSize[2] = {_hizWidth, _hizHeight};
+    // Push {srcSize, dstSize} — for copy, src=screen resolution, dst=hiz mip0
+    uint32_t pushData[4] = {_hizWidth, _hizHeight, _hizWidth, _hizHeight};
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _hizCopyPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
         _hizPipelineLayout, 0, 1, &_hizCopyDescriptorSet, 0, nullptr);
     vkCmdPushConstants(commandBuffer, _hizPipelineLayout,
-        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(mipSize), mipSize);
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
     vkCmdDispatch(commandBuffer, (_hizWidth + 7) / 8, (_hizHeight + 7) / 8, 1);
   }
 
@@ -4197,6 +4229,8 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
   for (uint32_t mip = 1; mip < _hizMipLevels; ++mip) {
     uint32_t mipW = (_hizWidth >> mip) > 1 ? (_hizWidth >> mip) : 1;
     uint32_t mipH = (_hizHeight >> mip) > 1 ? (_hizHeight >> mip) : 1;
+    uint32_t prevW = (_hizWidth >> (mip - 1)) > 1 ? (_hizWidth >> (mip - 1)) : 1;
+    uint32_t prevH = (_hizHeight >> (mip - 1)) > 1 ? (_hizHeight >> (mip - 1)) : 1;
 
     // Barrier: previous mip write → current mip read
     {
@@ -4221,13 +4255,14 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
           0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    uint32_t mipSize[2] = {mipW, mipH};
+    // Push {srcSize, dstSize} for edge handling of odd-sized mips
+    uint32_t pushData[4] = {prevW, prevH, mipW, mipH};
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _hizDownsamplePipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
         _hizPipelineLayout, 1, 1, &_hizDownsampleDescriptorSets[mip - 1], 0, nullptr);
     vkCmdPushConstants(commandBuffer, _hizPipelineLayout,
-        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(mipSize), mipSize);
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
     vkCmdDispatch(commandBuffer, (mipW + 7) / 8, (mipH + 7) / 8, 1);
   }
 
@@ -5022,4 +5057,565 @@ void GpuScene::drawOccludersWireframe(VkCommandBuffer commandBuffer) {
                           nullptr);
   vkCmdDrawIndexed(commandBuffer, sceneFile["occluder_indices"].size(), 1, 0, 0,
                    0);
+}
+
+// --- Scalable Ambient Obscurance (SAO) ---
+
+void GpuScene::createSAOResources() {
+  uint32_t width = device.getSwapChainExtent().width;
+  uint32_t height = device.getSwapChainExtent().height;
+  _saoWidth = width;
+  _saoHeight = height;
+  _saoMipLevels = (uint32_t)floor(log2f((float)(width > height ? width : height))) + 1;
+
+  // --- 1. SAO depth pyramid texture (same resolution as screen, R32_SFLOAT, full mip chain) ---
+  {
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = VK_FORMAT_R32_SFLOAT;
+    imageInfo.extent = {width, height, 1};
+    imageInfo.mipLevels = _saoMipLevels;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_saoDepthPyramid);
+
+    VkMemoryRequirements memReq;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _saoDepthPyramid, &memReq);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_saoDepthPyramidMemory);
+    vkBindImageMemory(device.getLogicalDevice(), _saoDepthPyramid, _saoDepthPyramidMemory, 0);
+
+    // Full mip chain view for sampling in SAO shader
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = _saoDepthPyramid;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R32_SFLOAT;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, _saoMipLevels, 0, 1};
+    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_saoDepthPyramidView);
+
+    // Per-mip views for compute writes
+    _saoMipViews.resize(_saoMipLevels);
+    for (uint32_t i = 0; i < _saoMipLevels; ++i) {
+      viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, i, 1, 0, 1};
+      vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_saoMipViews[i]);
+    }
+  }
+
+  // --- 2. AO output texture (R8_UNORM, full resolution) ---
+  {
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = VK_FORMAT_R8_UNORM;
+    imageInfo.extent = {width, height, 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_aoTexture);
+
+    VkMemoryRequirements memReq;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _aoTexture, &memReq);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_aoTextureMemory);
+    vkBindImageMemory(device.getLogicalDevice(), _aoTexture, _aoTextureMemory, 0);
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = _aoTexture;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8_UNORM;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_aoTextureView);
+  }
+
+  // --- 3. Descriptor sets for SAO depth pyramid building (reuse HiZ pipeline) ---
+  {
+    // Allocate from HiZ descriptor pool: 1 copy set + (mipLevels - 1) downsample sets
+    // We create a separate pool for SAO
+    VkDescriptorPoolSize poolSizes[] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, _saoMipLevels},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, _saoMipLevels},
+    };
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = _saoMipLevels;
+
+    VkDescriptorPool saoDepthPool;
+    vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &saoDepthPool);
+
+    // Copy descriptor set: depth texture → SAO pyramid mip 0
+    {
+      VkDescriptorSetAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      allocInfo.descriptorPool = saoDepthPool;
+      allocInfo.descriptorSetCount = 1;
+      allocInfo.pSetLayouts = &_hizCopySetLayout;
+      vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoCopyDescriptorSet);
+
+      VkDescriptorImageInfo srcInfo{};
+      srcInfo.imageView = device.getWindowDepthOnlyImageView();
+      srcInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+      VkDescriptorImageInfo dstInfo{};
+      dstInfo.imageView = _saoMipViews[0];
+      dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+      VkWriteDescriptorSet writes[2] = {};
+      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[0].dstSet = _saoCopyDescriptorSet;
+      writes[0].dstBinding = 0;
+      writes[0].descriptorCount = 1;
+      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[0].pImageInfo = &srcInfo;
+      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].dstSet = _saoCopyDescriptorSet;
+      writes[1].dstBinding = 1;
+      writes[1].descriptorCount = 1;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[1].pImageInfo = &dstInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+    }
+
+    // Downsample descriptor sets: mip[n-1] → mip[n]
+    _saoDownsampleDescriptorSets.resize(_saoMipLevels - 1);
+    for (uint32_t m = 1; m < _saoMipLevels; ++m) {
+      VkDescriptorSetAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      allocInfo.descriptorPool = saoDepthPool;
+      allocInfo.descriptorSetCount = 1;
+      allocInfo.pSetLayouts = &_hizDownsampleSetLayout;
+      vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoDownsampleDescriptorSets[m - 1]);
+
+      VkDescriptorImageInfo srcInfo{};
+      srcInfo.imageView = _saoMipViews[m - 1];
+      srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+      VkDescriptorImageInfo dstInfo{};
+      dstInfo.imageView = _saoMipViews[m];
+      dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+      VkWriteDescriptorSet writes[2] = {};
+      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[0].dstSet = _saoDownsampleDescriptorSets[m - 1];
+      writes[0].dstBinding = 0;
+      writes[0].descriptorCount = 1;
+      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[0].pImageInfo = &srcInfo;
+      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].dstSet = _saoDownsampleDescriptorSets[m - 1];
+      writes[1].dstBinding = 1;
+      writes[1].descriptorCount = 1;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[1].pImageInfo = &dstInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+    }
+  }
+
+  // --- 4. SAO compute pipeline ---
+  {
+    // Descriptor set layout: depth (0), pyramid (1), camera cbuffer (2), AO output (3)
+    VkDescriptorSetLayoutBinding bindings[4] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 4;
+    layoutInfo.pBindings = bindings;
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr, &_saoSetLayout);
+
+    // Push constants: uint2 screenSize
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(uint32_t) * 2;
+
+    VkPipelineLayoutCreateInfo pipeLayoutInfo{};
+    pipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeLayoutInfo.setLayoutCount = 1;
+    pipeLayoutInfo.pSetLayouts = &_saoSetLayout;
+    pipeLayoutInfo.pushConstantRangeCount = 1;
+    pipeLayoutInfo.pPushConstantRanges = &pushRange;
+    vkCreatePipelineLayout(device.getLogicalDevice(), &pipeLayoutInfo, nullptr, &_saoPipelineLayout);
+
+    // Compute pipeline
+    auto shaderCode = readFile((_rootPath / "shaders/sao.cs.spv").generic_string());
+    VkShaderModule shaderModule = createShaderModule(shaderCode);
+
+    VkPipelineShaderStageCreateInfo stageInfo{};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = shaderModule;
+    stageInfo.pName = "ScalableAmbientObscurance";
+
+    VkComputePipelineCreateInfo pipeInfo{};
+    pipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeInfo.layout = _saoPipelineLayout;
+    pipeInfo.stage = stageInfo;
+    vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &_saoPipeline);
+    vkDestroyShaderModule(device.getLogicalDevice(), shaderModule, nullptr);
+
+    // Descriptor pool and set for SAO compute
+    VkDescriptorPoolSize poolSizes[] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+    };
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 3;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+    vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &_saoDescriptorPool);
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = _saoDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &_saoSetLayout;
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoDescriptorSet);
+
+    // Write descriptor set (static bindings - pyramid and AO output don't change per frame)
+    // Binding 0: depth texture (window depth) — updated later per-frame? No, same view.
+    VkDescriptorImageInfo depthInfo{};
+    depthInfo.imageView = device.getWindowDepthOnlyImageView();
+    depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+    // Binding 1: SAO depth pyramid (full mip chain view for read)
+    VkDescriptorImageInfo pyramidInfo{};
+    pyramidInfo.imageView = _saoDepthPyramidView;
+    pyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Binding 2: camera params uniform buffer (we'll use frame 0 and update per frame is done via the same buffer)
+    // Actually we need per-frame, but we only have 1 descriptor set. Use frame 0's buffer and rely on
+    // the fact that we update the uniform before dispatch each frame.
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = uniformBuffers[0];
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(FrameData);
+
+    // Binding 3: AO output
+    VkDescriptorImageInfo aoInfo{};
+    aoInfo.imageView = _aoTextureView;
+    aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet writes[4] = {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = _saoDescriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[0].pImageInfo = &depthInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = _saoDescriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[1].pImageInfo = &pyramidInfo;
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = _saoDescriptorSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[2].pBufferInfo = &bufferInfo;
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = _saoDescriptorSet;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[3].pImageInfo = &aoInfo;
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 4, writes, 0, nullptr);
+  }
+
+  spdlog::info("SAO resources created: {}x{}, {} mip levels", width, height, _saoMipLevels);
+
+  // --- 5. Update deferred lighting descriptor set with AO texture at binding 10 ---
+  {
+    VkDescriptorImageInfo aoImageInfo{};
+    aoImageInfo.imageView = _aoTextureView;
+    aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = deferredLightingDescriptorSet;
+    write.dstBinding = 10;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &aoImageInfo;
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
+  }
+}
+
+void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {
+  if (_hizCopyPipeline == VK_NULL_HANDLE || _saoMipLevels == 0)
+    return;
+
+  // Transition SAO pyramid to GENERAL for writes
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = _saoDepthPyramid;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, _saoMipLevels, 0, 1};
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  // Copy depth → mip 0
+  {
+    uint32_t pushData[4] = {_saoWidth, _saoHeight, _saoWidth, _saoHeight};
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _hizCopyPipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+        _hizPipelineLayout, 0, 1, &_saoCopyDescriptorSet, 0, nullptr);
+    vkCmdPushConstants(commandBuffer, _hizPipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
+    vkCmdDispatch(commandBuffer, (_saoWidth + 7) / 8, (_saoHeight + 7) / 8, 1);
+  }
+
+  // Downsample mip chain
+  for (uint32_t mip = 1; mip < _saoMipLevels; ++mip) {
+    uint32_t mipW = (_saoWidth >> mip) > 1 ? (_saoWidth >> mip) : 1;
+    uint32_t mipH = (_saoHeight >> mip) > 1 ? (_saoHeight >> mip) : 1;
+    uint32_t prevW = (_saoWidth >> (mip - 1)) > 1 ? (_saoWidth >> (mip - 1)) : 1;
+    uint32_t prevH = (_saoHeight >> (mip - 1)) > 1 ? (_saoHeight >> (mip - 1)) : 1;
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = _saoDepthPyramid;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 1};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    uint32_t pushData[4] = {prevW, prevH, mipW, mipH};
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _hizDownsamplePipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+        _hizPipelineLayout, 1, 1, &_saoDownsampleDescriptorSets[mip - 1], 0, nullptr);
+    vkCmdPushConstants(commandBuffer, _hizPipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
+    vkCmdDispatch(commandBuffer, (mipW + 7) / 8, (mipH + 7) / 8, 1);
+  }
+
+  // Transition last mip + full pyramid to SHADER_READ_ONLY
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = _saoDepthPyramid;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, _saoMipLevels - 1, 1, 0, 1};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+}
+
+void GpuScene::dispatchSAO(VkCommandBuffer commandBuffer) {
+  if (_saoPipeline == VK_NULL_HANDLE)
+    return;
+
+  // Transition AO texture to GENERAL for write
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = _aoTexture;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  // Update the uniform buffer binding to current frame
+  VkDescriptorBufferInfo bufferInfo{};
+  bufferInfo.buffer = uniformBuffers[currentFrame];
+  bufferInfo.offset = 0;
+  bufferInfo.range = sizeof(FrameData);
+  VkWriteDescriptorSet write{};
+  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  write.dstSet = _saoDescriptorSet;
+  write.dstBinding = 2;
+  write.descriptorCount = 1;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  write.pBufferInfo = &bufferInfo;
+  vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
+
+  uint32_t screenSize[2] = {_saoWidth, _saoHeight};
+
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _saoPipeline);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+      _saoPipelineLayout, 0, 1, &_saoDescriptorSet, 0, nullptr);
+  vkCmdPushConstants(commandBuffer, _saoPipelineLayout,
+      VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(screenSize), screenSize);
+  vkCmdDispatch(commandBuffer, (_saoWidth + 7) / 8, (_saoHeight + 7) / 8, 1);
+
+  // Transition AO texture to SHADER_READ_ONLY for sampling in deferred pass
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = _aoTexture;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+}
+
+// --- ImGui Integration ---
+
+void GpuScene::initImGui(SDL_Window *window) {
+  // Create descriptor pool for ImGui
+  VkDescriptorPoolSize pool_sizes[] = {
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+  };
+  VkDescriptorPoolCreateInfo pool_info{};
+  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  pool_info.maxSets = 1;
+  pool_info.poolSizeCount = 1;
+  pool_info.pPoolSizes = pool_sizes;
+  vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr, &_imguiDescriptorPool);
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO &io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+  ImGui::StyleColorsDark();
+
+  ImGui_ImplSDL2_InitForVulkan(window);
+
+  ImGui_ImplVulkan_InitInfo init_info{};
+  init_info.ApiVersion = VK_API_VERSION_1_2;
+  init_info.Instance = device.getInstance();
+  init_info.PhysicalDevice = device.getPhysicalDevice();
+  init_info.Device = device.getLogicalDevice();
+  init_info.QueueFamily = 0;
+  init_info.Queue = device.getGraphicsQueue();
+  init_info.DescriptorPool = _imguiDescriptorPool;
+  init_info.MinImageCount = framesInFlight;
+  init_info.ImageCount = framesInFlight;
+  init_info.PipelineInfoMain.RenderPass = _forwardLightingPass;
+  init_info.PipelineInfoMain.Subpass = 0;
+  init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+  ImGui_ImplVulkan_Init(&init_info);
+
+  _imguiInitialized = true;
+  spdlog::info("ImGui initialized for Vulkan + SDL2");
+}
+
+void GpuScene::ProcessImGuiEvent(SDL_Event *event) {
+  if (_imguiInitialized) {
+    ImGui_ImplSDL2_ProcessEvent(event);
+  }
+}
+
+void GpuScene::readbackCullingStats(uint32_t previousFrame) {
+  if (!applMesh) return;
+
+  _cullingStats.totalOpaque = (uint32_t)applMesh->_opaqueChunkCount;
+  _cullingStats.totalAlphaMask = (uint32_t)applMesh->_alphaMaskedChunkCount;
+  _cullingStats.totalTransparent = (uint32_t)applMesh->_transparentChunkCount;
+
+  // Read from previous frame's writeIndexBuffer (already completed on GPU)
+  void *data;
+  if (vkMapMemory(device.getLogicalDevice(), writeIndexBufferMemories[previousFrame],
+                  0, 3 * sizeof(uint32_t), 0, &data) == VK_SUCCESS) {
+    uint32_t counts[3];
+    memcpy(counts, data, 3 * sizeof(uint32_t));
+    vkUnmapMemory(device.getLogicalDevice(), writeIndexBufferMemories[previousFrame]);
+
+    _cullingStats.visibleOpaque = counts[0];
+    _cullingStats.visibleAlphaMask = counts[1];
+    _cullingStats.visibleTransparent = counts[2];
+  }
+}
+
+void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+  if (!_imguiInitialized) return;
+
+  ImGui_ImplVulkan_NewFrame();
+  ImGui_ImplSDL2_NewFrame();
+  ImGui::NewFrame();
+
+  uint32_t totalChunks = _cullingStats.totalOpaque + _cullingStats.totalAlphaMask + _cullingStats.totalTransparent;
+  uint32_t totalVisible = _cullingStats.visibleOpaque + _cullingStats.visibleAlphaMask + _cullingStats.visibleTransparent;
+  uint32_t culledCount = totalChunks > totalVisible ? totalChunks - totalVisible : 0;
+  float cullPercent = totalChunks > 0 ? 100.0f * culledCount / totalChunks : 0.0f;
+
+  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(0.5f);
+  ImGui::Begin("Culling Stats", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+               ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+
+  ImGui::Text("Total Chunks: %u", totalChunks);
+  ImGui::Text("Visible: %u", totalVisible);
+  ImGui::Text("Culled:  %u (%.1f%%)", culledCount, cullPercent);
+  ImGui::Separator();
+  ImGui::Text("Opaque:    %u / %u", _cullingStats.visibleOpaque, _cullingStats.totalOpaque);
+  ImGui::Text("AlphaMask: %u / %u", _cullingStats.visibleAlphaMask, _cullingStats.totalAlphaMask);
+  ImGui::Text("Transp:    %u / %u", _cullingStats.visibleTransparent, _cullingStats.totalTransparent);
+
+  ImGui::End();
+
+  ImGui::Render();
+  ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 }

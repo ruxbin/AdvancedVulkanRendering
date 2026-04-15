@@ -26,8 +26,8 @@ void ShadowCull(uint3 DTid : SV_DispatchThreadID)
         return;
 
     // Frustum cull against cascade frustum
-    if (FrustumCull(cascadeFrustum, meshChunks[chunkIndex].boundingBox))
-        return;
+    //if (FrustumCull(cascadeFrustum, meshChunks[chunkIndex].boundingBox))
+    //    return;
 
     uint indexCount = meshChunks[chunkIndex].indexCount;
     uint indexBegin = meshChunks[chunkIndex].indexBegin;
