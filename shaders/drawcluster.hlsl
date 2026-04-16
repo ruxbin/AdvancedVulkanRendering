@@ -1,5 +1,6 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
+#include "shadercompat.hlsl"
 
 
 struct GeometyBuffer
@@ -42,29 +43,21 @@ struct AAPLShaderMaterial
 [[vk::constant_id(0)]] const bool  specAlphaMask  = false;
 //[[vk::constant_id(1)]] const bool specTransparent = false;
 
-[[vk::binding(0,0)]]
-cbuffer cam
+VK_BINDING(0,0)
+cbuffer cam REGISTER_CBV(0,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
-[[vk::binding(0,1)]] StructuredBuffer<AAPLShaderMaterial> materials;
-[[vk::binding(1,1)]] SamplerState _LinearRepeatSampler;
-[[vk::binding(2,1)]] Texture2D<half4> _Textures[];  //bindless textures
-[[vk::binding(3,1)]] StructuredBuffer<AAPLMeshChunk> meshChunks; 
-[[vk::binding(4,1)]] StructuredBuffer<uint> chunkIndex;
-
-// [[vk::binding(0,1)]] Buffer<float3> positions;
-// [[vk::binding(1,1)]] Buffer<float3> normals;
-// [[vk::binding(2,1)]] Buffer<float3> uvs;
-// [[vk::binding(3,1)]] Buffer<float3> tangents;
-// [[vk::binding(4,1)]] Buffer<uint> indices;
-
-// [[vk::binding(0,2)]] StructuredBuffer<AAPLMeshChunk> meshChunks;
+VK_BINDING(0,1) StructuredBuffer<AAPLShaderMaterial> materials REGISTER_SRV(0,1);
+VK_BINDING(1,1) SamplerState _LinearRepeatSampler REGISTER_SAMPLER(1,1);
+VK_BINDING(2,1) Texture2D<half4> _Textures[] REGISTER_SRV(0,2);  //bindless textures (DX12: own space to avoid overlap)
+VK_BINDING(3,1) StructuredBuffer<AAPLMeshChunk> meshChunks REGISTER_SRV(3,1);
+VK_BINDING(4,1) StructuredBuffer<uint> chunkIndex REGISTER_SRV(4,1);
 
 
 
-[[vk::push_constant]] PushConstants pushConstants;
+DECLARE_PUSH_CONSTANTS(PushConstants, pushConstants, 1);
 
 
 struct VSInput

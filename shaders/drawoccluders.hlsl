@@ -1,5 +1,6 @@
 
 #include "commonstruct.hlsl"
+#include "shadercompat.hlsl"
 
 
 struct VSInput
@@ -9,12 +10,12 @@ struct VSInput
 
 struct VSOutput
 {
-    float4 Position   : SV_POSITION; 
+    float4 Position   : SV_POSITION;
     //float4 Diffuse    : COLOR0;
 };
 
-[[vk::binding(0,0)]]
-cbuffer cam
+VK_BINDING(0,0)
+cbuffer cam REGISTER_CBV(0,0)
 {
     //CameraParamsBuffer ub;
 	CameraParamsBufferFull cameraParams;

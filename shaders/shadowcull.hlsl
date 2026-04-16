@@ -1,19 +1,20 @@
 // Shadow Cascade Culling Compute Shader
 #include "commonstruct.hlsl"
+#include "shadercompat.hlsl"
 
-[[vk::binding(0,0)]] RWStructuredBuffer<DrawIndexedIndirectCommand> shadowDrawParams;
-[[vk::binding(1,0)]] cbuffer shadowCullParams {
+VK_BINDING(0,0) RWStructuredBuffer<DrawIndexedIndirectCommand> shadowDrawParams REGISTER_UAV(0,0);
+VK_BINDING(1,0) cbuffer shadowCullParams REGISTER_CBV(1,0) {
     uint opaqueChunkCount;
     uint alphaMaskedChunkCount;
     uint cascadeMaxChunks; // max chunks per category per cascade
     uint cascadeCount;
     Frustum cascadeFrustum;
 };
-[[vk::binding(2,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks;
-[[vk::binding(3,0)]] RWStructuredBuffer<uint> shadowWriteIndex;
+VK_BINDING(2,0) StructuredBuffer<AAPLMeshChunk> meshChunks REGISTER_SRV(2,0);
+VK_BINDING(3,0) RWStructuredBuffer<uint> shadowWriteIndex REGISTER_UAV(3,0);
 // shadowWriteIndex[cascadeIndex * 2 + 0] = opaque count for this cascade
 // shadowWriteIndex[cascadeIndex * 2 + 1] = alpha-masked count for this cascade
-[[vk::binding(4,0)]] RWStructuredBuffer<uint> shadowChunkIndices;
+VK_BINDING(4,0) RWStructuredBuffer<uint> shadowChunkIndices REGISTER_UAV(4,0);
 //[[vk::binding(5,0)]] RWStructuredBuffer<uint> shadowInstanceMap;
 
 [numthreads(128, 1, 1)]
@@ -33,7 +34,7 @@ void ShadowCull(uint3 DTid : SV_DispatchThreadID)
     uint indexBegin = meshChunks[chunkIndex].indexBegin;
 
     // Base offset for this cascade in the shared buffer
-    [unroll]
+    [unroll(3)]
     for(uint cascadeIndex=0;cascadeIndex<cascadeCount;cascadeIndex++)
     {
         uint cascadeBaseOpaque = cascadeIndex * cascadeMaxChunks * 2;

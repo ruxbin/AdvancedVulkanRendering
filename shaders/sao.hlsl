@@ -3,20 +3,21 @@
 // Adapted for Vulkan reverse-Z (near=1, far=0)
 
 #include "commonstruct.hlsl"
+#include "shadercompat.hlsl"
 
 // --- Bindings ---
-[[vk::binding(0,0)]] Texture2D<float> depthTexture;        // Full-resolution scene depth
-[[vk::binding(1,0)]] Texture2D<float> depthMipTexture;     // Mipped depth pyramid (half-res start)
-[[vk::binding(2,0)]] cbuffer cam {
+VK_BINDING(0,0) Texture2D<float> depthTexture REGISTER_SRV(0,0);        // Full-resolution scene depth
+VK_BINDING(1,0) Texture2D<float> depthMipTexture REGISTER_SRV(1,0);     // Mipped depth pyramid (half-res start)
+VK_BINDING(2,0) cbuffer cam REGISTER_CBV(2,0) {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameData;
 };
-[[vk::binding(3,0)]] RWTexture2D<float> aoOutput;          // Output AO texture (R8_UNORM)
+VK_BINDING(3,0) RWTexture2D<float> aoOutput REGISTER_UAV(3,0);          // Output AO texture (R8_UNORM)
 
 struct SAOPushConstants {
     uint2 screenSize;
 };
-[[vk::push_constant]] SAOPushConstants pushConstants;
+DECLARE_PUSH_CONSTANTS(SAOPushConstants, pushConstants, 3);
 
 // Wang hash for per-pixel pseudo-random dithering
 uint wang_hash(uint seed)

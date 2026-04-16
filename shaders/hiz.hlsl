@@ -1,15 +1,16 @@
 // Hi-Z Pyramid Generation Compute Shaders
+#include "shadercompat.hlsl"
 
 // --- Copy Depth to Hi-Z (Mip 0) ---
-[[vk::binding(0,0)]] Texture2D<float> depthTexture;
-[[vk::binding(1,0)]] RWTexture2D<float> hizMip0;
+VK_BINDING(0,0) Texture2D<float> depthTexture REGISTER_SRV(0,0);
+VK_BINDING(1,0) RWTexture2D<float> hizMip0 REGISTER_UAV(1,0);
 
 struct PushConstants {
     uint2 srcSize;   // source mip dimensions
     uint2 dstSize;   // output mip dimensions
 };
 
-[[vk::push_constant]] PushConstants pushConstants;
+DECLARE_PUSH_CONSTANTS(PushConstants, pushConstants, 0);
 
 [numthreads(8, 8, 1)]
 void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
@@ -20,8 +21,8 @@ void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
 }
 
 // --- Downsample Hi-Z (MIN for reverse-Z, with edge handling for odd sizes) ---
-[[vk::binding(0,1)]] Texture2D<float> prevMip;
-[[vk::binding(1,1)]] RWTexture2D<float> currentMip;
+VK_BINDING(0,1) Texture2D<float> prevMip REGISTER_SRV(0,1);
+VK_BINDING(1,1) RWTexture2D<float> currentMip REGISTER_UAV(1,1);
 
 [numthreads(8, 8, 1)]
 void DownsampleHiZ(uint3 DTid : SV_DispatchThreadID)

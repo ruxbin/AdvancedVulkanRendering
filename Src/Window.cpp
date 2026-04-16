@@ -8,6 +8,13 @@
 #include <filesystem>
 #endif
 #include <string_view>
+#include <cstring>
+
+#ifdef ENABLE_DX12
+#include "DX12/DX12Setup.h"
+#include "DX12/DX12GpuScene.h"
+#include "SDL_syswm.h"
+#endif
 
 #ifdef __ANDROID__
 #include "AssetLoader.h"
@@ -24,6 +31,16 @@ int main(int nargs, char **args) {
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     spdlog::error("SDL init failed");
   }
+
+  // Backend selection: --dx12 or --vulkan (default: vulkan)
+  bool useDX12 = false;
+#ifdef ENABLE_DX12
+  for (int i = 1; i < nargs; ++i) {
+    if (strcmp(args[i], "--dx12") == 0) useDX12 = true;
+  }
+  if (useDX12) spdlog::info("Using DX12 rendering backend");
+  else spdlog::info("Using Vulkan rendering backend");
+#endif
 
 #ifdef __ANDROID__
   // Query display size for fullscreen on Android
@@ -55,8 +72,12 @@ int main(int nargs, char **args) {
                                         WINDOW_WIDTH, WINDOW_HEIGHT,
                                         SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN);
 #else
-  SDL_Window *window = SDL_CreateWindow("test", 100, 100, WINDOW_WIDTH,
-                                        WINDOW_HEIGHT, SDL_WINDOW_VULKAN);
+  Uint32 windowFlags = SDL_WINDOW_VULKAN;
+#ifdef ENABLE_DX12
+  if (useDX12) windowFlags = 0; // No Vulkan flag for DX12
+#endif
+  SDL_Window *window = SDL_CreateWindow("AdvancedVulkanRendering", 100, 100, WINDOW_WIDTH,
+                                        WINDOW_HEIGHT, windowFlags);
 #endif
 
   if (window == nullptr) {
@@ -80,7 +101,62 @@ int main(int nargs, char **args) {
   }
 #endif
 
-  VulkanDevice vk(window);
+#ifdef ENABLE_DX12
+  if (useDX12) {
+    // --- DX12 Path ---
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    SDL_GetWindowWMInfo(window, &wmInfo);
+    HWND hwnd = wmInfo.info.win.window;
+
+    DX12Device dx12(hwnd, WINDOW_WIDTH, WINDOW_HEIGHT);
+    DX12GpuScene dx12Scene(currentPath, dx12);
+    dx12Scene.InitImGui(window);
+
+    SDL_Event e;
+    bool quit = false;
+    bool mouseDown = false;
+    float currentZDegree = 0, currentYDegree = 0;
+    constexpr float rotateSpeed = 0.1f;
+    constexpr float moveSpeed = 0.5f;
+
+    while (!quit) {
+      while (SDL_PollEvent(&e)) {
+        dx12Scene.ProcessImGuiEvent(&e);
+        if (e.type == SDL_QUIT) quit = true;
+        else if (e.type == SDL_KEYDOWN) {
+          switch (e.key.keysym.scancode) {
+          case SDL_SCANCODE_A: dx12Scene.GetMainCamera()->MoveRight(moveSpeed); break;
+          case SDL_SCANCODE_D: dx12Scene.GetMainCamera()->MoveLeft(moveSpeed); break;
+          case SDL_SCANCODE_W: dx12Scene.GetMainCamera()->MoveForward(moveSpeed); break;
+          case SDL_SCANCODE_S: dx12Scene.GetMainCamera()->MoveBackward(moveSpeed); break;
+          case SDL_SCANCODE_Q: dx12Scene.GetMainCamera()->MoveUp(moveSpeed); break;
+          case SDL_SCANCODE_E: dx12Scene.GetMainCamera()->MoveDown(moveSpeed); break;
+          default: break;
+          }
+        } else if (e.type == SDL_MOUSEMOTION && mouseDown) {
+          if (abs(e.motion.xrel) > abs(e.motion.yrel)) {
+            currentYDegree += e.motion.xrel * rotateSpeed;
+            dx12Scene.GetMainCamera()->RotateY(currentYDegree);
+          } else {
+            currentZDegree += e.motion.yrel * rotateSpeed;
+            dx12Scene.GetMainCamera()->RotateZ(currentZDegree);
+          }
+        } else if (e.type == SDL_MOUSEBUTTONDOWN) {
+          mouseDown = true;
+        } else if (e.type == SDL_MOUSEBUTTONUP) {
+          mouseDown = false;
+          currentZDegree = 0;
+          currentYDegree = 0;
+        }
+      }
+      dx12Scene.Draw();
+    }
+  } else
+#endif
+  {
+    // --- Vulkan Path ---
+    VulkanDevice vk(window);
 
   GpuScene gpuScene(currentPath, vk);
   gpuScene.InitImGui(window);
@@ -225,7 +301,8 @@ int main(int nargs, char **args) {
       checkpoint_sum1 = std::chrono::milliseconds(0);
       checkpoint_sum2 = std::chrono::milliseconds(0);
     }
-  }
+  } // end while loop
+  } // end Vulkan path
 
   if (window)
     SDL_DestroyWindow(window);

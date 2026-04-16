@@ -1,25 +1,26 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
+#include "shadercompat.hlsl"
 
 
 
-[[vk::binding(0,0)]]
-cbuffer cam
+VK_BINDING(0,0)
+cbuffer cam REGISTER_CBV(0,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(0,1)]] Texture2D<float4> albedoeTex;
-[[vk::binding(1,1)]] Texture2D<float4> normalTex;
-[[vk::binding(2,1)]] Texture2D<float4> emissiveTex;
-[[vk::binding(3,1)]] Texture2D<float4> F0RoughnessTex;
-[[vk::binding(4,1)]] Texture2D<float> inDepth;
-[[vk::binding(5,1)]] SamplerState _NearestClampSampler;
+VK_BINDING(0,1) Texture2D<float4> albedoeTex REGISTER_SRV(0,1);
+VK_BINDING(1,1) Texture2D<float4> normalTex REGISTER_SRV(1,1);
+VK_BINDING(2,1) Texture2D<float4> emissiveTex REGISTER_SRV(2,1);
+VK_BINDING(3,1) Texture2D<float4> F0RoughnessTex REGISTER_SRV(3,1);
+VK_BINDING(4,1) Texture2D<float> inDepth REGISTER_SRV(4,1);
+VK_BINDING(5,1) SamplerState _NearestClampSampler REGISTER_SAMPLER(5,1);
 
-[[vk::binding(6,1)]] Texture2DArray<float> shadowMaps;
-[[vk::binding(7,1)]] SamplerComparisonState shadowSampler;
-[[vk::binding(10,1)]] Texture2D<float> aoTexture;
+VK_BINDING(6,1) Texture2DArray<float> shadowMaps REGISTER_SRV(6,1);
+VK_BINDING(7,1) SamplerComparisonState shadowSampler REGISTER_SAMPLER_CMP(7,1);
+VK_BINDING(10,1) Texture2D<float> aoTexture REGISTER_SRV(10,1);
 //[[vk::binding(8,1)]]
 //StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
 //[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;

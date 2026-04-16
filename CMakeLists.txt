@@ -37,6 +37,7 @@ list(APPEND CMAKE_PREFIX_PATH
 
 option(DEPENDENCY_BUILD "Third party dependencies only" OFF)
 option(BUILD_TESTS "Build engine integration and unit tests" OFF)
+option(ENABLE_DX12 "Build with DX12 rendering backend (Windows only)" OFF)
 
 file(GLOB BIN_DLLS ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bin/*)
     

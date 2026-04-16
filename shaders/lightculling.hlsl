@@ -1,16 +1,16 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
-
+#include "shadercompat.hlsl"
 #include "geom.hlsl"
 
-[[vk::binding(0,0)]] 
-cbuffer frameData
+VK_BINDING(0,0)
+cbuffer frameData REGISTER_CBV(0,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(1,0)]] cbuffer cullParams
+VK_BINDING(1,0) cbuffer cullParams REGISTER_CBV(1,0)
 {
 uint totalChunks;
 uint totalPointLights;
@@ -18,17 +18,16 @@ uint totalSpotLights;
 Frustum frustum;
 }
 
-[[vk::binding(2,0)]]
-StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world position
+VK_BINDING(2,0)
+StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData REGISTER_SRV(2,0);  //world position
 
-[[vk::binding(3,0)]] Texture2D<float> inDepth; //Texture2D<half> -->  generated SPIR-V is invalid: [VUID-StandaloneSpirv-OpTypeImage-04656] Expected Sampled Type to be a 32-bit int, 64-bit int or 32-bit float scalar type for Vulkan environment
-                                                                        //%type_2d_image = OpTypeImage % half2 D2 0 0 1 Unknown
+VK_BINDING(3,0) Texture2D<float> inDepth REGISTER_SRV(3,0);
 
-[[vk::binding(4,0)]] RWStructuredBuffer<uint16_t4> lightXZRange; //-enable-16bit-types
-[[vk::binding(5,0)]] RWTexture2D<uint> lightDebug;            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
-[[vk::binding(6,0)]] RWStructuredBuffer<uint> lightIndices;
-[[vk::binding(7,0)]] RWTexture2D<float4> tradtionDebug;
-[[vk::binding(8,0)]] RWStructuredBuffer<uint> lightIndicesTransparent;
+VK_BINDING(4,0) RWStructuredBuffer<uint16_t4> lightXZRange REGISTER_UAV(4,0);
+VK_BINDING(5,0) RWTexture2D<uint> lightDebug REGISTER_UAV(5,0);
+VK_BINDING(6,0) RWStructuredBuffer<uint> lightIndices REGISTER_UAV(6,0);
+VK_BINDING(7,0) RWTexture2D<float4> tradtionDebug REGISTER_UAV(7,0);
+VK_BINDING(8,0) RWStructuredBuffer<uint> lightIndicesTransparent REGISTER_UAV(8,0);
 
 
 //calculate each light's xzrange
