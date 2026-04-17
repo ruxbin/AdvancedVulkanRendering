@@ -1,5 +1,5 @@
+#pragma execution_character_set("utf-8")
 #include "Include/ScatteringVolume.h"
-#include "Include/VulkanSetup.h"
 #include "Include/Common.h"       // readFile
 #include "spdlog/spdlog.h"
 

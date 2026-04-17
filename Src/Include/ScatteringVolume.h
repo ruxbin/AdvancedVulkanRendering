@@ -1,6 +1,6 @@
 #pragma once
-#include "vulkan/vulkan.h"
-#include "VulkanSetup.h"
+#pragma execution_character_set("utf-8")
+#include "VulkanSetup.h"   // defines VK_USE_PLATFORM_WIN32_KHR then includes vulkan.h
 #include <filesystem>
 #include <vector>
 
