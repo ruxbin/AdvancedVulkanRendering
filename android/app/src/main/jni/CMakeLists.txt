@@ -9,6 +9,9 @@ set(SRC_DIR ${PROJECT_ROOT}/Src)
 set(INCLUDE_DIR ${PROJECT_ROOT}/Src/Include)
 set(THIRDPARTY_DIR ${PROJECT_ROOT}/ThirdParty)
 
+# Find Vulkan from NDK
+find_library(vulkan-lib vulkan)
+
 # --- SDL2 (build from source) ---
 set(SDL_SHARED ON CACHE BOOL "" FORCE)
 set(SDL_STATIC OFF CACHE BOOL "" FORCE)
@@ -32,6 +35,21 @@ set(LZFSE_SOURCES
 add_library(lzfse STATIC ${LZFSE_SOURCES})
 target_include_directories(lzfse PUBLIC ${THIRDPARTY_DIR}/lzfse/src)
 
+# --- imgui ---
+set(IMGUI_DIR ${THIRDPARTY_DIR}/imgui)
+set(IMGUI_SOURCES
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+)
+add_library(imgui STATIC ${IMGUI_SOURCES})
+target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_link_libraries(imgui PUBLIC SDL2 ${vulkan-lib})
+
 # --- Main application sources ---
 set(APP_SOURCES
     ${SRC_DIR}/Camera.cpp
@@ -54,13 +72,11 @@ target_include_directories(main PRIVATE
     ${THIRDPARTY_DIR}/lzfse/src
 )
 
-# Find Vulkan from NDK
-find_library(vulkan-lib vulkan)
-
 target_link_libraries(main PRIVATE
     SDL2
     spdlog::spdlog
     lzfse
+    imgui
     ${vulkan-lib}
     android
     log

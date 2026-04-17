@@ -2073,9 +2073,9 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
 
   applMesh =
 #ifdef __ANDROID__
-      new AAPLMeshData("debug1.bin");
+      new AAPLMeshData("bistro.astc.bin");
 #else
-      new AAPLMeshData((_rootPath / "debug1.bin").generic_string().c_str());
+      new AAPLMeshData((_rootPath / "bistro.dxt.bin").generic_string().c_str());
 #endif
 
 #ifdef __ANDROID__
