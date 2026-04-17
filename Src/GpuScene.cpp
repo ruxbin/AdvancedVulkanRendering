@@ -3744,9 +3744,9 @@ void GpuScene::Draw() {
   // 只有在成功获取 image 后才 reset fence，避免死锁
   vkResetFences(device.getLogicalDevice(), 1, &inFlightFences[currentFrame]);
 
-  // Readback culling stats from previous frame (already completed on GPU)
-  uint32_t previousFrame = (currentFrame + framesInFlight - 1) % framesInFlight;
-  readbackCullingStats(previousFrame);
+  // Readback culling stats from current frame's PREVIOUS submission
+  // (fence guarantees currentFrame's last GPU work is done)
+  readbackCullingStats(currentFrame);
 
   // 使用当前帧的 command buffer
   VkCommandBuffer& currentCmdBuffer = commandBuffers[currentFrame];
