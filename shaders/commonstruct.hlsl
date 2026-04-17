@@ -51,11 +51,13 @@ struct AAPLFrameConstants
 {
     float3 sunDirection;
     float3 sunColor;
+    float3 skyColor;          // ambient sky colour used by scatter volume
     float wetness;
     float emissiveScale;
     float localLightIntensity;
     float nearPlane;
     float farPlane;
+    float scatterScale;       // global fog density multiplier (scatter volume)
     uint frameCounter;
     float2 physicalSize;
 };

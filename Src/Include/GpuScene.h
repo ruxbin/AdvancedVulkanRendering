@@ -4,6 +4,7 @@
 #include "AssetLoader.h"
 #include "Light.h"
 #include "Matrix.h"
+#include "ScatteringVolume.h"
 #include "VulkanSetup.h"
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
@@ -349,6 +350,12 @@ private:
   void createSAOResources();
   void generateSAODepthPyramid(VkCommandBuffer cmd);
   void dispatchSAO(VkCommandBuffer cmd);
+
+  // Scatter volume (froxel-based volumetric scattering)
+  ScatteringVolume _scatterVolume;
+  VkSampler        _linearClampSampler = VK_NULL_HANDLE; // shared linear sampler
+  void createScatterVolume();
+  void createLinearClampSampler();
 
   // ImGui overlay
   VkDescriptorPool _imguiDescriptorPool = VK_NULL_HANDLE;
@@ -708,8 +715,13 @@ public:
   friend class SpotLight;
   friend class LightCuller;
   FrameConstants frameConstants{
-      vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),
-      vec3(1, 1, 1), 1.f, 10.f, 1.f};
+      vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),  // sunDirection
+      vec3(1.0f, 0.95f, 0.8f),   // sunColor
+      vec3(0.4f, 0.6f, 1.0f),    // skyColor
+      1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
+      0.1f, 1000.f,              // nearPlane, farPlane
+      0.02f                      // scatterScale (base fog density)
+  };
 };
 
 template <> struct fmt::formatter<vec4> : fmt::formatter<std::string> {

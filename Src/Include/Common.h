@@ -71,11 +71,13 @@ struct uniformBufferData {
 struct FrameConstants {
   alignas(16) vec3 sunDirection;
   alignas(16) vec3 sunColor;
+  alignas(16) vec3 skyColor;    // ambient sky colour used by scatter volume
   float wetness;
   float emissiveScale;
   float localLightIntensity;
   float nearPlane;
   float farPlane;
+  float scatterScale;           // global fog density (scatter volume)
   uint32_t frameCounter;
   alignas(16) vec2 physicalSize;
 };

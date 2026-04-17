@@ -20,6 +20,8 @@ cbuffer cam
 [[vk::binding(6,1)]] Texture2DArray<float> shadowMaps;
 [[vk::binding(7,1)]] SamplerComparisonState shadowSampler;
 [[vk::binding(10,1)]] Texture2D<float> aoTexture;
+[[vk::binding(11,1)]] Texture3D<float4> scatterAccumVolume;  // accumulated scatter (rgb=light, a=transmittance)
+[[vk::binding(12,1)]] SamplerState linearClampSampler;
 //[[vk::binding(8,1)]]
 //StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
 //[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
@@ -115,6 +117,29 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     float ao = aoTexture.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
 
     half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow * ao;
+
+    // --- Scatter volume application ---
+    // Convert linear view-space depth to froxel slice coordinate [0,1].
+    // Mirror of sliceToViewZ in scattervolume.hlsl:
+    //   sliceF = log2(viewZ / SCATTERING_RANGE * 7 + 1) / 3
+    // viewZ from reverse-Z depth:
+    //   clip.w = (projection[3][2]) / depth  (with reverse-Z near=1 far=0)
+    {
+        const float SCATTERING_RANGE = 100.0;
+        // Reconstruct view-space Z from reverse-Z depth (near=1, far=0)
+        float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
+        float4 viewPos = mul(cameraParams.invProjectionMatrix, ndcPos);
+        float  viewZ   = -viewPos.z / viewPos.w;   // positive, increasing with distance
+
+        float sliceF = log2(clamp(viewZ, 0.001, SCATTERING_RANGE) / SCATTERING_RANGE * 7.0 + 1.0) / 3.0;
+
+        // Sample the accumulated 3D volume
+        float3 uvw = float3(input.TextureUV.x, input.TextureUV.y, sliceF);
+        float4 scatter = scatterAccumVolume.SampleLevel(linearClampSampler, uvw, 0);
+
+        // Blend: final = lit_surface * transmittance + inscattered_light
+        result = result * (half) scatter.a + (half3) scatter.rgb;
+    }
     /*if(useClusterLighting)
     {
 	//get the cluster index
