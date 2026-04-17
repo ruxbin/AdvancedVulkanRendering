@@ -57,7 +57,7 @@ tasks.register<Copy>("copyAssets") {
         into("shaders")
     }
     from("${rootProject.projectDir}/..") {
-        include("debug1.bin")
+        include("bistro.astc.bin")
         include("scene.scene")
     }
     into("${projectDir}/src/main/assets")

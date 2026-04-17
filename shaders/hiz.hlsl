@@ -16,7 +16,13 @@ void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= pushConstants.dstSize.x || DTid.y >= pushConstants.dstSize.y)
         return;
-    hizMip0[DTid.xy] = depthTexture.Load(int3(DTid.xy, 0));
+    float d = depthTexture.Load(int3(DTid.xy, 0));
+    // In reverse-Z, the depth buffer is cleared to 0.0 (far plane = background/sky).
+    // 0.0 is the minimum possible value, so it contaminates MIN downsampling and
+    // makes the entire HIZ pyramid 0.0, preventing any occlusion culling.
+    // Remap background (d == 0.0) to a sentinel value (2.0) that lies outside the
+    // valid NDC depth range [0,1], so MIN downsampling ignores it.
+    hizMip0[DTid.xy] = (d == 0.0) ? 2.0 : d;
 }
 
 // --- Downsample Hi-Z (MIN for reverse-Z, with edge handling for odd sizes) ---

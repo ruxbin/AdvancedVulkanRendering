@@ -85,14 +85,22 @@ bool IsOccludedByHiZ(AAPLBoundingBox3 aabb)
     float mipLevel = ceil(log2(max(pixelSize.x, pixelSize.y)));
     mipLevel = clamp(mipLevel, 0.0, (float)(hizMipLevels - 1));
 
-    // Sample Hi-Z at 4 corners of projected rect, take MIN (farthest visible surface)
+    // Sample Hi-Z at 4 corners of projected rect, take MIN (farthest visible occluder).
+    // The HIZ pyramid uses MIN downsampling; background pixels were remapped to 2.0
+    // (sentinel outside [0,1]) in CopyDepthToHiZ so they don't pollute the MIN chain.
     float hiz00 = hizTexture.SampleLevel(hizSampler, float2(minX, minY), mipLevel);
     float hiz10 = hizTexture.SampleLevel(hizSampler, float2(maxX, minY), mipLevel);
     float hiz01 = hizTexture.SampleLevel(hizSampler, float2(minX, maxY), mipLevel);
     float hiz11 = hizTexture.SampleLevel(hizSampler, float2(maxX, maxY), mipLevel);
     float hizDepth = min(min(hiz00, hiz10), min(hiz01, hiz11));
 
-    // Reverse-Z: occluded if nearest AABB point (maxZ) <= farthest visible surface (hizDepth)
+    // If hizDepth > 1.0 the entire footprint is background (sentinel 2.0) — no occluder.
+    if (hizDepth > 1.0)
+        return false;
+
+    // Reverse-Z: occluded if nearest AABB point (maxZ) <= farthest visible occluder (hizDepth).
+    // maxZ is the highest NDC depth of any AABB corner (closest to camera in reverse-Z).
+    // hizDepth is the MIN across the footprint = farthest occluder = most conservative bound.
     return maxZ <= hizDepth;
 }
 

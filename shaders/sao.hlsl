@@ -11,7 +11,7 @@
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameData;
 };
-[[vk::binding(3,0)]]
+[[vk::binding(3,0)]] 
 [[vk::image_format("r8")]] 
 RWTexture2D<float> aoOutput;          // Output AO texture (R8_UNORM)
 

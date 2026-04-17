@@ -342,7 +342,7 @@ private:
 
   VkDescriptorSetLayout _saoSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool _saoDescriptorPool = VK_NULL_HANDLE;
-  VkDescriptorSet _saoDescriptorSet = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> _saoDescriptorSets; // per-frame
   VkPipelineLayout _saoPipelineLayout = VK_NULL_HANDLE;
   VkPipeline _saoPipeline = VK_NULL_HANDLE;
 
