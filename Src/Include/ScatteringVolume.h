@@ -30,7 +30,7 @@ public:
     // uniformBuffers      – per-frame UBO containing CameraParamsBufferFull+FrameConstants
     // shadowMapView       – VkImageView of the full cascade shadow map array
     // shadowSampler       – VkSampler with comparison (VK_COMPARE_OP_LESS)
-    void create(VulkanDevice&                    device,
+    void create(const VulkanDevice&              device,
                 const std::filesystem::path&    rootPath,
                 uint32_t                        screenW,
                 uint32_t                        screenH,
@@ -46,7 +46,7 @@ public:
     // Bind at deferred-lighting binding 11 as SHADER_READ_ONLY_OPTIMAL.
     VkImageView accumVolumeView() const { return _accumView; }
 
-    void destroy(VulkanDevice& device);
+    void destroy(const VulkanDevice& device);
 
 private:
     uint32_t _volumeW = 0, _volumeH = 0;
@@ -86,14 +86,14 @@ private:
     VkDescriptorSet       _accumSet      = VK_NULL_HANDLE;
 
     // ---- helpers -----------------------------------------------------------
-    void createTextures(VulkanDevice& device);
-    void createScatterDescriptors(VulkanDevice& device,
+    void createTextures(const VulkanDevice& device);
+    void createScatterDescriptors(const VulkanDevice& device,
                                   const std::vector<VkBuffer>& uniformBuffers,
                                   VkImageView shadowMapView,
                                   VkSampler   shadowSampler,
                                   uint32_t    framesInFlight);
-    void createAccumDescriptors(VulkanDevice& device);
-    void createPipelines(VulkanDevice& device, const std::filesystem::path& rootPath);
+    void createAccumDescriptors(const VulkanDevice& device);
+    void createPipelines(const VulkanDevice& device, const std::filesystem::path& rootPath);
 
-    static VkShaderModule loadSpirV(VulkanDevice& device, const std::string& path);
+    static VkShaderModule loadSpirV(const VulkanDevice& device, const std::string& path);
 };

@@ -17,7 +17,7 @@ struct ScatterPushConstants {
 // ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
-VkShaderModule ScatteringVolume::loadSpirV(VulkanDevice& device, const std::string& path) {
+VkShaderModule ScatteringVolume::loadSpirV(const VulkanDevice& device, const std::string& path) {
     auto code = readFile(path);
     VkShaderModuleCreateInfo ci{};
     ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -29,7 +29,7 @@ VkShaderModule ScatteringVolume::loadSpirV(VulkanDevice& device, const std::stri
     return mod;
 }
 
-static VkImage createImage3D(VulkanDevice& device, uint32_t w, uint32_t h, uint32_t d,
+static VkImage createImage3D(const VulkanDevice& device, uint32_t w, uint32_t h, uint32_t d,
                               VkFormat fmt, VkImageUsageFlags usage,
                               VkDeviceMemory& mem) {
     VkImageCreateInfo ci{};
@@ -60,7 +60,7 @@ static VkImage createImage3D(VulkanDevice& device, uint32_t w, uint32_t h, uint3
     return img;
 }
 
-static VkImageView createImageView3D(VulkanDevice& device, VkImage img, VkFormat fmt) {
+static VkImageView createImageView3D(const VulkanDevice& device, VkImage img, VkFormat fmt) {
     VkImageViewCreateInfo ci{};
     ci.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     ci.image                           = img;
@@ -79,7 +79,7 @@ static VkImageView createImageView3D(VulkanDevice& device, VkImage img, VkFormat
 // ---------------------------------------------------------------------------
 //  createTextures
 // ---------------------------------------------------------------------------
-void ScatteringVolume::createTextures(VulkanDevice& device) {
+void ScatteringVolume::createTextures(const VulkanDevice& device) {
     const VkFormat fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     // Scatter texture: written by ScatterVolume kernel, read by AccumulateScattering
@@ -106,7 +106,7 @@ void ScatteringVolume::createTextures(VulkanDevice& device) {
 //    binding 3: SamplerComparisonState (SAMPLER)
 // ---------------------------------------------------------------------------
 void ScatteringVolume::createScatterDescriptors(
-    VulkanDevice& device,
+    const VulkanDevice& device,
     const std::vector<VkBuffer>& uniformBuffers,
     VkImageView  shadowMapView,
     VkSampler    shadowSampler,
@@ -188,7 +188,7 @@ void ScatteringVolume::createScatterDescriptors(
 //    binding 0: Texture3D   (SAMPLED_IMAGE)  – scatterIn
 //    binding 1: RWTexture3D (STORAGE_IMAGE)  – accumOut
 // ---------------------------------------------------------------------------
-void ScatteringVolume::createAccumDescriptors(VulkanDevice& device) {
+void ScatteringVolume::createAccumDescriptors(const VulkanDevice& device) {
     // --- layout ---
     std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -239,7 +239,7 @@ void ScatteringVolume::createAccumDescriptors(VulkanDevice& device) {
 // ---------------------------------------------------------------------------
 //  createPipelines
 // ---------------------------------------------------------------------------
-void ScatteringVolume::createPipelines(VulkanDevice& device, const std::filesystem::path& rootPath) {
+void ScatteringVolume::createPipelines(const VulkanDevice& device, const std::filesystem::path& rootPath) {
     // Push-constant range (shared by both pipelines)
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -303,7 +303,7 @@ void ScatteringVolume::createPipelines(VulkanDevice& device, const std::filesyst
 //  create  – public entry point
 // ---------------------------------------------------------------------------
 void ScatteringVolume::create(
-    VulkanDevice&                   device,
+    const VulkanDevice&             device,
     const std::filesystem::path&    rootPath,
     uint32_t                        screenW,
     uint32_t                        screenH,
@@ -433,7 +433,7 @@ void ScatteringVolume::dispatch(VkCommandBuffer cmd, uint32_t frameIndex) {
 // ---------------------------------------------------------------------------
 //  destroy
 // ---------------------------------------------------------------------------
-void ScatteringVolume::destroy(VulkanDevice& device) {
+void ScatteringVolume::destroy(const VulkanDevice& device) {
     VkDevice dev = device.getLogicalDevice();
     vkDestroyPipeline(dev, _scatterPipe, nullptr);
     vkDestroyPipeline(dev, _accumPipe,   nullptr);
