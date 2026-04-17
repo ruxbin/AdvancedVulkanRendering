@@ -5291,23 +5291,25 @@ void GpuScene::createSAOResources() {
 
     // Descriptor pool and set for SAO compute
     VkDescriptorPoolSize poolSizes[] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 * framesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = framesInFlight;
     vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &_saoDescriptorPool);
 
+    std::vector<VkDescriptorSetLayout> layouts(framesInFlight, _saoSetLayout);
+    _saoDescriptorSets.resize(framesInFlight);
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = _saoDescriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &_saoSetLayout;
-    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoDescriptorSet);
+    allocInfo.descriptorSetCount = framesInFlight;
+    allocInfo.pSetLayouts = layouts.data();
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, _saoDescriptorSets.data());
 
     // Write descriptor set (static bindings - pyramid and AO output don't change per frame)
     // Binding 0: depth texture (window depth) — updated later per-frame? No, same view.
@@ -5320,45 +5322,45 @@ void GpuScene::createSAOResources() {
     pyramidInfo.imageView = _saoDepthPyramidView;
     pyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Binding 2: camera params uniform buffer (we'll use frame 0 and update per frame is done via the same buffer)
-    // Actually we need per-frame, but we only have 1 descriptor set. Use frame 0's buffer and rely on
-    // the fact that we update the uniform before dispatch each frame.
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = uniformBuffers[0];
-    bufferInfo.offset = 0;
-    bufferInfo.range = sizeof(FrameData);
-
     // Binding 3: AO output
     VkDescriptorImageInfo aoInfo{};
     aoInfo.imageView = _aoTextureView;
     aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    VkWriteDescriptorSet writes[4] = {};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = _saoDescriptorSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[0].pImageInfo = &depthInfo;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = _saoDescriptorSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[1].pImageInfo = &pyramidInfo;
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = _saoDescriptorSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[2].pBufferInfo = &bufferInfo;
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = _saoDescriptorSet;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[3].pImageInfo = &aoInfo;
-    vkUpdateDescriptorSets(device.getLogicalDevice(), 4, writes, 0, nullptr);
+    for (uint32_t i = 0; i < framesInFlight; i++) {
+      // Binding 2: camera params uniform buffer (per-frame)
+      VkDescriptorBufferInfo bufferInfo{};
+      bufferInfo.buffer = uniformBuffers[i];
+      bufferInfo.offset = 0;
+      bufferInfo.range = sizeof(FrameData);
+
+      VkWriteDescriptorSet writes[4] = {};
+      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[0].dstSet = _saoDescriptorSets[i];
+      writes[0].dstBinding = 0;
+      writes[0].descriptorCount = 1;
+      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[0].pImageInfo = &depthInfo;
+      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].dstSet = _saoDescriptorSets[i];
+      writes[1].dstBinding = 1;
+      writes[1].descriptorCount = 1;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[1].pImageInfo = &pyramidInfo;
+      writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[2].dstSet = _saoDescriptorSets[i];
+      writes[2].dstBinding = 2;
+      writes[2].descriptorCount = 1;
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[2].pBufferInfo = &bufferInfo;
+      writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[3].dstSet = _saoDescriptorSets[i];
+      writes[3].dstBinding = 3;
+      writes[3].descriptorCount = 1;
+      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[3].pImageInfo = &aoInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 4, writes, 0, nullptr);
+    }
   }
 
   spdlog::info("SAO resources created: {}x{}, {} mip levels", width, height, _saoMipLevels);
@@ -5477,25 +5479,11 @@ void GpuScene::dispatchSAO(VkCommandBuffer commandBuffer) {
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
 
-  // Update the uniform buffer binding to current frame
-  VkDescriptorBufferInfo bufferInfo{};
-  bufferInfo.buffer = uniformBuffers[currentFrame];
-  bufferInfo.offset = 0;
-  bufferInfo.range = sizeof(FrameData);
-  VkWriteDescriptorSet write{};
-  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  write.dstSet = _saoDescriptorSet;
-  write.dstBinding = 2;
-  write.descriptorCount = 1;
-  write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  write.pBufferInfo = &bufferInfo;
-  vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
-
+  // Use the per-frame descriptor set (already has correct uniform buffer bound)
   uint32_t screenSize[2] = {_saoWidth, _saoHeight};
-
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _saoPipeline);
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-      _saoPipelineLayout, 0, 1, &_saoDescriptorSet, 0, nullptr);
+      _saoPipelineLayout, 0, 1, &_saoDescriptorSets[currentFrame], 0, nullptr);
   vkCmdPushConstants(commandBuffer, _saoPipelineLayout,
       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(screenSize), screenSize);
   vkCmdDispatch(commandBuffer, (_saoWidth + 7) / 8, (_saoHeight + 7) / 8, 1);
