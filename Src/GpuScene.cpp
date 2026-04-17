@@ -2641,17 +2641,22 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   CreateDepthTexture();
   CreateZdepthView();
   CreateGBuffers();
+  createHDRLightingBuffer();
+  createTAAHistoryBuffer();
   CreateOccluderZPass();
   CreateOccluderZPassFrameBuffer();
   CreateDeferredBasePass();
   CreateDeferredLightingPass();
   CreateForwardLightingPass();
+  createResolvePass();
   CreateBasePassFrameBuffer();
   CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
   CreateForwardLightingFrameBuffer(device.getSwapChainImageCount());
+  createResolveFrameBuffer(device.getSwapChainImageCount());
 
   createTextureSampler();
   createNearestClampSampler();
+  createLinearClampSampler();
 
   // auto textureRes = createTexture(applMesh->_textures[13]);
   // auto textureRes =
@@ -2665,9 +2670,11 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createHiZResources(); // Stage 3: creates Hi-Z texture and updates gpuCullDescriptorSet
   init_deferredlighting_descriptors();
   createSAOResources();
+  createResolveDescriptors();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
   createOccluderWireframePipeline();
+  createResolvePipeline();
   createComputePipeline();
 
   _shadow = new Shadow(device,*this,1024);
@@ -2804,7 +2811,7 @@ void GpuScene::CreateForwardLightingPass() {
 
   VkAttachmentDescription deferredLightingAttachments = {};
 
-  deferredLightingAttachments.format = device.getSwapChainImageFormat();
+  deferredLightingAttachments.format = VK_FORMAT_R16G16B16A16_SFLOAT;
   deferredLightingAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
   deferredLightingAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
   deferredLightingAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -2812,7 +2819,7 @@ void GpuScene::CreateForwardLightingPass() {
   deferredLightingAttachments.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   deferredLightingAttachments.initialLayout =
       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  deferredLightingAttachments.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkAttachmentDescription deferredLightingDepthAttachments = {};
 
@@ -2876,7 +2883,7 @@ void GpuScene::CreateForwardLightingPass() {
 void GpuScene::CreateDeferredLightingPass() {
   VkAttachmentDescription deferredLightingAttachments = {};
 
-  deferredLightingAttachments.format = device.getSwapChainImageFormat();
+  deferredLightingAttachments.format = VK_FORMAT_R16G16B16A16_SFLOAT;
   deferredLightingAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
   deferredLightingAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   deferredLightingAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -3073,7 +3080,7 @@ void GpuScene::CreateOccluderZPass() {
 void GpuScene::CreateForwardLightingFrameBuffer(uint32_t count) {
   _forwardFrameBuffer.resize(count);
   for (int i = 0; i < count; i++) {
-    std::array<VkImageView, 2> attachments = {device.getSwapChainImageView(i),
+    std::array<VkImageView, 2> attachments = {_hdrLightingBufferView,
                                               device.getWindowDepthImageView()};
 
     VkFramebufferCreateInfo framebufferInfo{};
@@ -3097,7 +3104,7 @@ void GpuScene::CreateForwardLightingFrameBuffer(uint32_t count) {
 void GpuScene::CreateDeferredLightingFrameBuffer(uint32_t count) {
   _deferredFrameBuffer.resize(count);
   for (int i = 0; i < count; i++) {
-    std::array<VkImageView, 2> attachments = {device.getSwapChainImageView(i),
+    std::array<VkImageView, 2> attachments = {_hdrLightingBufferView,
                                               device.getWindowDepthImageView()};
 
     VkFramebufferCreateInfo framebufferInfo{};
@@ -3231,6 +3238,37 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     frameConstants.frameCounter = sFrameCounter++;
     frameConstants.physicalSize = vec2(device.getSwapChainExtent().width,
                                        device.getSwapChainExtent().height);
+    frameConstants.invPhysicalSize = vec2(1.0f / frameConstants.physicalSize.x,
+                                          1.0f / frameConstants.physicalSize.y);
+
+    // TAA: compute Halton jitter
+    auto halton = [](uint32_t index, uint32_t base) -> float {
+      float result = 0.0f, f = 1.0f;
+      while (index > 0) { f /= base; result += (index % base) * f; index /= base; }
+      return result;
+    };
+    const uint32_t TAA_JITTER_COUNT = 8;
+    uint32_t jitterIndex = (_taaFrameIndex % TAA_JITTER_COUNT) + 1;
+    float jx = halton(jitterIndex, 2) * 2.0f - 1.0f;
+    float jy = halton(jitterIndex, 3) * 2.0f - 1.0f;
+    jx /= (float)device.getSwapChainExtent().width;
+    jy /= (float)device.getSwapChainExtent().height;
+    frameConstants.taaJitter = vec2(jx, jy);
+    frameConstants.exposure = 1.0f;
+    frameConstants.taaEnabled = _taaFirstFrame ? 0 : 1;
+
+    // Clean (un-jittered) matrices for reprojection and inverse calculations
+    mat4 cleanProj = maincamera->getProjectMatrix();
+    mat4 cleanView = maincamera->getObjectToCamera();
+    mat4 cleanInvView = maincamera->getInvViewMatrix();
+    mat4 cleanInvViewProj = maincamera->getInvViewProjectionMatrix();
+    mat4 cleanInvProj = inverse(cleanProj);
+
+    // Jittered projection for vertex shading
+    mat4 jitteredProj = cleanProj;
+    jitteredProj[2][0] += jx;
+    jitteredProj[2][1] += jy;
+
     void *data1;
     vkMapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame], 0,
                 sizeof(FrameData), 0, &data1);
@@ -3243,25 +3281,32 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
              (size_t)sizeof(mat4));
       data1 = ((mat4 *)data1) + 1;
     }
-    memcpy(data1, transpose(maincamera->getProjectMatrix()).value_ptr(),
+    // Upload jittered projection (for vertex shading sub-pixel offset)
+    memcpy(data1, transpose(jitteredProj).value_ptr(),
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
-    memcpy(data1, transpose(maincamera->getObjectToCamera()).value_ptr(),
+    memcpy(data1, transpose(cleanView).value_ptr(),
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
-    memcpy(data1, transpose(maincamera->getInvViewMatrix()).value_ptr(),
+    memcpy(data1, transpose(cleanInvView).value_ptr(),
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
-    memcpy(data1,
-           transpose(maincamera->getInvViewProjectionMatrix()).value_ptr(),
+    // Use clean (un-jittered) inverse VP for world position reconstruction
+    memcpy(data1, transpose(cleanInvViewProj).value_ptr(),
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
-    // invProjectionMatrix
-    mat4 invProj = inverse(maincamera->getProjectMatrix());
-    memcpy(data1, transpose(invProj).value_ptr(), (size_t)sizeof(mat4));
+    memcpy(data1, transpose(cleanInvProj).value_ptr(), (size_t)sizeof(mat4));
+    data1 = ((mat4 *)data1) + 1;
+    // prevViewProjectionMatrix
+    memcpy(data1, transpose(_prevViewProjectionMatrix).value_ptr(), (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
+
+    // Store current clean VP for next frame's reprojection
+    _prevViewProjectionMatrix = cleanProj * cleanView;
+    _taaFirstFrame = false;
+    _taaFrameIndex++;
 
 
     {
@@ -3609,7 +3654,26 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     }
   }
 
-  // post process
+  // post process - Resolve pass (TAA + Tone Mapping)
+  {
+    VkRenderPassBeginInfo resolvePassInfo{};
+    resolvePassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    resolvePassInfo.renderPass = _resolvePass;
+    resolvePassInfo.framebuffer = _resolveFrameBuffer[imageIndex];
+    resolvePassInfo.renderArea.offset = {0, 0};
+    resolvePassInfo.renderArea.extent = device.getSwapChainExtent();
+    resolvePassInfo.clearValueCount = 0;
+
+    vkCmdBeginRenderPass(commandBuffer, &resolvePassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _resolvePipeline);
+    VkDescriptorSet resolveSets[] = {globalDescriptorSets[currentFrame], _resolveDescriptorSet};
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            _resolvePipelineLayout, 0, 2, resolveSets, 0, nullptr);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(commandBuffer);
+  }
 
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
     throw std::runtime_error("failed to record command buffer!");
@@ -3821,6 +3885,42 @@ void GpuScene::cleanupSwapChainResources() {
   }
   _forwardFrameBuffer.clear();
 
+  // 清理 resolve framebuffers
+  for (auto framebuffer : _resolveFrameBuffer) {
+    vkDestroyFramebuffer(device.getLogicalDevice(), framebuffer, nullptr);
+  }
+  _resolveFrameBuffer.clear();
+
+  // 清理 HDR lighting buffer
+  if (_hdrLightingBufferView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _hdrLightingBufferView, nullptr);
+    _hdrLightingBufferView = VK_NULL_HANDLE;
+  }
+  if (_hdrLightingBuffer != VK_NULL_HANDLE) {
+    vkDestroyImage(device.getLogicalDevice(), _hdrLightingBuffer, nullptr);
+    _hdrLightingBuffer = VK_NULL_HANDLE;
+  }
+  if (_hdrLightingBufferMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _hdrLightingBufferMemory, nullptr);
+    _hdrLightingBufferMemory = VK_NULL_HANDLE;
+  }
+
+  // 清理 TAA history buffer
+  if (_taaHistoryBufferView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _taaHistoryBufferView, nullptr);
+    _taaHistoryBufferView = VK_NULL_HANDLE;
+  }
+  if (_taaHistoryBuffer != VK_NULL_HANDLE) {
+    vkDestroyImage(device.getLogicalDevice(), _taaHistoryBuffer, nullptr);
+    _taaHistoryBuffer = VK_NULL_HANDLE;
+  }
+  if (_taaHistoryBufferMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _taaHistoryBufferMemory, nullptr);
+    _taaHistoryBufferMemory = VK_NULL_HANDLE;
+  }
+
+  _taaFirstFrame = true;
+
   // 清理 GBuffer 资源
   if (_gbufferAlbedoAlphaTextureView != VK_NULL_HANDLE) {
     vkDestroyImageView(device.getLogicalDevice(), _gbufferAlbedoAlphaTextureView, nullptr);
@@ -3841,10 +3941,43 @@ void GpuScene::cleanupSwapChainResources() {
 
 void GpuScene::recreateSwapChainResources() {
   // 重新创建依赖 swapchain 尺寸的资源
-  
+  createHDRLightingBuffer();
+  createTAAHistoryBuffer();
+
   // 重新创建 deferred/forward framebuffers
   CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
   CreateForwardLightingFrameBuffer(device.getSwapChainImageCount());
+  createResolveFrameBuffer(device.getSwapChainImageCount());
+
+  // Update resolve descriptor set with new image views
+  {
+    VkDescriptorImageInfo hdrInfo{};
+    hdrInfo.imageView = _hdrLightingBufferView;
+    hdrInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo historyInfo{};
+    historyInfo.imageView = _taaHistoryBufferView;
+    historyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[2] = {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = _resolveDescriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[0].pImageInfo = &hdrInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = _resolveDescriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[1].pImageInfo = &historyInfo;
+
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+  }
+
+  _taaFirstFrame = true;
   
   // 更新 camera aspect ratio
   if (maincamera) {
@@ -5380,6 +5513,464 @@ void GpuScene::createSAOResources() {
     write.pImageInfo = &aoImageInfo;
     vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
   }
+}
+
+// =============================================================================
+// Resolve Pass (TAA + ACES Tone Mapping)
+// =============================================================================
+
+void GpuScene::createHDRLightingBuffer() {
+  uint32_t width = device.getSwapChainExtent().width;
+  uint32_t height = device.getSwapChainExtent().height;
+
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.extent = {width, height, 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = 1;
+  imageInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imageInfo.flags = 0;
+
+  if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+                    &_hdrLightingBuffer) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create HDR lighting buffer!");
+  }
+
+  VkMemoryRequirements memReq;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _hdrLightingBuffer, &memReq);
+
+  VkMemoryAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocInfo.allocationSize = memReq.size;
+  allocInfo.memoryTypeIndex = device.findMemoryType(
+      memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                       &_hdrLightingBufferMemory) != VK_SUCCESS) {
+    throw std::runtime_error("failed to allocate HDR lighting buffer memory!");
+  }
+
+  vkBindImageMemory(device.getLogicalDevice(), _hdrLightingBuffer,
+                    _hdrLightingBufferMemory, 0);
+
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = _hdrLightingBuffer;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+  viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  if (vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr,
+                        &_hdrLightingBufferView) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create HDR lighting buffer view!");
+  }
+}
+
+void GpuScene::createTAAHistoryBuffer() {
+  uint32_t width = device.getSwapChainExtent().width;
+  uint32_t height = device.getSwapChainExtent().height;
+
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.extent = {width, height, 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = 1;
+  imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imageInfo.flags = 0;
+
+  if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+                    &_taaHistoryBuffer) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create TAA history buffer!");
+  }
+
+  VkMemoryRequirements memReq;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _taaHistoryBuffer, &memReq);
+
+  VkMemoryAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocInfo.allocationSize = memReq.size;
+  allocInfo.memoryTypeIndex = device.findMemoryType(
+      memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                       &_taaHistoryBufferMemory) != VK_SUCCESS) {
+    throw std::runtime_error("failed to allocate TAA history buffer memory!");
+  }
+
+  vkBindImageMemory(device.getLogicalDevice(), _taaHistoryBuffer,
+                    _taaHistoryBufferMemory, 0);
+
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = _taaHistoryBuffer;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  if (vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr,
+                        &_taaHistoryBufferView) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create TAA history buffer view!");
+  }
+}
+
+void GpuScene::createLinearClampSampler() {
+  VkSamplerCreateInfo samplerInfo{};
+  samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  samplerInfo.magFilter = VK_FILTER_LINEAR;
+  samplerInfo.minFilter = VK_FILTER_LINEAR;
+  samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.anisotropyEnable = VK_FALSE;
+  samplerInfo.unnormalizedCoordinates = VK_FALSE;
+  samplerInfo.compareEnable = VK_FALSE;
+  samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+  samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+  if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr,
+                      &_linearClampSampler) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create linear clamp sampler!");
+  }
+}
+
+void GpuScene::createResolvePass() {
+  // Attachment 0: swapchain image
+  VkAttachmentDescription swapchainAttachment{};
+  swapchainAttachment.format = device.getSwapChainImageFormat();
+  swapchainAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+  swapchainAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  swapchainAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  swapchainAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  swapchainAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  swapchainAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  swapchainAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+  // Attachment 1: TAA history buffer
+  VkAttachmentDescription historyAttachment{};
+  historyAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
+  historyAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+  historyAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  historyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  historyAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  historyAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  historyAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  historyAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentReference colorRefs[2] = {};
+  colorRefs[0].attachment = 0;
+  colorRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  colorRefs[1].attachment = 1;
+  colorRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+  VkSubpassDescription subpass{};
+  subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpass.colorAttachmentCount = 2;
+  subpass.pColorAttachments = colorRefs;
+
+  VkSubpassDependency dependency{};
+  dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+  dependency.dstSubpass = 0;
+  dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  dependency.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+  VkAttachmentDescription attachments[] = {swapchainAttachment, historyAttachment};
+
+  VkRenderPassCreateInfo renderPassInfo{};
+  renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  renderPassInfo.attachmentCount = 2;
+  renderPassInfo.pAttachments = attachments;
+  renderPassInfo.subpassCount = 1;
+  renderPassInfo.pSubpasses = &subpass;
+  renderPassInfo.dependencyCount = 1;
+  renderPassInfo.pDependencies = &dependency;
+
+  if (vkCreateRenderPass(device.getLogicalDevice(), &renderPassInfo, nullptr,
+                         &_resolvePass) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create resolve render pass!");
+  }
+}
+
+void GpuScene::createResolveFrameBuffer(uint32_t count) {
+  _resolveFrameBuffer.resize(count);
+  for (uint32_t i = 0; i < count; i++) {
+    VkImageView attachments[] = {device.getSwapChainImageView(i),
+                                 _taaHistoryBufferView};
+
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = _resolvePass;
+    framebufferInfo.attachmentCount = 2;
+    framebufferInfo.pAttachments = attachments;
+    framebufferInfo.width = device.getSwapChainExtent().width;
+    framebufferInfo.height = device.getSwapChainExtent().height;
+    framebufferInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo,
+                            nullptr, &_resolveFrameBuffer[i]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create resolve framebuffer!");
+    }
+  }
+}
+
+void GpuScene::createResolveDescriptors() {
+  // Set layout: bindings for resolve pass textures
+  VkDescriptorSetLayoutBinding bindings[5] = {};
+
+  // Binding 0: HDR lighting buffer
+  bindings[0].binding = 0;
+  bindings[0].descriptorCount = 1;
+  bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  // Binding 1: History texture
+  bindings[1].binding = 1;
+  bindings[1].descriptorCount = 1;
+  bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  // Binding 2: Depth texture
+  bindings[2].binding = 2;
+  bindings[2].descriptorCount = 1;
+  bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  // Binding 3: Nearest clamp sampler
+  bindings[3].binding = 3;
+  bindings[3].descriptorCount = 1;
+  bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  // Binding 4: Linear clamp sampler
+  bindings[4].binding = 4;
+  bindings[4].descriptorCount = 1;
+  bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layoutInfo.bindingCount = 5;
+  layoutInfo.pBindings = bindings;
+
+  vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr,
+                              &_resolveSetLayout);
+
+  // Descriptor pool
+  VkDescriptorPoolSize poolSizes[] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 2},
+  };
+
+  VkDescriptorPoolCreateInfo poolInfo{};
+  poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolInfo.maxSets = 1;
+  poolInfo.poolSizeCount = 2;
+  poolInfo.pPoolSizes = poolSizes;
+
+  vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr,
+                         &_resolveDescriptorPool);
+
+  // Allocate descriptor set
+  VkDescriptorSetAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool = _resolveDescriptorPool;
+  allocInfo.descriptorSetCount = 1;
+  allocInfo.pSetLayouts = &_resolveSetLayout;
+
+  vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
+                           &_resolveDescriptorSet);
+
+  // Write descriptors
+  VkDescriptorImageInfo hdrInfo{};
+  hdrInfo.imageView = _hdrLightingBufferView;
+  hdrInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkDescriptorImageInfo historyInfo{};
+  historyInfo.imageView = _taaHistoryBufferView;
+  historyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkDescriptorImageInfo depthInfo{};
+  depthInfo.imageView = device.getWindowDepthOnlyImageView();
+  depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+
+  VkDescriptorImageInfo nearestSamplerInfo{};
+  nearestSamplerInfo.sampler = nearestClampSampler;
+
+  VkDescriptorImageInfo linearSamplerInfo{};
+  linearSamplerInfo.sampler = _linearClampSampler;
+
+  VkWriteDescriptorSet writes[5] = {};
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[0].dstSet = _resolveDescriptorSet;
+  writes[0].dstBinding = 0;
+  writes[0].descriptorCount = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  writes[0].pImageInfo = &hdrInfo;
+
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[1].dstSet = _resolveDescriptorSet;
+  writes[1].dstBinding = 1;
+  writes[1].descriptorCount = 1;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  writes[1].pImageInfo = &historyInfo;
+
+  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[2].dstSet = _resolveDescriptorSet;
+  writes[2].dstBinding = 2;
+  writes[2].descriptorCount = 1;
+  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  writes[2].pImageInfo = &depthInfo;
+
+  writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[3].dstSet = _resolveDescriptorSet;
+  writes[3].dstBinding = 3;
+  writes[3].descriptorCount = 1;
+  writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  writes[3].pImageInfo = &nearestSamplerInfo;
+
+  writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[4].dstSet = _resolveDescriptorSet;
+  writes[4].dstBinding = 4;
+  writes[4].descriptorCount = 1;
+  writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  writes[4].pImageInfo = &linearSamplerInfo;
+
+  vkUpdateDescriptorSets(device.getLogicalDevice(), 5, writes, 0, nullptr);
+}
+
+void GpuScene::createResolvePipeline() {
+  auto resolvePSCode = readFile(
+      (_rootPath / "shaders/resolve.ps.spv").generic_string());
+  auto resolveVSCode = readFile(
+      (_rootPath / "shaders/deferredlighting.vs.spv").generic_string());
+
+  VkShaderModule resolveVSModule = createShaderModule(resolveVSCode);
+  VkShaderModule resolvePSModule = createShaderModule(resolvePSCode);
+
+  VkPipelineShaderStageCreateInfo vsStage{};
+  vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+  vsStage.module = resolveVSModule;
+  vsStage.pName = "AAPLSimpleTexVertexOutFSQuadVertexShader";
+
+  VkPipelineShaderStageCreateInfo psStage{};
+  psStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  psStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  psStage.module = resolvePSModule;
+  psStage.pName = "ResolvePS";
+
+  VkPipelineShaderStageCreateInfo stages[] = {vsStage, psStage};
+
+  // Pipeline layout: {globalSetLayout, _resolveSetLayout}
+  VkDescriptorSetLayout resolveLayouts[] = {globalSetLayout, _resolveSetLayout};
+  VkPipelineLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutInfo.setLayoutCount = 2;
+  layoutInfo.pSetLayouts = resolveLayouts;
+
+  if (vkCreatePipelineLayout(device.getLogicalDevice(), &layoutInfo, nullptr,
+                             &_resolvePipelineLayout) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create resolve pipeline layout!");
+  }
+
+  // Empty vertex input
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+  VkViewport viewport{};
+  viewport.x = 0.0f;
+  viewport.y = 0.0f;
+  viewport.width = (float)device.getSwapChainExtent().width;
+  viewport.height = (float)device.getSwapChainExtent().height;
+  viewport.minDepth = 0.0f;
+  viewport.maxDepth = 1.0f;
+
+  VkRect2D scissor{};
+  scissor.offset = {0, 0};
+  scissor.extent = device.getSwapChainExtent();
+
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.pViewports = &viewport;
+  viewportState.scissorCount = 1;
+  viewportState.pScissors = &scissor;
+
+  VkPipelineRasterizationStateCreateInfo rasterizer{};
+  rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterizer.depthClampEnable = VK_FALSE;
+  rasterizer.rasterizerDiscardEnable = VK_FALSE;
+  rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+  rasterizer.lineWidth = 1.0f;
+  rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizer.depthBiasEnable = VK_FALSE;
+
+  VkPipelineMultisampleStateCreateInfo multisampling{};
+  multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisampling.sampleShadingEnable = VK_FALSE;
+  multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  // No depth test
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthTestEnable = VK_FALSE;
+  depthStencil.depthWriteEnable = VK_FALSE;
+
+  // Two color blend attachments (MRT)
+  VkPipelineColorBlendAttachmentState blendAttachments[2] = {};
+  blendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+      VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  blendAttachments[0].blendEnable = VK_FALSE;
+  blendAttachments[1] = blendAttachments[0];
+
+  VkPipelineColorBlendStateCreateInfo colorBlendState{};
+  colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlendState.logicOpEnable = VK_FALSE;
+  colorBlendState.attachmentCount = 2;
+  colorBlendState.pAttachments = blendAttachments;
+
+  VkGraphicsPipelineCreateInfo pipelineInfo{};
+  pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineInfo.stageCount = 2;
+  pipelineInfo.pStages = stages;
+  pipelineInfo.pVertexInputState = &vertexInput;
+  pipelineInfo.pInputAssemblyState = &inputAssembly;
+  pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pRasterizationState = &rasterizer;
+  pipelineInfo.pMultisampleState = &multisampling;
+  pipelineInfo.pDepthStencilState = &depthStencil;
+  pipelineInfo.pColorBlendState = &colorBlendState;
+  pipelineInfo.layout = _resolvePipelineLayout;
+  pipelineInfo.renderPass = _resolvePass;
+  pipelineInfo.subpass = 0;
+  pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                &pipelineInfo, nullptr,
+                                &_resolvePipeline) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create resolve pipeline!");
+  }
+
+  vkDestroyShaderModule(device.getLogicalDevice(), resolveVSModule, nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), resolvePSModule, nullptr);
 }
 
 void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {

@@ -66,6 +66,7 @@ struct uniformBufferData {
   mat4 invViewMatrix;
   mat4 invViewProjectionMatrix;
   mat4 invProjectionMatrix;
+  mat4 prevViewProjectionMatrix;  // for TAA reprojection
 };
 
 struct FrameConstants {
@@ -78,6 +79,10 @@ struct FrameConstants {
   float farPlane;
   uint32_t frameCounter;
   alignas(16) vec2 physicalSize;
+  vec2 invPhysicalSize;
+  vec2 taaJitter;
+  float exposure;
+  uint32_t taaEnabled;
 };
 
 struct FrameData {

@@ -53,3 +53,6 @@ D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConduc
 
 REM compiling sao
 D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -E ScalableAmbientObscurance sao.hlsl -T cs_6_2 -Fo sao.cs.spv
+
+REM Resolve/PostFX pass (TAA + ACES Tone Mapping)
+D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 resolve.hlsl -fspv-debug=vulkan-with-source -E ResolvePS -Fo resolve.ps.spv
