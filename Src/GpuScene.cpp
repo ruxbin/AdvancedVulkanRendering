@@ -1356,7 +1356,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   }
   // need transform layout?--yes!
   VkDescriptorImageInfo depthImageInfo{};
-  depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+  depthImageInfo.imageView = device.getWindowDepthOnlyImageView(f);
   depthImageInfo.imageLayout =
       VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
   VkWriteDescriptorSet setWriteDepth;
@@ -3082,7 +3082,7 @@ void GpuScene::CreateForwardLightingFrameBuffer(uint32_t count) {
   _forwardFrameBuffer.resize(count);
   for (int i = 0; i < count; i++) {
     std::array<VkImageView, 2> attachments = {device.getSwapChainImageView(i),
-                                              device.getWindowDepthImageView()};
+                                              device.getWindowDepthImageView(i)};
 
     VkFramebufferCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -3106,7 +3106,7 @@ void GpuScene::CreateDeferredLightingFrameBuffer(uint32_t count) {
   _deferredFrameBuffer.resize(count);
   for (int i = 0; i < count; i++) {
     std::array<VkImageView, 2> attachments = {device.getSwapChainImageView(i),
-                                              device.getWindowDepthImageView()};
+                                              device.getWindowDepthImageView(i)};
 
     VkFramebufferCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -3132,7 +3132,7 @@ void GpuScene::CreateBasePassFrameBuffer() {
   for (uint32_t f = 0; f < framesInFlight; ++f) {
   std::array<VkImageView, 5> attachments = {_gbuffersView[0][f], _gbuffersView[1][f],
                                             _gbuffersView[2][f], _gbuffersView[3][f],
-                                            device.getWindowDepthImageView()};
+                                            device.getWindowDepthImageView(f)};
 
   VkFramebufferCreateInfo framebufferInfo{};
   framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -3311,37 +3311,26 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     {
       uint32_t totalPointLights = _pointLights.size();
       uint32_t totalSpotLights = _spotLights.size();
-      uint32_t hizMips = _hizMipLevels;
-      float screenW = (float)device.getSwapChainExtent().width;
-      float screenH = (float)device.getSwapChainExtent().height;
 
       // Compute view-projection matrix for Hi-Z AABB projection
       mat4 viewProj = maincamera->getProjectMatrix() * maincamera->getObjectToCamera();
       mat4 viewProjT = transpose(viewProj);
 
+      GPUCullParams params;
+      params.opaqueChunkCount = applMesh->_opaqueChunkCount;
+      params.alphaMaskedChunkCount = applMesh->_alphaMaskedChunkCount;
+      params.transparentChunkCount = applMesh->_transparentChunkCount;
+      params.totalPointLights = totalPointLights;
+      params.totalSpotLights = totalSpotLights;
+      params.hizMipLevels = _hizMipLevels;
+      params.screenWidth = (float)device.getSwapChainExtent().width;
+      params.screenHeight = (float)device.getSwapChainExtent().height;
+      memcpy(params.viewProjMatrix, viewProjT.value_ptr(), sizeof(mat4));
+      params.frustum = maincamera->getFrustum();
+
       vkMapMemory(device.getLogicalDevice(), cullParamsBufferMemories[currentFrame], 0,
                   sizeof(GPUCullParams), 0, &data1);
-      // GPUCullParams layout matches HLSL cbuffer:
-      // offset 0:  opaqueChunkCount
-      // offset 4:  alphaMaskedChunkCount
-      // offset 8:  transparentChunkCount
-      // offset 12: totalPointLights
-      // offset 16: totalSpotLights
-      // offset 20: hizMipLevels
-      // offset 24: screenSize (float2)
-      // offset 32: viewProjMatrix (float4x4, 64 bytes)
-      // offset 96: frustum (96 bytes)
-      memcpy((char *)data1 + 0, &applMesh->_opaqueChunkCount, sizeof(uint32_t));
-      memcpy((char *)data1 + 4, &applMesh->_alphaMaskedChunkCount, sizeof(uint32_t));
-      memcpy((char *)data1 + 8, &applMesh->_transparentChunkCount, sizeof(uint32_t));
-      memcpy((char *)data1 + 12, &totalPointLights, sizeof(uint32_t));
-      memcpy((char *)data1 + 16, &totalSpotLights, sizeof(uint32_t));
-      memcpy((char *)data1 + 20, &hizMips, sizeof(uint32_t));
-      memcpy((char *)data1 + 24, &screenW, sizeof(float));
-      memcpy((char *)data1 + 28, &screenH, sizeof(float));
-      memcpy((char *)data1 + 32, viewProjT.value_ptr(), sizeof(mat4));
-      memcpy((char *)data1 + 96, &maincamera->getFrustum(), sizeof(Frustum));
-
+      memcpy(data1, &params, sizeof(GPUCullParams));
       vkUnmapMemory(device.getLogicalDevice(), cullParamsBufferMemories[currentFrame]);
     }
 
@@ -3478,7 +3467,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
       barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
       barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.image = device.getWindowDepthImage();
+      barrier.image = device.getWindowDepthImage(currentFrame);
       barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
       barrier.subresourceRange.baseMipLevel = 0;
       barrier.subresourceRange.levelCount = 1;
@@ -3491,7 +3480,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                            0, nullptr, 1, &barrier);
     } else {
       transitionImageLayout(
-          device.getWindowDepthImage(), device.getWindowDepthFormat(),
+          device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
           VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
           VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer); // read depth while write stencil in the point lighting pass
     }
@@ -5183,7 +5172,7 @@ void GpuScene::createSAOResources() {
       vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoCopyDescriptorSet);
 
       VkDescriptorImageInfo srcInfo{};
-      srcInfo.imageView = device.getWindowDepthOnlyImageView();
+      srcInfo.imageView = device.getWindowDepthOnlyImageView(0);
       srcInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
       VkDescriptorImageInfo dstInfo{};
@@ -5324,7 +5313,7 @@ void GpuScene::createSAOResources() {
     // Write descriptor set (static bindings - pyramid and AO output don't change per frame)
     // Binding 0: depth texture (window depth) — updated later per-frame? No, same view.
     VkDescriptorImageInfo depthInfo{};
-    depthInfo.imageView = device.getWindowDepthOnlyImageView();
+    depthInfo.imageView = device.getWindowDepthOnlyImageView(0);
     depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
     // Binding 1: SAO depth pyramid (full mip chain view for read)

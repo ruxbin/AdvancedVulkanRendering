@@ -45,12 +45,12 @@ VkSwapchainKHR getSwapChain() const {return swapChain;}
 VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
 VkInstance getInstance() const {return vkInstance;}
-VkImageView getWindowDepthImageView()const{return depthImageView;}
-VkImageView getWindowDepthOnlyImageView()const { return depthOnlyImageView; }
+VkImageView getWindowDepthImageView(uint32_t frameIndex)const{return depthImageView[frameIndex];}
+VkImageView getWindowDepthOnlyImageView(uint32_t frameIndex)const { return depthOnlyImageView[frameIndex]; }
 VkFormat getWindowDepthFormat()const{return depthFormat;}
 VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
 VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
-VkImage getWindowDepthImage()const { return depthImage; }
+VkImage getWindowDepthImage(uint32_t frameIndex)const { return depthImage[frameIndex]; }
 uint32_t getSwapChainImageCount() const {return swapChainImages.size();}
 uint32_t findMemoryType(uint32_t typeFilter,
                             VkMemoryPropertyFlags properties) const {
@@ -84,10 +84,10 @@ private:
   std::vector<VkImageView> swapChainImageViews;
   std::vector<VkFramebuffer> swapChainFramebuffers;
 
-  VkImage depthImage;
-  VkDeviceMemory depthImageMemory;
-  VkImageView depthImageView;
-  VkImageView depthOnlyImageView;
+  std::vector<VkImage> depthImage;           // per-frame
+  std::vector<VkDeviceMemory> depthImageMemory; // per-frame
+  std::vector<VkImageView> depthImageView;   // per-frame
+  std::vector<VkImageView> depthOnlyImageView; // per-frame
 
   VkCommandPool commandPool;
 
@@ -332,14 +332,21 @@ VkFormat depthFormat;
 
   void CreateDepthResource() {
     depthFormat = findDepthFormat();
+    uint32_t numFrames = static_cast<uint32_t>(swapChainImages.size());
+    depthImage.resize(numFrames);
+    depthImageMemory.resize(numFrames);
+    depthImageView.resize(numFrames);
+    depthOnlyImageView.resize(numFrames);
+
+    for (uint32_t f = 0; f < numFrames; ++f) {
     createImage(
         swapChainExtent.width, swapChainExtent.height, depthFormat,
         VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage[f], depthImageMemory[f]);
     // depthImageView = createImageView(depthImage, depthFormat);
     VkImageViewCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    createInfo.image = depthImage;
+    createInfo.image = depthImage[f];
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     createInfo.format = depthFormat;
 
@@ -349,22 +356,22 @@ VkFormat depthFormat;
     createInfo.subresourceRange.baseArrayLayer = 0;
     createInfo.subresourceRange.layerCount = 1;
 
-    if (vkCreateImageView(device, &createInfo, nullptr, &depthImageView) !=
+    if (vkCreateImageView(device, &createInfo, nullptr, &depthImageView[f]) !=
         VK_SUCCESS) {
       throw std::runtime_error("failed to create depthimage views!");
     }
 
     //stencilImageView
     createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (vkCreateImageView(device, &createInfo, nullptr, &depthOnlyImageView) !=
+    if (vkCreateImageView(device, &createInfo, nullptr, &depthOnlyImageView[f]) !=
         VK_SUCCESS) {
         throw std::runtime_error("failed to create depthimage stencil views!");
     }
 
 
-    transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED,
+    transitionImageLayout(depthImage[f], depthFormat, VK_IMAGE_LAYOUT_UNDEFINED,
                           VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
+    }
 
   }
 

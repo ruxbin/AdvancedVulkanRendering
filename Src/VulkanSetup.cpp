@@ -611,10 +611,12 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
 
 void VulkanDevice::cleanupSwapChain() {
   // 销毁深度资源
-  vkDestroyImageView(device, depthImageView, nullptr);
-  vkDestroyImageView(device, depthOnlyImageView, nullptr);
-  vkDestroyImage(device, depthImage, nullptr);
-  vkFreeMemory(device, depthImageMemory, nullptr);
+  for (size_t f = 0; f < depthImageView.size(); ++f) {
+    vkDestroyImageView(device, depthImageView[f], nullptr);
+    vkDestroyImageView(device, depthOnlyImageView[f], nullptr);
+    vkDestroyImage(device, depthImage[f], nullptr);
+    vkFreeMemory(device, depthImageMemory[f], nullptr);
+  }
 
   // 销毁 swapchain image views
   for (auto imageView : swapChainImageViews) {

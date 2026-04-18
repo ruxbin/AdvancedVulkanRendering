@@ -20,7 +20,18 @@ public:
     w = rhs.w;
   }
 
+  Plane(const Plane &rhs) {
+    normal = rhs.normal;
+    w = rhs.w;
+  }
+
   Plane &operator=(Plane &&rhs) {
+    normal = rhs.normal;
+    w = rhs.w;
+    return *this;
+  }
+
+  Plane &operator=(const Plane &rhs) {
     normal = rhs.normal;
     w = rhs.w;
     return *this;

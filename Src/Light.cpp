@@ -290,7 +290,7 @@ void PointLight::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
       }
 
       VkDescriptorImageInfo depthImageInfo{};
-      depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+      depthImageInfo.imageView = device.getWindowDepthOnlyImageView(f);
       depthImageInfo.imageLayout =
           VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
       VkWriteDescriptorSet setWriteDepth;
@@ -1044,7 +1044,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWrite2.pBufferInfo = &binfo2;
 
   VkDescriptorImageInfo depthImageInfo{};
-  depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
+  depthImageInfo.imageView = device.getWindowDepthOnlyImageView(i);
   depthImageInfo.imageLayout =
       VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
   VkWriteDescriptorSet setWriteDepth;
@@ -1382,7 +1382,7 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer &commandBuffer,
     // VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = device.getWindowDepthImage();
+    barrier.image = device.getWindowDepthImage(currentFrame);
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
