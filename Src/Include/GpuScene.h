@@ -148,7 +148,7 @@ private:
 
   VkDescriptorSetLayout deferredLightingSetLayout;
   VkDescriptorPool deferredLightingDescriptorPool;
-  VkDescriptorSet deferredLightingDescriptorSet;
+  std::vector<VkDescriptorSet> deferredLightingDescriptorSet; // per-frame
 
   std::vector<VkBuffer> uniformBuffers;         // per-frame
   std::vector<VkDeviceMemory> uniformBufferMemories; // per-frame
@@ -271,9 +271,9 @@ private:
   VkFormat _gbufferFormat[4] = {
       VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R16G16B16A16_SFLOAT,
       VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_SRGB};
-  VkImage _gbuffers[4];
-  VkImageView _gbuffersView[4];
-  VkFramebuffer _basePassFrameBuffer;
+  std::vector<VkImage> _gbuffers[4];       // per-frame, [channel][frame]
+  std::vector<VkImageView> _gbuffersView[4]; // per-frame, [channel][frame]
+  std::vector<VkFramebuffer> _basePassFrameBuffer; // per-frame
   VkRenderPass _basePass;
 
   std::vector<VkFramebuffer> _deferredFrameBuffer;

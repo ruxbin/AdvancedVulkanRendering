@@ -85,8 +85,8 @@ private:
   VkBuffer _pointLightCullingDataBuffer;
 
   std::vector<VkBuffer> _xzRangeBuffer;
-  VkBuffer _lightIndicesBuffer;
-  VkBuffer _lightIndicesTransparentBuffer;
+  std::vector<VkBuffer> _lightIndicesBuffer;
+  std::vector<VkBuffer> _lightIndicesTransparentBuffer;
   VkImage _xzDebugImage;
   VkImageView _xzDebugImageView;
 

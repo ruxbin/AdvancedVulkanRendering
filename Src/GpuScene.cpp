@@ -1290,41 +1290,43 @@ void GpuScene::init_deferredlighting_descriptors() {
   // other code ....
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 3},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 3 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * framesInFlight},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pool_info.flags = 0;
-  pool_info.maxSets = 2;
+  pool_info.maxSets = framesInFlight + 1;
   pool_info.poolSizeCount = (uint32_t)sizes.size();
   pool_info.pPoolSizes = sizes.data();
 
   vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
                          &deferredLightingDescriptorPool);
 
+  deferredLightingDescriptorSet.resize(framesInFlight);
+  std::vector<VkDescriptorSetLayout> deferredLayouts(framesInFlight, deferredLightingSetLayout);
+
   VkDescriptorSetAllocateInfo allocInfo = {};
   allocInfo.pNext = nullptr;
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   // using the pool we just set
   allocInfo.descriptorPool = deferredLightingDescriptorPool;
-  // only 1 descriptor
-  allocInfo.descriptorSetCount = 1;
-  // using the global data layout
-  allocInfo.pSetLayouts = &deferredLightingSetLayout;
+  allocInfo.descriptorSetCount = framesInFlight;
+  allocInfo.pSetLayouts = deferredLayouts.data();
 
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
-                           &deferredLightingDescriptorSet);
+                           deferredLightingDescriptorSet.data());
 
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
   VkDescriptorImageInfo samplerinfo;
   samplerinfo.sampler = nearestClampSampler;
   VkWriteDescriptorSet setSampler = {};
   setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setSampler.dstBinding = 5;
   setSampler.pNext = nullptr;
-  setSampler.dstSet = deferredLightingDescriptorSet;
+  setSampler.dstSet = deferredLightingDescriptorSet[f];
   setSampler.dstArrayElement = 0;
   setSampler.descriptorCount = 1;
   setSampler.pImageInfo = &samplerinfo;
@@ -1333,7 +1335,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   std::array<VkDescriptorImageInfo, 4> imageinfo{};
   // imageinfo.resize(textures.size());
   for (int texturei = 0; texturei < 4; ++texturei) {
-    imageinfo[texturei].imageView = _gbuffersView[texturei];
+    imageinfo[texturei].imageView = _gbuffersView[texturei][f];
     imageinfo[texturei].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     // imageinfo[texturei].sampler = textureSampler;
   }
@@ -1345,7 +1347,7 @@ void GpuScene::init_deferredlighting_descriptors() {
 
     setWriteTexture[i].dstBinding = i;
     // of the global descriptor
-    setWriteTexture[i].dstSet = deferredLightingDescriptorSet;
+    setWriteTexture[i].dstSet = deferredLightingDescriptorSet[f];
     setWriteTexture[i].dstArrayElement = 0;
 
     setWriteTexture[i].descriptorCount = 1;
@@ -1361,7 +1363,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWriteDepth.pNext = nullptr;
   setWriteDepth.dstBinding = 4;
-  setWriteDepth.dstSet = deferredLightingDescriptorSet;
+  setWriteDepth.dstSet = deferredLightingDescriptorSet[f];
   setWriteDepth.dstArrayElement = 0;
   setWriteDepth.descriptorCount = 1;
   setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -1376,6 +1378,7 @@ void GpuScene::init_deferredlighting_descriptors() {
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
+  } // end per-frame loop
 
   
 }
@@ -1878,6 +1881,9 @@ void GpuScene::CreateGBuffers() {
   int height = device.getSwapChainExtent().height;
 
   for (int i = 0; i < 4; i++) {
+    _gbuffers[i].resize(framesInFlight);
+    _gbuffersView[i].resize(framesInFlight);
+
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -1898,12 +1904,13 @@ void GpuScene::CreateGBuffers() {
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.flags = 0; // Optional
 
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
     if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
-                      &_gbuffers[i]) != VK_SUCCESS) {
+                      &_gbuffers[i][f]) != VK_SUCCESS) {
       throw std::runtime_error("failed to create depth rt!");
     }
     VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device.getLogicalDevice(), _gbuffers[i],
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _gbuffers[i][f],
                                  &memRequirements);
 
     VkMemoryAllocateInfo allocInfo{};
@@ -1918,12 +1925,12 @@ void GpuScene::CreateGBuffers() {
       throw std::runtime_error("failed to allocate image memory!");
     }
 
-    vkBindImageMemory(device.getLogicalDevice(), _gbuffers[i],
+    vkBindImageMemory(device.getLogicalDevice(), _gbuffers[i][f],
                       textureImageMemory, 0);
 
     VkImageViewCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    createInfo.image = _gbuffers[i];
+    createInfo.image = _gbuffers[i][f];
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     createInfo.format = _gbufferFormat[i];
     createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1937,9 +1944,10 @@ void GpuScene::CreateGBuffers() {
     createInfo.subresourceRange.layerCount = 1;
 
     if (vkCreateImageView(device.getLogicalDevice(), &createInfo, nullptr,
-                          &_gbuffersView[i]) != VK_SUCCESS) {
+                          &_gbuffersView[i][f]) != VK_SUCCESS) {
       throw std::runtime_error("failed to create gbuffers image views!");
     }
+    } // end per-frame
   }
 }
 
@@ -3120,23 +3128,25 @@ void GpuScene::CreateDeferredLightingFrameBuffer(uint32_t count) {
 
 void GpuScene::CreateBasePassFrameBuffer() {
 
-  std::array<VkImageView, 5> attachments = {_gbuffersView[0], _gbuffersView[1],
-                                            _gbuffersView[2], _gbuffersView[3],
+  _basePassFrameBuffer.resize(framesInFlight);
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+  std::array<VkImageView, 5> attachments = {_gbuffersView[0][f], _gbuffersView[1][f],
+                                            _gbuffersView[2][f], _gbuffersView[3][f],
                                             device.getWindowDepthImageView()};
 
   VkFramebufferCreateInfo framebufferInfo{};
   framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
   framebufferInfo.renderPass = _basePass;
   framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-  ;
   framebufferInfo.pAttachments = attachments.data();
   framebufferInfo.width = device.getSwapChainExtent().width;
   framebufferInfo.height = device.getSwapChainExtent().height;
   framebufferInfo.layers = 1;
 
   if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo, nullptr,
-                          &_basePassFrameBuffer) != VK_SUCCESS) {
+                          &_basePassFrameBuffer[f]) != VK_SUCCESS) {
     throw std::runtime_error("failed to create basepass framebuffer!");
+  }
   }
 }
 
@@ -3393,7 +3403,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = _basePass; // device.getMainRenderPass();
     renderPassInfo.framebuffer =
-        _basePassFrameBuffer; // device.getSwapChainFrameBuffer(imageIndex);
+        _basePassFrameBuffer[currentFrame]; // device.getSwapChainFrameBuffer(imageIndex);
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = device.getSwapChainExtent();
 
@@ -3539,7 +3549,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                           ? deferredLightingPipeline_clusterlighting
                           : deferredLightingPipeline);
 
-    VkDescriptorSet deferredSets[] = {globalDescriptorSets[currentFrame], deferredLightingDescriptorSet};
+    VkDescriptorSet deferredSets[] = {globalDescriptorSets[currentFrame], deferredLightingDescriptorSet[currentFrame]};
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             deferredLightingPipelineLayout, 0, 2,
                             deferredSets, 0, nullptr);
@@ -5371,14 +5381,16 @@ void GpuScene::createSAOResources() {
     aoImageInfo.imageView = _aoTextureView;
     aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = deferredLightingDescriptorSet;
-    write.dstBinding = 10;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    write.pImageInfo = &aoImageInfo;
-    vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+      VkWriteDescriptorSet write{};
+      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet = deferredLightingDescriptorSet[f];
+      write.dstBinding = 10;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      write.pImageInfo = &aoImageInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
+    }
   }
 }
 

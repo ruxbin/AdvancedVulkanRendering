@@ -191,23 +191,25 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
     imageinfo.imageView = _shadowSliceViewFull;
     imageinfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    VkDescriptorImageInfo samplerinfo;
+    samplerinfo.sampler = _shadowMapSampler;
+
+    for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
     VkWriteDescriptorSet setWriteTexture = {};
     setWriteTexture.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     setWriteTexture.pNext = nullptr;
     setWriteTexture.dstBinding = 6;
-    setWriteTexture.dstSet = gpuScene.deferredLightingDescriptorSet;
+    setWriteTexture.dstSet = gpuScene.deferredLightingDescriptorSet[f];
     setWriteTexture.dstArrayElement = 0;
     setWriteTexture.descriptorCount = 1;
     setWriteTexture.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     setWriteTexture.pImageInfo = &imageinfo;
 
-    VkDescriptorImageInfo samplerinfo;
-    samplerinfo.sampler = _shadowMapSampler;
     VkWriteDescriptorSet setSampler = {};
     setSampler.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     setSampler.dstBinding = 7;
     setSampler.pNext = nullptr;
-    setSampler.dstSet = gpuScene.deferredLightingDescriptorSet;
+    setSampler.dstSet = gpuScene.deferredLightingDescriptorSet[f];
     setSampler.dstArrayElement = 0;
     setSampler.descriptorCount = 1;
     setSampler.pImageInfo = &samplerinfo;
@@ -217,6 +219,7 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                            writes.data(), 0, nullptr);
+    }
   }
 
   VkAttachmentDescription shadowDepthAttachment = {};

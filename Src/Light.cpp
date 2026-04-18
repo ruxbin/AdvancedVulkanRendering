@@ -272,7 +272,7 @@ void PointLight::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
 
       std::array<VkDescriptorImageInfo, 4> imageinfo{};
       for (int texturei = 0; texturei < 4; ++texturei) {
-        imageinfo[texturei].imageView = gpuScene._gbuffersView[texturei];
+        imageinfo[texturei].imageView = gpuScene._gbuffersView[texturei][f];
         imageinfo[texturei].imageLayout =
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       }
@@ -667,31 +667,35 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   xzRangeBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   xzRangeBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   xzRangeBufferInfo.flags = 0;
-  if (vkCreateBuffer(device.getLogicalDevice(), &xzRangeBufferInfo, nullptr,
-                     &_xzRangeBuffer) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create sphere vertex buffer!");
-  }
-  VkMemoryRequirements memRequirements;
-  vkGetBufferMemoryRequirements(device.getLogicalDevice(), _xzRangeBuffer,
-                                &memRequirements);
 
-  VkMemoryAllocateInfo allocInfo1{};
-  allocInfo1.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  allocInfo1.allocationSize = memRequirements.size;
-  allocInfo1.memoryTypeIndex = device.findMemoryType(
-      memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  VkDeviceMemory xzRangeBufferMemory;
-  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo1, nullptr,
-                       &xzRangeBufferMemory) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate pointLight buffer memory!");
+  _xzRangeBuffer.resize(gpuScene.framesInFlight);
+  for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+    if (vkCreateBuffer(device.getLogicalDevice(), &xzRangeBufferInfo, nullptr,
+                       &_xzRangeBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create xzRange buffer!");
+    }
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _xzRangeBuffer[f],
+                                  &memRequirements);
+    VkMemoryAllocateInfo allocInfo1{};
+    allocInfo1.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo1.allocationSize = memRequirements.size;
+    allocInfo1.memoryTypeIndex = device.findMemoryType(
+        memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory xzRangeBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo1, nullptr,
+                         &xzRangeBufferMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate xzRange buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _xzRangeBuffer[f],
+                       xzRangeBufferMemory, 0);
   }
-  vkBindBufferMemory(device.getLogicalDevice(), _xzRangeBuffer,
-                     xzRangeBufferMemory, 0);
 
   uint32_t tileXCount = (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
                         DEFAULT_LIGHT_CULLING_TILE_SIZE;
   uint32_t tileYCount = (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
                         DEFAULT_LIGHT_CULLING_TILE_SIZE;
+
   VkBufferCreateInfo lightIndicesBufferInfo{};
   lightIndicesBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   lightIndicesBufferInfo.size =
@@ -699,10 +703,6 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   lightIndicesBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   lightIndicesBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   lightIndicesBufferInfo.flags = 0;
-  if (vkCreateBuffer(device.getLogicalDevice(), &lightIndicesBufferInfo,
-                     nullptr, &_lightIndicesBuffer) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create light indices buffer!");
-  }
 
   VkBufferCreateInfo lightIndicesTransparentBufferInfo{};
   lightIndicesTransparentBufferInfo.sType =
@@ -712,43 +712,50 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   lightIndicesTransparentBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   lightIndicesTransparentBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   lightIndicesTransparentBufferInfo.flags = 0;
-  if (vkCreateBuffer(device.getLogicalDevice(),
-                     &lightIndicesTransparentBufferInfo, nullptr,
-                     &_lightIndicesTransparentBuffer) != VK_SUCCESS) {
-    throw std::runtime_error(
-        "failed to create lighttransparent indices buffer!");
+
+  _lightIndicesBuffer.resize(gpuScene.framesInFlight);
+  _lightIndicesTransparentBuffer.resize(gpuScene.framesInFlight);
+  for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+    if (vkCreateBuffer(device.getLogicalDevice(), &lightIndicesBufferInfo,
+                       nullptr, &_lightIndicesBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create light indices buffer!");
+    }
+    if (vkCreateBuffer(device.getLogicalDevice(),
+                       &lightIndicesTransparentBufferInfo, nullptr,
+                       &_lightIndicesTransparentBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create lighttransparent indices buffer!");
+    }
+
+    VkMemoryRequirements lightindicesMemRequirements;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _lightIndicesBuffer[f],
+                                  &lightindicesMemRequirements);
+    VkMemoryAllocateInfo allocInfo2{};
+    allocInfo2.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo2.allocationSize = lightindicesMemRequirements.size;
+    allocInfo2.memoryTypeIndex =
+        device.findMemoryType(lightindicesMemRequirements.memoryTypeBits,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory lightindicesBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo2, nullptr,
+                         &lightindicesBufferMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate light indices buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesBuffer[f],
+                       lightindicesBufferMemory, 0);
+
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(),
+                                  _lightIndicesTransparentBuffer[f],
+                                  &lightindicesMemRequirements);
+    allocInfo2.allocationSize = lightindicesMemRequirements.size;
+    VkDeviceMemory lightindicesTransparentBufferMemory;
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo2, nullptr,
+                         &lightindicesTransparentBufferMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate light indices transparent buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesTransparentBuffer[f],
+                       lightindicesTransparentBufferMemory, 0);
   }
-
-  VkMemoryRequirements lightindicesMemRequirements;
-  vkGetBufferMemoryRequirements(device.getLogicalDevice(), _lightIndicesBuffer,
-                                &lightindicesMemRequirements);
-
-  VkMemoryAllocateInfo allocInfo2{};
-  allocInfo2.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  allocInfo2.allocationSize = lightindicesMemRequirements.size;
-  allocInfo2.memoryTypeIndex =
-      device.findMemoryType(lightindicesMemRequirements.memoryTypeBits,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  VkDeviceMemory lightindicesBufferMemory;
-  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo2, nullptr,
-                       &lightindicesBufferMemory) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate pointLight buffer memory!");
-  }
-  vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesBuffer,
-                     lightindicesBufferMemory, 0);
-
-  vkGetBufferMemoryRequirements(device.getLogicalDevice(),
-                                _lightIndicesTransparentBuffer,
-                                &lightindicesMemRequirements);
-  allocInfo2.allocationSize = lightindicesMemRequirements.size;
-
-  VkDeviceMemory lightindicesTransparentBufferMemory;
-  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo2, nullptr,
-                       &lightindicesTransparentBufferMemory) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate pointLight buffer memory!");
-  }
-  vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesTransparentBuffer,
-                     lightindicesTransparentBufferMemory, 0);
 
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -956,11 +963,12 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   vkCreateDescriptorSetLayout(device.getLogicalDevice(), &setinfo, nullptr,
                               &coarseCullSetLayout);
 
+  uint32_t poolMultiplier = gpuScene.framesInFlight;
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * poolMultiplier},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * poolMultiplier},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1 * poolMultiplier},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * poolMultiplier}
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -973,15 +981,15 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr,
                          &coarseCullDescriptorPool);
 
+  std::vector<VkDescriptorSetLayout> coarseCullSetLayouts(gpuScene.framesInFlight, coarseCullSetLayout);
+
   VkDescriptorSetAllocateInfo descAllocInfo = {};
   descAllocInfo.pNext = nullptr;
   descAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   // using the pool we just set
   descAllocInfo.descriptorPool = coarseCullDescriptorPool;
-  // only 1 descriptor
   descAllocInfo.descriptorSetCount = gpuScene.framesInFlight;
-  // using the global data layout
-  descAllocInfo.pSetLayouts = &coarseCullSetLayout;
+  descAllocInfo.pSetLayouts = coarseCullSetLayouts.data();
 
   coarseCullDescriptorSet.resize(gpuScene.framesInFlight);
   vkAllocateDescriptorSets(device.getLogicalDevice(), &descAllocInfo,
@@ -1035,21 +1043,6 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWrite2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   setWrite2.pBufferInfo = &binfo2;
 
-  VkWriteDescriptorSet setWrite_Deferredlighting = {};
-  setWrite_Deferredlighting.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite_Deferredlighting.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  setWrite_Deferredlighting.dstBinding = 8;
-  // of the global descriptor
-  setWrite_Deferredlighting.dstSet = gpuScene.deferredLightingDescriptorSet;
-
-  setWrite_Deferredlighting.descriptorCount = 1;
-  setWrite_Deferredlighting.dstArrayElement = 0;
-  // and the type is uniform buffer
-  setWrite_Deferredlighting.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  setWrite_Deferredlighting.pBufferInfo = &binfo2;
-
   VkDescriptorImageInfo depthImageInfo{};
   depthImageInfo.imageView = device.getWindowDepthOnlyImageView();
   depthImageInfo.imageLayout =
@@ -1066,7 +1059,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
 
   VkDescriptorBufferInfo binfo4;
   // it will be the camera buffer
-  binfo4.buffer = _xzRangeBuffer;
+  binfo4.buffer = _xzRangeBuffer[i];
   // at 0 offset
   binfo4.offset = 0;
   // of the size of a camera data struct
@@ -1078,7 +1071,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   // we are going to write into binding number 0
   setWrite4.dstBinding = 3;
   // of the global descriptor
-  setWrite4.dstSet = coarseCullDescriptorSet;
+  setWrite4.dstSet = coarseCullDescriptorSet[i];
 
   setWrite4.descriptorCount = 1;
   setWrite4.dstArrayElement = 0;
@@ -1093,7 +1086,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWriteDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWriteDebug.pNext = nullptr;
   setWriteDebug.dstBinding = 4;
-  setWriteDebug.dstSet = coarseCullDescriptorSet;
+  setWriteDebug.dstSet = coarseCullDescriptorSet[i];
   setWriteDebug.dstArrayElement = 0;
   setWriteDebug.descriptorCount = 1;
   setWriteDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -1101,7 +1094,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
 
   VkDescriptorBufferInfo binfo6;
   // it will be the camera buffer
-  binfo6.buffer = _lightIndicesBuffer;
+  binfo6.buffer = _lightIndicesBuffer[i];
   // at 0 offset
   binfo6.offset = 0;
   // of the size of a camera data struct
@@ -1112,7 +1105,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWrite6.pNext = nullptr;
   setWrite6.dstBinding = 5;
   // of the global descriptor
-  setWrite6.dstSet = coarseCullDescriptorSet;
+  setWrite6.dstSet = coarseCullDescriptorSet[i];
 
   setWrite6.descriptorCount = 1;
   setWrite6.dstArrayElement = 0;
@@ -1122,7 +1115,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
 
   VkDescriptorBufferInfo binfo7;
   // it will be the camera buffer
-  binfo7.buffer = _lightIndicesTransparentBuffer;
+  binfo7.buffer = _lightIndicesTransparentBuffer[i];
   // at 0 offset
   binfo7.offset = 0;
   // of the size of a camera data struct
@@ -1133,29 +1126,13 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWrite7.pNext = nullptr;
   setWrite7.dstBinding = 7;
   // of the global descriptor
-  setWrite7.dstSet = coarseCullDescriptorSet;
+  setWrite7.dstSet = coarseCullDescriptorSet[i];
 
   setWrite7.descriptorCount = 1;
   setWrite7.dstArrayElement = 0;
   // and the type is uniform buffer
   setWrite7.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   setWrite7.pBufferInfo = &binfo6;
-
-  VkWriteDescriptorSet setWriteIndices_deferredlighting = {};
-  setWriteIndices_deferredlighting.sType =
-      VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWriteIndices_deferredlighting.pNext = nullptr;
-  setWriteIndices_deferredlighting.dstBinding = 9;
-  // of the global descriptor
-  setWriteIndices_deferredlighting.dstSet =
-      gpuScene.deferredLightingDescriptorSet;
-
-  setWriteIndices_deferredlighting.descriptorCount = 1;
-  setWriteIndices_deferredlighting.dstArrayElement = 0;
-  // and the type is uniform buffer
-  setWriteIndices_deferredlighting.descriptorType =
-      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  setWriteIndices_deferredlighting.pBufferInfo = &binfo6;
 
   VkDescriptorImageInfo tradtionalImageInfo{};
   tradtionalImageInfo.imageView = _traditionalCullDebugImageView;
@@ -1164,7 +1141,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setTraditionalDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setTraditionalDebug.pNext = nullptr;
   setTraditionalDebug.dstBinding = 6;
-  setTraditionalDebug.dstSet = coarseCullDescriptorSet;
+  setTraditionalDebug.dstSet = coarseCullDescriptorSet[i];
   setTraditionalDebug.dstArrayElement = 0;
   setTraditionalDebug.descriptorCount = 1;
   setTraditionalDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -1176,6 +1153,43 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
+} // end per-frame loop
+
+  // deferred lighting descriptor set (per-frame)
+  for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+  VkDescriptorBufferInfo binfoDeferredLightData;
+  binfoDeferredLightData.buffer = _pointLightCullingDataBuffer;
+  binfoDeferredLightData.offset = 0;
+  binfoDeferredLightData.range = gpuScene._pointLights.size() * sizeof(vec4) * 2;
+
+  VkWriteDescriptorSet setWrite_Deferredlighting = {};
+  setWrite_Deferredlighting.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWrite_Deferredlighting.pNext = nullptr;
+  setWrite_Deferredlighting.dstBinding = 8;
+  setWrite_Deferredlighting.dstSet = gpuScene.deferredLightingDescriptorSet[f];
+  setWrite_Deferredlighting.descriptorCount = 1;
+  setWrite_Deferredlighting.dstArrayElement = 0;
+  setWrite_Deferredlighting.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWrite_Deferredlighting.pBufferInfo = &binfoDeferredLightData;
+
+  VkDescriptorBufferInfo binfoDeferredLightIndices;
+  binfoDeferredLightIndices.buffer = _lightIndicesBuffer[f];
+  binfoDeferredLightIndices.offset = 0;
+  binfoDeferredLightIndices.range =
+      tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+
+  VkWriteDescriptorSet setWriteIndices_deferredlighting = {};
+  setWriteIndices_deferredlighting.sType =
+      VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteIndices_deferredlighting.pNext = nullptr;
+  setWriteIndices_deferredlighting.dstBinding = 9;
+  setWriteIndices_deferredlighting.dstSet =
+      gpuScene.deferredLightingDescriptorSet[f];
+  setWriteIndices_deferredlighting.descriptorCount = 1;
+  setWriteIndices_deferredlighting.dstArrayElement = 0;
+  setWriteIndices_deferredlighting.descriptorType =
+      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteIndices_deferredlighting.pBufferInfo = &binfoDeferredLightIndices;
 
   std::array<VkWriteDescriptorSet, 2> writes_deferredlighting = {
       setWriteIndices_deferredlighting, setWrite_Deferredlighting};
@@ -1183,6 +1197,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   vkUpdateDescriptorSets(device.getLogicalDevice(),
                          writes_deferredlighting.size(),
                          writes_deferredlighting.data(), 0, nullptr);
+  } // end deferred lighting per-frame loop
 
   // pipeline related
   auto computeShaderCode = readFile(
