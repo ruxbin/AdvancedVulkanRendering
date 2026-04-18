@@ -301,7 +301,7 @@ private:
 
   LightCuller *_lightCuller = nullptr;
 
-  bool useClusterLighting = false;
+  bool useClusterLighting = true;
 
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;

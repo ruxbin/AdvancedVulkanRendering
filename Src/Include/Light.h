@@ -84,7 +84,7 @@ public:
 private:
   VkBuffer _pointLightCullingDataBuffer;
 
-  VkBuffer _xzRangeBuffer;
+  std::vector<VkBuffer> _xzRangeBuffer;
   VkBuffer _lightIndicesBuffer;
   VkBuffer _lightIndicesTransparentBuffer;
   VkImage _xzDebugImage;
@@ -95,7 +95,7 @@ private:
 
   VkDescriptorSetLayout coarseCullSetLayout;
   VkDescriptorPool coarseCullDescriptorPool;
-  VkDescriptorSet coarseCullDescriptorSet;
+  std::vector<VkDescriptorSet> coarseCullDescriptorSet; // per-frame
 
   VkPipelineLayout coarseCullPipelineLayout;
   VkPipeline coarseCullPipeline;

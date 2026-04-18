@@ -603,6 +603,8 @@ void PointLight::Draw(VkCommandBuffer &commandBuffer,
 
 void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
                           uint32_t screen_width, uint32_t screen_heigt) {
+
+  uint32_t currentFrame = gpuScene.currentFrame;
   // results buffer & descriptors
   VkBufferCreateInfo pointlightCullingDataBufferInfo{};
   pointlightCullingDataBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -879,64 +881,57 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
 
   //----------descriptors--------
 
-  VkDescriptorSetLayoutBinding frameDataBinding = {};
-  frameDataBinding.binding = 0;
-  frameDataBinding.descriptorCount = 1;
-  // it's a uniform buffer binding
-  frameDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-  frameDataBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
   VkDescriptorSetLayoutBinding cullParamsBinding = {};
-  cullParamsBinding.binding = 1;
+  cullParamsBinding.binding = 0;
   cullParamsBinding.descriptorCount = 1;
   cullParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   cullParamsBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding pointLightCullingDataBinding = {};
-  pointLightCullingDataBinding.binding = 2;
+  pointLightCullingDataBinding.binding = 1;
   pointLightCullingDataBinding.descriptorCount = 1;
   pointLightCullingDataBinding.descriptorType =
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   pointLightCullingDataBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding depthTextureBinding = {};
-  depthTextureBinding.binding = 3;
+  depthTextureBinding.binding = 2;
   depthTextureBinding.descriptorCount = 1;
   depthTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   depthTextureBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding xzRangeBinding = {};
-  xzRangeBinding.binding = 4;
+  xzRangeBinding.binding = 3;
   xzRangeBinding.descriptorCount = 1;
   xzRangeBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   xzRangeBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding debugViewBinding = {};
-  debugViewBinding.binding = 5;
+  debugViewBinding.binding = 4;
   debugViewBinding.descriptorCount = 1;
   debugViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
   debugViewBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding lightIndicesBinding = {};
-  lightIndicesBinding.binding = 6;
+  lightIndicesBinding.binding = 5;
   lightIndicesBinding.descriptorCount = 1;
   lightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   lightIndicesBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding traditionalViewBinding = {};
-  traditionalViewBinding.binding = 7;
+  traditionalViewBinding.binding = 6;
   traditionalViewBinding.descriptorCount = 1;
   traditionalViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
   traditionalViewBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding lightIndicesTransparentBinding = {};
-  lightIndicesTransparentBinding.binding = 8;
+  lightIndicesTransparentBinding.binding = 7;
   lightIndicesTransparentBinding.descriptorCount = 1;
   lightIndicesTransparentBinding.descriptorType =
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   lightIndicesTransparentBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-  VkDescriptorSetLayoutBinding bindings[] = {frameDataBinding,
+  VkDescriptorSetLayoutBinding bindings[] = {
                                              cullParamsBinding,
                                              pointLightCullingDataBinding,
                                              depthTextureBinding,
@@ -965,8 +960,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -985,39 +979,19 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   // using the pool we just set
   descAllocInfo.descriptorPool = coarseCullDescriptorPool;
   // only 1 descriptor
-  descAllocInfo.descriptorSetCount = 1;
+  descAllocInfo.descriptorSetCount = gpuScene.framesInFlight;
   // using the global data layout
   descAllocInfo.pSetLayouts = &coarseCullSetLayout;
 
+  coarseCullDescriptorSet.resize(gpuScene.framesInFlight);
   vkAllocateDescriptorSets(device.getLogicalDevice(), &descAllocInfo,
-                           &coarseCullDescriptorSet);
+                           coarseCullDescriptorSet.data());
 
-  VkDescriptorBufferInfo binfo;
-  // it will be the camera buffer
-  binfo.buffer = gpuScene.uniformBuffers[0]; // TODO: per-frame LightCuller descriptor sets
-  // at 0 offset
-  binfo.offset = 0;
-  // of the size of a camera data struct
-  binfo.range = sizeof(FrameData);
-
-  VkWriteDescriptorSet setWrite = {};
-  setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  setWrite.pNext = nullptr;
-
-  // we are going to write into binding number 0
-  setWrite.dstBinding = 0;
-  // of the global descriptor
-  setWrite.dstSet = coarseCullDescriptorSet;
-
-  setWrite.descriptorCount = 1;
-  setWrite.dstArrayElement = 0;
-  // and the type is uniform buffer
-  setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-  setWrite.pBufferInfo = &binfo;
-
+for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
+{
   VkDescriptorBufferInfo binfo1;
   // it will be the camera buffer
-  binfo1.buffer = gpuScene.cullParamsBuffers[0]; // TODO: per-frame LightCuller descriptor sets
+  binfo1.buffer = gpuScene.cullParamsBuffers[i]; // TODO: per-frame LightCuller descriptor sets
   // at 0 offset
   binfo1.offset = 0;
   // of the size of a camera data struct
@@ -1028,9 +1002,9 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   setWrite1.pNext = nullptr;
 
   // we are going to write into binding number 0
-  setWrite1.dstBinding = 1;
+  setWrite1.dstBinding = 0;
   // of the global descriptor
-  setWrite1.dstSet = coarseCullDescriptorSet;
+  setWrite1.dstSet = coarseCullDescriptorSet[i];
 
   setWrite1.descriptorCount = 1;
   setWrite1.dstArrayElement = 0;
@@ -1051,9 +1025,9 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   setWrite2.pNext = nullptr;
 
   // we are going to write into binding number 0
-  setWrite2.dstBinding = 2;
+  setWrite2.dstBinding = 1;
   // of the global descriptor
-  setWrite2.dstSet = coarseCullDescriptorSet;
+  setWrite2.dstSet = coarseCullDescriptorSet[i];
 
   setWrite2.descriptorCount = 1;
   setWrite2.dstArrayElement = 0;
@@ -1083,8 +1057,8 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   VkWriteDescriptorSet setWriteDepth;
   setWriteDepth.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWriteDepth.pNext = nullptr;
-  setWriteDepth.dstBinding = 3;
-  setWriteDepth.dstSet = coarseCullDescriptorSet;
+  setWriteDepth.dstBinding = 2;
+  setWriteDepth.dstSet = coarseCullDescriptorSet[i];
   setWriteDepth.dstArrayElement = 0;
   setWriteDepth.descriptorCount = 1;
   setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -1102,7 +1076,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   setWrite4.pNext = nullptr;
 
   // we are going to write into binding number 0
-  setWrite4.dstBinding = 4;
+  setWrite4.dstBinding = 3;
   // of the global descriptor
   setWrite4.dstSet = coarseCullDescriptorSet;
 
@@ -1118,7 +1092,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   VkWriteDescriptorSet setWriteDebug;
   setWriteDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWriteDebug.pNext = nullptr;
-  setWriteDebug.dstBinding = 5;
+  setWriteDebug.dstBinding = 4;
   setWriteDebug.dstSet = coarseCullDescriptorSet;
   setWriteDebug.dstArrayElement = 0;
   setWriteDebug.descriptorCount = 1;
@@ -1136,7 +1110,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   VkWriteDescriptorSet setWrite6 = {};
   setWrite6.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setWrite6.pNext = nullptr;
-  setWrite6.dstBinding = 6;
+  setWrite6.dstBinding = 5;
   // of the global descriptor
   setWrite6.dstSet = coarseCullDescriptorSet;
 
@@ -1189,15 +1163,15 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   VkWriteDescriptorSet setTraditionalDebug;
   setTraditionalDebug.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   setTraditionalDebug.pNext = nullptr;
-  setTraditionalDebug.dstBinding = 8;
+  setTraditionalDebug.dstBinding = 6;
   setTraditionalDebug.dstSet = coarseCullDescriptorSet;
   setTraditionalDebug.dstArrayElement = 0;
   setTraditionalDebug.descriptorCount = 1;
   setTraditionalDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
   setTraditionalDebug.pImageInfo = &tradtionalImageInfo;
 
-  std::array<VkWriteDescriptorSet, 9> writes = {
-      setWrite,      setWrite1, setWrite2, setWrite4,          setWriteDebug,
+  std::array<VkWriteDescriptorSet, 8> writes = {
+      setWrite1, setWrite2, setWrite4,          setWriteDebug,
       setWriteDepth, setWrite6, setWrite7, setTraditionalDebug};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
@@ -1255,11 +1229,14 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   clearDebugViewStageInfo.module = clearDebugViewModule;
   clearDebugViewStageInfo.pName = "ClearDebugView";
 
+
+  VkDescriptorSetLayout coarseCullPipelineSetLayoutInfos[] = {gpuScene.globalSetLayout, coarseCullSetLayout};
+
   VkPipelineLayoutCreateInfo coarseCullPipelineLayoutInfo{};
   coarseCullPipelineLayoutInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  coarseCullPipelineLayoutInfo.setLayoutCount = 1;
-  coarseCullPipelineLayoutInfo.pSetLayouts = &coarseCullSetLayout;
+  coarseCullPipelineLayoutInfo.setLayoutCount = 2;
+  coarseCullPipelineLayoutInfo.pSetLayouts = coarseCullPipelineSetLayoutInfos;
   coarseCullPipelineLayoutInfo.pushConstantRangeCount = 0;
 
   if (vkCreatePipelineLayout(device.getLogicalDevice(),
@@ -1314,10 +1291,12 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer &commandBuffer,
                                         const GpuScene &gpuScene,
                                         uint32_t screen_width,
                                         uint32_t screen_heigt) {
-  uint32_t dynamicoffsets[1] = {0};
+
+  uint32_t currentFrame = gpuScene.currentFrame;
+  VkDescriptorSet clusterLightCullSets[] = {gpuScene.globalDescriptorSets[currentFrame], coarseCullDescriptorSet[currentFrame]};
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          coarseCullPipelineLayout, 0, 1,
-                          &coarseCullDescriptorSet, 1, dynamicoffsets);
+                          coarseCullPipelineLayout, 0, 2,
+                          clusterLightCullSets, 0, nullptr);
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                     clearDebugViewPipeline);
   vkCmdDispatch(commandBuffer,

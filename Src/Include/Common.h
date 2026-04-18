@@ -77,7 +77,7 @@ struct FrameConstants {
   float nearPlane;
   float farPlane;
   uint32_t frameCounter;
-  alignas(16) vec2 physicalSize;
+  vec2 physicalSize;
 };
 
 struct FrameData {

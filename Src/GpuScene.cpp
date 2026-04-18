@@ -1798,7 +1798,7 @@ void GpuScene::init_GlobaldescriptorSet() {
   camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
   // we use it from the vertex shader
-  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutBinding bindings[] = {camBufferBinding};
 
@@ -4316,7 +4316,7 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
 
 void GpuScene::createSyncObjects() {
   // framesInFlight 由 swapchain 图像数量决定
-    framesInFlight =  device.getSwapChainImageCount();
+    framesInFlight = device.getSwapChainImageCount();
   
   imageAvailableSemaphores.resize(framesInFlight);
   renderFinishedSemaphores.resize(framesInFlight);

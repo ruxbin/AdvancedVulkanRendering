@@ -10,7 +10,7 @@ cbuffer frameData
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(1,0)]] cbuffer cullParams
+[[vk::binding(0,1)]] cbuffer cullParams
 {
 uint totalChunks;
 uint totalPointLights;
@@ -18,17 +18,17 @@ uint totalSpotLights;
 Frustum frustum;
 }
 
-[[vk::binding(2,0)]]
+[[vk::binding(1,1)]]
 StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world position
 
-[[vk::binding(3,0)]] Texture2D<float> inDepth; //Texture2D<half> -->  generated SPIR-V is invalid: [VUID-StandaloneSpirv-OpTypeImage-04656] Expected Sampled Type to be a 32-bit int, 64-bit int or 32-bit float scalar type for Vulkan environment
+[[vk::binding(2,1)]] Texture2D<float> inDepth; //Texture2D<half> -->  generated SPIR-V is invalid: [VUID-StandaloneSpirv-OpTypeImage-04656] Expected Sampled Type to be a 32-bit int, 64-bit int or 32-bit float scalar type for Vulkan environment
                                                                         //%type_2d_image = OpTypeImage % half2 D2 0 0 1 Unknown
 
-[[vk::binding(4,0)]] RWStructuredBuffer<uint16_t4> lightXZRange; //-enable-16bit-types
-[[vk::binding(5,0)]] RWTexture2D<uint> lightDebug;            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
-[[vk::binding(6,0)]] RWStructuredBuffer<uint> lightIndices;
-[[vk::binding(7,0)]] RWTexture2D<float4> tradtionDebug;
-[[vk::binding(8,0)]] RWStructuredBuffer<uint> lightIndicesTransparent;
+[[vk::binding(3,1)]] RWStructuredBuffer<uint16_t4> lightXZRange; //-enable-16bit-types
+[[vk::binding(4,1)]] RWTexture2D<uint> lightDebug;            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
+[[vk::binding(5,1)]] RWStructuredBuffer<uint> lightIndices;
+[[vk::binding(6,1)]] RWTexture2D<float4> tradtionDebug;
+[[vk::binding(7,1)]] RWStructuredBuffer<uint> lightIndicesTransparent;
 
 
 //calculate each light's xzrange
