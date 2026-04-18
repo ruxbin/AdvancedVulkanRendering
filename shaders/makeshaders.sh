@@ -38,4 +38,8 @@ echo compiling drawOccluderVS
 echo compiling drawclustershadowVS
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E RenderSceneVSShadow -I drawcluster.hlsl -S vs -T spirv -O drawclusterShadow.vs.spv
 
+echo compiling drawoccludersvs
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E RenderSceneVS -I drawoccluders.hlsl -S vs -T spirv -O occluders.vs.spv
 
+echo compiling drawoccludersps
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/CPP/ShaderConductor/Build/ninja-linux-gcc-x64-RelWithDebInfo/Bin/ShaderConductorCmd -E WireframePS -I drawoccluders.hlsl -S ps -T spirv -O occluders.wireframe.ps.spv

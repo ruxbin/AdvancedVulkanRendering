@@ -3273,9 +3273,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
 
-
+  const Frustum &cascadeFrustum = maincamera->getFrustum();
     {
-            const Frustum &cascadeFrustum = maincamera->getFrustum();
+            
     // TODO: compute proper cascade frustum from shadow VP matrix
   uint32_t opaqueCount = applMesh->_opaqueChunkCount;
   uint32_t alphaMaskedCount = applMesh->_alphaMaskedChunkCount;

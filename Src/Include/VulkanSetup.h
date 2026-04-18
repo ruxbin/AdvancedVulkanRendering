@@ -4,7 +4,7 @@
 #elif defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined(__gnu_linux__)
-#define VK_USE_PLATFORM_XLIB_KHR
+#define VK_USE_PLATFORM_WAYLAND_KHR
 #endif
 #include "vulkan/vulkan.h"
 #include <algorithm>
@@ -21,7 +21,7 @@
 #ifdef __ANDROID__
 #include "vulkan/vulkan_android.h"
 #elif defined(__gnu_linux__)
-#include "vulkan/vulkan_xlib.h"
+#include "vulkan/vulkan_wayland.h"
 #endif
 
 #include "Common.h"
@@ -107,7 +107,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
 #elif defined(_WIN32)
       "VK_KHR_win32_surface"
 #elif defined(__gnu_linux__)
-	      "VK_KHR_xlib_surface"
+	      "VK_KHR_wayland_surface"
 #endif
   };
   constexpr static const char *const deviceExtensionNames[] = {

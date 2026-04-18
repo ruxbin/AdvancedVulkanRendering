@@ -20,7 +20,7 @@ include_directories(${SDL2_INCLUDE_DIRS})
 set(ROOT_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../../)
 
 # ImGui
-set(IMGUI_DIR ${CMAKE_CURRENT_LIST_DIR}/../thirdparty/imgui)
+set(IMGUI_DIR ${CMAKE_CURRENT_LIST_DIR}/../ThirdParty/imgui)
 include_directories(${IMGUI_DIR} ${IMGUI_DIR}/backends)
 
 set(SOURCES
