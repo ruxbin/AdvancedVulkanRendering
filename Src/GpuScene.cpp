@@ -3429,11 +3429,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       transitionImageLayout(_lightCuller->GetTraditionalDebugImage(),
                             VK_FORMAT_R32G32B32A32_SFLOAT,
                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, commandBuffer);
-      // transitionImageLayout(device.getWindowDepthImage(),
-      // device.getWindowDepthFormat(),
-      // VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-      // VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);//read
-      // depth while write stencil in the point lighting pass
+      
       _lightCuller->ClusterLightForScreen(commandBuffer, device, *this,
                                           device.getSwapChainExtent().width,
                                           device.getSwapChainExtent().height);

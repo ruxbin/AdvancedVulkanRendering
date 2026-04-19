@@ -10,13 +10,17 @@ cbuffer frameData
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(0,1)]] cbuffer cullParams
-{
-uint totalChunks;
-uint totalPointLights;
-uint totalSpotLights;
-Frustum frustum;
-}
+[[vk::binding(0,1)]] cbuffer cullParams {
+    uint opaqueChunkCount;
+    uint alphaMaskedChunkCount;
+    uint transparentChunkCount;
+    uint totalPointLights;
+    uint totalSpotLights;
+    uint hizMipLevels;
+    float2 screenSize;
+    float4x4 viewProjMatrix;
+    Frustum frustum;
+};
 
 [[vk::binding(1,1)]]
 StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world position
