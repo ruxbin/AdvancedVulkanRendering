@@ -327,18 +327,18 @@ private:
   void generateHiZPyramid(VkCommandBuffer commandBuffer);
 
   // Scalable Ambient Obscurance (SAO)
-  VkImage _saoDepthPyramid = VK_NULL_HANDLE;
-  VkDeviceMemory _saoDepthPyramidMemory = VK_NULL_HANDLE;
-  VkImageView _saoDepthPyramidView = VK_NULL_HANDLE;
-  std::vector<VkImageView> _saoMipViews;
+  std::vector<VkImage> _saoDepthPyramid;                     // per-frame
+  std::vector<VkDeviceMemory> _saoDepthPyramidMemory;        // per-frame
+  std::vector<VkImageView> _saoDepthPyramidView;             // per-frame
+  std::vector<std::vector<VkImageView>> _saoMipViews;        // [frame][mip]
   uint32_t _saoMipLevels = 0;
   uint32_t _saoWidth = 0, _saoHeight = 0;
-  VkDescriptorSet _saoCopyDescriptorSet = VK_NULL_HANDLE;
-  std::vector<VkDescriptorSet> _saoDownsampleDescriptorSets;
+  std::vector<VkDescriptorSet> _saoCopyDescriptorSet;        // per-frame
+  std::vector<std::vector<VkDescriptorSet>> _saoDownsampleDescriptorSets; // [frame][mip-1]
 
-  VkImage _aoTexture = VK_NULL_HANDLE;
-  VkDeviceMemory _aoTextureMemory = VK_NULL_HANDLE;
-  VkImageView _aoTextureView = VK_NULL_HANDLE;
+  std::vector<VkImage> _aoTexture;                           // per-frame
+  std::vector<VkDeviceMemory> _aoTextureMemory;              // per-frame
+  std::vector<VkImageView> _aoTextureView;                   // per-frame
 
   VkDescriptorSetLayout _saoSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool _saoDescriptorPool = VK_NULL_HANDLE;

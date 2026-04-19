@@ -5078,32 +5078,39 @@ void GpuScene::createSAOResources() {
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_saoDepthPyramid);
+    _saoDepthPyramid.resize(framesInFlight);
+    _saoDepthPyramidMemory.resize(framesInFlight);
+    _saoDepthPyramidView.resize(framesInFlight);
+    _saoMipViews.resize(framesInFlight);
+
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+    vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_saoDepthPyramid[f]);
 
     VkMemoryRequirements memReq;
-    vkGetImageMemoryRequirements(device.getLogicalDevice(), _saoDepthPyramid, &memReq);
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _saoDepthPyramid[f], &memReq);
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReq.size;
     allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_saoDepthPyramidMemory);
-    vkBindImageMemory(device.getLogicalDevice(), _saoDepthPyramid, _saoDepthPyramidMemory, 0);
+    vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_saoDepthPyramidMemory[f]);
+    vkBindImageMemory(device.getLogicalDevice(), _saoDepthPyramid[f], _saoDepthPyramidMemory[f], 0);
 
     // Full mip chain view for sampling in SAO shader
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = _saoDepthPyramid;
+    viewInfo.image = _saoDepthPyramid[f];
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = VK_FORMAT_R32_SFLOAT;
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, _saoMipLevels, 0, 1};
-    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_saoDepthPyramidView);
+    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_saoDepthPyramidView[f]);
 
     // Per-mip views for compute writes
-    _saoMipViews.resize(_saoMipLevels);
+    _saoMipViews[f].resize(_saoMipLevels);
     for (uint32_t i = 0; i < _saoMipLevels; ++i) {
       viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, i, 1, 0, 1};
-      vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_saoMipViews[i]);
+      vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_saoMipViews[f][i]);
     }
+    } // end per-frame
   }
 
   // --- 2. AO output texture (R8_UNORM, full resolution) ---
@@ -5121,69 +5128,75 @@ void GpuScene::createSAOResources() {
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_aoTexture);
+    _aoTexture.resize(framesInFlight);
+    _aoTextureMemory.resize(framesInFlight);
+    _aoTextureView.resize(framesInFlight);
+
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+    vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_aoTexture[f]);
 
     VkMemoryRequirements memReq;
-    vkGetImageMemoryRequirements(device.getLogicalDevice(), _aoTexture, &memReq);
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _aoTexture[f], &memReq);
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReq.size;
     allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_aoTextureMemory);
-    vkBindImageMemory(device.getLogicalDevice(), _aoTexture, _aoTextureMemory, 0);
+    vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_aoTextureMemory[f]);
+    vkBindImageMemory(device.getLogicalDevice(), _aoTexture[f], _aoTextureMemory[f], 0);
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = _aoTexture;
+    viewInfo.image = _aoTexture[f];
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = VK_FORMAT_R8_UNORM;
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_aoTextureView);
+    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_aoTextureView[f]);
+    } // end per-frame
   }
 
   // --- 3. Descriptor sets for SAO depth pyramid building (reuse HiZ pipeline) ---
   {
-    // Allocate from HiZ descriptor pool: 1 copy set + (mipLevels - 1) downsample sets
-    // We create a separate pool for SAO
+    uint32_t setsPerFrame = _saoMipLevels; // 1 copy + (mipLevels-1) downsample
     VkDescriptorPoolSize poolSizes[] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, _saoMipLevels},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, _saoMipLevels},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, _saoMipLevels * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, _saoMipLevels * framesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = _saoMipLevels;
+    poolInfo.maxSets = setsPerFrame * framesInFlight;
 
     VkDescriptorPool saoDepthPool;
     vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &saoDepthPool);
 
-    // Copy descriptor set: depth texture → SAO pyramid mip 0
-    {
+    // Copy descriptor sets: depth texture → SAO pyramid mip 0
+    _saoCopyDescriptorSet.resize(framesInFlight);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
       VkDescriptorSetAllocateInfo allocInfo{};
       allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
       allocInfo.descriptorPool = saoDepthPool;
       allocInfo.descriptorSetCount = 1;
       allocInfo.pSetLayouts = &_hizCopySetLayout;
-      vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoCopyDescriptorSet);
+      vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoCopyDescriptorSet[f]);
 
       VkDescriptorImageInfo srcInfo{};
-      srcInfo.imageView = device.getWindowDepthOnlyImageView(0);
+      srcInfo.imageView = device.getWindowDepthOnlyImageView(f);
       srcInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
       VkDescriptorImageInfo dstInfo{};
-      dstInfo.imageView = _saoMipViews[0];
+      dstInfo.imageView = _saoMipViews[f][0];
       dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
       VkWriteDescriptorSet writes[2] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[0].dstSet = _saoCopyDescriptorSet;
+      writes[0].dstSet = _saoCopyDescriptorSet[f];
       writes[0].dstBinding = 0;
       writes[0].descriptorCount = 1;
       writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
       writes[0].pImageInfo = &srcInfo;
       writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[1].dstSet = _saoCopyDescriptorSet;
+      writes[1].dstSet = _saoCopyDescriptorSet[f];
       writes[1].dstBinding = 1;
       writes[1].descriptorCount = 1;
       writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -5192,37 +5205,40 @@ void GpuScene::createSAOResources() {
     }
 
     // Downsample descriptor sets: mip[n-1] → mip[n]
-    _saoDownsampleDescriptorSets.resize(_saoMipLevels - 1);
-    for (uint32_t m = 1; m < _saoMipLevels; ++m) {
-      VkDescriptorSetAllocateInfo allocInfo{};
-      allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-      allocInfo.descriptorPool = saoDepthPool;
-      allocInfo.descriptorSetCount = 1;
-      allocInfo.pSetLayouts = &_hizDownsampleSetLayout;
-      vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoDownsampleDescriptorSets[m - 1]);
+    _saoDownsampleDescriptorSets.resize(framesInFlight);
+    for (uint32_t f = 0; f < framesInFlight; ++f) {
+      _saoDownsampleDescriptorSets[f].resize(_saoMipLevels - 1);
+      for (uint32_t m = 1; m < _saoMipLevels; ++m) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = saoDepthPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &_hizDownsampleSetLayout;
+        vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoDownsampleDescriptorSets[f][m - 1]);
 
-      VkDescriptorImageInfo srcInfo{};
-      srcInfo.imageView = _saoMipViews[m - 1];
-      srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo srcInfo{};
+        srcInfo.imageView = _saoMipViews[f][m - 1];
+        srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-      VkDescriptorImageInfo dstInfo{};
-      dstInfo.imageView = _saoMipViews[m];
-      dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorImageInfo dstInfo{};
+        dstInfo.imageView = _saoMipViews[f][m];
+        dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-      VkWriteDescriptorSet writes[2] = {};
-      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[0].dstSet = _saoDownsampleDescriptorSets[m - 1];
-      writes[0].dstBinding = 0;
-      writes[0].descriptorCount = 1;
-      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      writes[0].pImageInfo = &srcInfo;
-      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[1].dstSet = _saoDownsampleDescriptorSets[m - 1];
-      writes[1].dstBinding = 1;
-      writes[1].descriptorCount = 1;
-      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      writes[1].pImageInfo = &dstInfo;
-      vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+        VkWriteDescriptorSet writes[2] = {};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = _saoDownsampleDescriptorSets[f][m - 1];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[0].pImageInfo = &srcInfo;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = _saoDownsampleDescriptorSets[f][m - 1];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].pImageInfo = &dstInfo;
+        vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+      }
     }
   }
 
@@ -5306,28 +5322,27 @@ void GpuScene::createSAOResources() {
     allocInfo.pSetLayouts = layouts.data();
     vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, _saoDescriptorSets.data());
 
-    // Write descriptor set (static bindings - pyramid and AO output don't change per frame)
-    // Binding 0: depth texture (window depth) — updated later per-frame? No, same view.
-    VkDescriptorImageInfo depthInfo{};
-    depthInfo.imageView = device.getWindowDepthOnlyImageView(0);
-    depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-
-    // Binding 1: SAO depth pyramid (full mip chain view for read)
-    VkDescriptorImageInfo pyramidInfo{};
-    pyramidInfo.imageView = _saoDepthPyramidView;
-    pyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    // Binding 3: AO output
-    VkDescriptorImageInfo aoInfo{};
-    aoInfo.imageView = _aoTextureView;
-    aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
     for (uint32_t i = 0; i < framesInFlight; i++) {
+      // Binding 0: depth texture (per-frame)
+      VkDescriptorImageInfo depthInfo{};
+      depthInfo.imageView = device.getWindowDepthOnlyImageView(i);
+      depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+      // Binding 1: SAO depth pyramid (per-frame)
+      VkDescriptorImageInfo pyramidInfo{};
+      pyramidInfo.imageView = _saoDepthPyramidView[i];
+      pyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
       // Binding 2: camera params uniform buffer (per-frame)
       VkDescriptorBufferInfo bufferInfo{};
       bufferInfo.buffer = uniformBuffers[i];
       bufferInfo.offset = 0;
       bufferInfo.range = sizeof(FrameData);
+
+      // Binding 3: AO output (per-frame)
+      VkDescriptorImageInfo aoInfo{};
+      aoInfo.imageView = _aoTextureView[i];
+      aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
       VkWriteDescriptorSet writes[4] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -5362,11 +5377,11 @@ void GpuScene::createSAOResources() {
 
   // --- 5. Update deferred lighting descriptor set with AO texture at binding 10 ---
   {
-    VkDescriptorImageInfo aoImageInfo{};
-    aoImageInfo.imageView = _aoTextureView;
-    aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
     for (uint32_t f = 0; f < framesInFlight; ++f) {
+      VkDescriptorImageInfo aoImageInfo{};
+      aoImageInfo.imageView = _aoTextureView[f];
+      aoImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
       VkWriteDescriptorSet write{};
       write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       write.dstSet = deferredLightingDescriptorSet[f];
@@ -5391,7 +5406,7 @@ void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = _saoDepthPyramid;
+    barrier.image = _saoDepthPyramid[currentFrame];
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, _saoMipLevels, 0, 1};
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -5404,7 +5419,7 @@ void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {
     uint32_t pushData[4] = {_saoWidth, _saoHeight, _saoWidth, _saoHeight};
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _hizCopyPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-        _hizPipelineLayout, 0, 1, &_saoCopyDescriptorSet, 0, nullptr);
+        _hizPipelineLayout, 0, 1, &_saoCopyDescriptorSet[currentFrame], 0, nullptr);
     vkCmdPushConstants(commandBuffer, _hizPipelineLayout,
         VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
     vkCmdDispatch(commandBuffer, (_saoWidth + 7) / 8, (_saoHeight + 7) / 8, 1);
@@ -5423,7 +5438,7 @@ void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = _saoDepthPyramid;
+    barrier.image = _saoDepthPyramid[currentFrame];
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -5433,7 +5448,7 @@ void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {
     uint32_t pushData[4] = {prevW, prevH, mipW, mipH};
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, _hizDownsamplePipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-        _hizPipelineLayout, 1, 1, &_saoDownsampleDescriptorSets[mip - 1], 0, nullptr);
+        _hizPipelineLayout, 1, 1, &_saoDownsampleDescriptorSets[currentFrame][mip - 1], 0, nullptr);
     vkCmdPushConstants(commandBuffer, _hizPipelineLayout,
         VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushData), pushData);
     vkCmdDispatch(commandBuffer, (mipW + 7) / 8, (mipH + 7) / 8, 1);
@@ -5447,7 +5462,7 @@ void GpuScene::generateSAODepthPyramid(VkCommandBuffer commandBuffer) {
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = _saoDepthPyramid;
+    barrier.image = _saoDepthPyramid[currentFrame];
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, _saoMipLevels - 1, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -5468,7 +5483,7 @@ void GpuScene::dispatchSAO(VkCommandBuffer commandBuffer) {
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = _aoTexture;
+    barrier.image = _aoTexture[currentFrame];
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -5493,7 +5508,7 @@ void GpuScene::dispatchSAO(VkCommandBuffer commandBuffer) {
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = _aoTexture;
+    barrier.image = _aoTexture[currentFrame];
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
