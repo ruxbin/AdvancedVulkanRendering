@@ -33,6 +33,7 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Shadow.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Light.cpp
     ${CMAKE_CURRENT_LIST_DIR}/AssetLoader.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/Raytracing.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

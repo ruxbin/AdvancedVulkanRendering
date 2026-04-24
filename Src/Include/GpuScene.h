@@ -302,6 +302,10 @@ private:
   LightCuller *_lightCuller = nullptr;
 
   bool useClusterLighting = true;
+  bool useRayTracing = false;     // ImGui toggle: switch to full RT path
+
+  // Hardware ray tracing (optional path).
+  class RayTracing *_raytracing = nullptr;
 
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;
@@ -707,6 +711,7 @@ public:
   friend class PointLight;
   friend class SpotLight;
   friend class LightCuller;
+  friend class RayTracing;
   FrameConstants frameConstants{
       vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),
       vec3(1, 1, 1), 1.f, 10.f, 1.f};

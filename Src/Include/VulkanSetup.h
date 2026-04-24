@@ -50,6 +50,7 @@ VkImageView getWindowDepthOnlyImageView(uint32_t frameIndex)const { return depth
 VkFormat getWindowDepthFormat()const{return depthFormat;}
 VkFormat getSwapChainImageFormat()const { return swapChainImageFormat; }
 VkImageView getSwapChainImageView(int i)const { return swapChainImageViews[i]; }
+VkImage getSwapChainImage(int i)const { return swapChainImages[i]; }
 VkImage getWindowDepthImage(uint32_t frameIndex)const { return depthImage[frameIndex]; }
 uint32_t getSwapChainImageCount() const {return swapChainImages.size();}
 uint32_t findMemoryType(uint32_t typeFilter,
@@ -67,6 +68,10 @@ uint32_t findMemoryType(uint32_t typeFilter,
 
       throw std::runtime_error("failed to find suitable memory type!");
     }
+#ifndef __ANDROID__
+const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& getRTPipelineProperties() const { return rtPipelineProperties; }
+const VkPhysicalDeviceAccelerationStructurePropertiesKHR& getASProperties() const { return asProperties; }
+#endif
 private:
   std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -93,6 +98,12 @@ private:
 
   VkRenderPass renderPass;
 
+#ifndef __ANDROID__
+  VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+  VkPhysicalDeviceAccelerationStructurePropertiesKHR asProperties{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+#endif
 
 
 VkDebugUtilsMessengerEXT debugMessenger;
@@ -117,7 +128,14 @@ VkDebugUtilsMessengerEXT debugMessenger;
 VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME,
 VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,  // supress validation error pCreateInfos[0].pStages[0] SPIR-V Extension SPV_KHR_non_semantic_info was declared, but one of the following requirements is required
 //VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
-VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME
+VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,
+// --- Ray tracing ---
+VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+VK_KHR_SPIRV_1_4_EXTENSION_NAME,
+VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME
 #endif
   };
 #ifndef __ANDROID__
@@ -430,8 +448,10 @@ VkFormat depthFormat;
     throw std::runtime_error("failed to find suitable memory type!");
   }*/
 
+public:
   VkCommandBuffer beginSingleTimeCommands()const;
   void endSingleTimeCommands(VkCommandBuffer commandBuffer)const;
+private:
   void createRenderPass();
   void cleanupSwapChain();
   void createDepthResources();

@@ -3,6 +3,7 @@
 #include "AssetLoader.h"
 #include "Light.h"
 #include "ObjLoader.h"
+#include "Raytracing.h"
 #include "Shadow.h"
 #include "ThirdParty/lzfse.h"
 #include "VulkanCompat.h"
@@ -1801,7 +1802,13 @@ void GpuScene::init_GlobaldescriptorSet() {
   camBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
   // we use it from the vertex shader
-  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+  camBufferBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
+                                VK_SHADER_STAGE_FRAGMENT_BIT |
+                                VK_SHADER_STAGE_COMPUTE_BIT |
+                                VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                                VK_SHADER_STAGE_MISS_BIT_KHR;
 
   VkDescriptorSetLayoutBinding bindings[] = {camBufferBinding};
 
@@ -2267,7 +2274,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -2285,6 +2295,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
             device.findMemoryType(memRequirements.memoryTypeBits,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryAllocateFlagsInfo allocFlagsInfo{};
+        allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+        allocInfo.pNext = &allocFlagsInfo;
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
                              &applVertexBufferMemory) != VK_SUCCESS) {
@@ -2306,7 +2320,9 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -2324,6 +2340,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
             device.findMemoryType(memRequirements.memoryTypeBits,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryAllocateFlagsInfo allocFlagsInfo{};
+        allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+        allocInfo.pNext = &allocFlagsInfo;
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
                              &applNormalBufferMemory) != VK_SUCCESS) {
@@ -2344,7 +2364,9 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -2362,6 +2384,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
             device.findMemoryType(memRequirements.memoryTypeBits,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryAllocateFlagsInfo allocFlagsInfo{};
+        allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+        allocInfo.pNext = &allocFlagsInfo;
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
                              &applTangentBufferMemory) != VK_SUCCESS) {
@@ -2382,7 +2408,9 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -2400,6 +2428,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
             device.findMemoryType(memRequirements.memoryTypeBits,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryAllocateFlagsInfo allocFlagsInfo{};
+        allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+        allocInfo.pNext = &allocFlagsInfo;
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
                              &applUVBufferMemory) != VK_SUCCESS) {
@@ -2420,7 +2452,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
-        bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -2438,6 +2473,10 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
             device.findMemoryType(memRequirements.memoryTypeBits,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryAllocateFlagsInfo allocFlagsInfo{};
+        allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+        allocInfo.pNext = &allocFlagsInfo;
 
         if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
                              &applIndexMemory) != VK_SUCCESS) {
@@ -3273,6 +3312,20 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
 
+  // --- Lazy init of LightCuller and RayTracing on first frame ---
+  if (!_lightCuller) {
+    _lightCuller = new LightCuller();
+    _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width,
+                          device.getSwapChainExtent().height);
+  }
+  if (!_raytracing) {
+    _raytracing = new RayTracing(const_cast<VulkanDevice &>(device), *this);
+    _raytracing->Init();
+    _raytracing->BuildAccelerationStructures();
+    _raytracing->CreatePipelineAndSBT();
+    _raytracing->CreateOutputImagesAndDescriptorSet();
+  }
+
   const Frustum &cascadeFrustum = maincamera->getFrustum();
     {
             
@@ -3347,6 +3400,20 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
   if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
     throw std::runtime_error("failed to begin recording command buffer!");
+  }
+
+  // --- Fast RT path: skip the entire raster pipeline ---
+  if (useRayTracing) {
+    VkExtent2D extent = device.getSwapChainExtent();
+    _raytracing->RecordTraceRays(commandBuffer, (uint32_t)imageIndex, extent);
+    _raytracing->RecordBlitToSwapchain(commandBuffer, (uint32_t)imageIndex);
+    _raytracing->BeginImGuiCompositePass(commandBuffer, (uint32_t)imageIndex, extent);
+    renderImGuiOverlay(commandBuffer, (uint32_t)imageIndex);
+    _raytracing->EndImGuiCompositePass(commandBuffer);
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+      throw std::runtime_error("failed to record command buffer!");
+    }
+    return;
   }
 
   {_shadow->RenderShadowMap(commandBuffer, *this, device); }
@@ -5613,6 +5680,12 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   ImGui::Text("Opaque:    %u / %u", _cullingStats.visibleOpaque, _cullingStats.totalOpaque);
   ImGui::Text("AlphaMask: %u / %u", _cullingStats.visibleAlphaMask, _cullingStats.totalAlphaMask);
   ImGui::Text("Transp:    %u / %u", _cullingStats.visibleTransparent, _cullingStats.totalTransparent);
+
+  ImGui::Separator();
+  ImGui::Checkbox("Ray Tracing", &useRayTracing);
+  if (useRayTracing) {
+    ImGui::TextDisabled("(raster pipeline skipped)");
+  }
 
   ImGui::End();
 

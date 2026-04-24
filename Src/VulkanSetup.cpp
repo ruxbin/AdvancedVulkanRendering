@@ -301,6 +301,58 @@ void VulkanDevice::createLogicalDevice() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &float16_features};
   vkGetPhysicalDeviceFeatures2(physicalDevice, &device_features2);
 
+  // --- Ray tracing additions: explicitly require Vulkan12 features the RT path needs ---
+#ifndef __ANDROID__
+  float16_features.bufferDeviceAddress = VK_TRUE;
+  float16_features.descriptorIndexing = VK_TRUE;
+  float16_features.runtimeDescriptorArray = VK_TRUE;
+  float16_features.descriptorBindingPartiallyBound = VK_TRUE;
+  float16_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+  float16_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+  float16_features.scalarBlockLayout = VK_TRUE;
+
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+      nullptr};
+  VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+      nullptr};
+  // Query and verify support
+  {
+    VkPhysicalDeviceFeatures2 probe{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &asFeatures};
+    asFeatures.pNext = &rtPipelineFeatures;
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &probe);
+    if (!asFeatures.accelerationStructure || !rtPipelineFeatures.rayTracingPipeline) {
+      spdlog::warn("Ray tracing not supported on this device — RT toggle will be unavailable.");
+    } else {
+      spdlog::info("Ray tracing supported (AS + RT pipeline).");
+    }
+    asFeatures.pNext = nullptr;  // detach so we can reattach below into the device chain
+    // Force-enable only the bits we need so we don't request unsupported ones
+    VkBool32 supportedAS = asFeatures.accelerationStructure;
+    VkBool32 supportedRT = rtPipelineFeatures.rayTracingPipeline;
+    asFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, nullptr};
+    rtPipelineFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, nullptr};
+    asFeatures.accelerationStructure = supportedAS;
+    rtPipelineFeatures.rayTracingPipeline = supportedRT;
+  }
+
+  // Cache RT pipeline / AS properties for SBT layout & build sizes
+  {
+    rtPipelineProperties.pNext = &asProperties;
+    asProperties.pNext = nullptr;
+    VkPhysicalDeviceProperties2 props{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &rtPipelineProperties};
+    vkGetPhysicalDeviceProperties2(physicalDevice, &props);
+    rtPipelineProperties.pNext = nullptr;  // detach
+    spdlog::info("RT shaderGroupHandleSize={} baseAlignment={} handleAlignment={}",
+                 rtPipelineProperties.shaderGroupHandleSize,
+                 rtPipelineProperties.shaderGroupBaseAlignment,
+                 rtPipelineProperties.shaderGroupHandleAlignment);
+  }
+#endif
+
   // bool bindless_supported = indexing_features.descriptorBindingPartiallyBound
   // && indexing_features.runtimeDescriptorArray;
 
@@ -338,6 +390,13 @@ void VulkanDevice::createLogicalDevice() {
   physical_features2.pNext = &float16_features;
   float16_features.pNext = &synchron2_features;
   synchron2_features.pNext = &storagebuffer16bit;
+#ifndef __ANDROID__
+  storagebuffer16bit.pNext = &asFeatures;
+  asFeatures.pNext = &rtPipelineFeatures;
+  rtPipelineFeatures.pNext = nullptr;
+#else
+  storagebuffer16bit.pNext = nullptr;
+#endif
   // if (bindless_supported) {
   //  This should be already set to VK_TRUE, as we queried before.
   //    indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
