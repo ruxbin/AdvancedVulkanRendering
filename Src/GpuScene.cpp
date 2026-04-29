@@ -3322,8 +3322,8 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     _raytracing = new RayTracing(const_cast<VulkanDevice &>(device), *this);
     _raytracing->Init();
     _raytracing->BuildAccelerationStructures();
-    _raytracing->CreatePipelineAndSBT();
     _raytracing->CreateOutputImagesAndDescriptorSet();
+    _raytracing->CreatePipelineAndSBT();
   }
 
   const Frustum &cascadeFrustum = maincamera->getFrustum();

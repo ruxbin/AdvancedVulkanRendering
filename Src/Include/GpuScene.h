@@ -302,7 +302,7 @@ private:
   LightCuller *_lightCuller = nullptr;
 
   bool useClusterLighting = true;
-  bool useRayTracing = false;     // ImGui toggle: switch to full RT path
+  bool useRayTracing = true;     // ImGui toggle: switch to full RT path
 
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;

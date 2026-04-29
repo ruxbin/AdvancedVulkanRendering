@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VulkanSetup.h"
+#include <filesystem>
 #include <vector>
 
 class GpuScene;
@@ -56,6 +57,7 @@ private:
 private:
   VulkanDevice &_device;
   GpuScene &_scene;
+  std::filesystem::path _rootPath;
 
   // BLAS
   VkAccelerationStructureKHR _blas = VK_NULL_HANDLE;

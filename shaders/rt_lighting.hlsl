@@ -112,7 +112,7 @@ float3 sampleConeDir(float3 axis, float coneRadius, float2 xi) {
 // Reconstruct primary ray from pixel (jittered to pixel center).
 void cameraRayFromPixel(uint2 px, uint2 dim, out float3 origin, out float3 dir) {
     float2 ndc = ((float2(px) + 0.5f) / float2(dim)) * 2.0f - 1.0f;
-    ndc.y = -ndc.y;  // matches worldPositionForTexcoord convention
+    //ndc.y = -ndc.y;  // matches worldPositionForTexcoord convention
     float4 clip  = float4(ndc, 1.0f, 1.0f);
     float4 world = mul(cameraParams.invViewProjectionMatrix, clip);
     world /= world.w;
@@ -172,47 +172,47 @@ void RayGen() {
     surfaceData.emissive  = (half3)p.emissive;
 
     // --- N-tap sun shadow ---
-    float visibility = 0.0f;
-    uint  N = max(1u, pc.shadowTaps);
-    {
-        float3 sunAxis = normalize(-frameConstants.sunDirection);
-        float3 origin  = p.wsPos + p.normal * 1e-3f;
-        for (uint i = 0; i < N; ++i) {
-            float2 xi = hammersley(i + pc.frameSeed, N);
-            float3 sdir = sampleConeDir(sunAxis, pc.sunConeRadius, xi);
-            RayDesc sr;
-            sr.Origin    = origin;
-            sr.Direction = sdir;
-            sr.TMin      = 1e-3f;
-            sr.TMax      = 1e30f;
-            ShadowPayload sp;
-            sp.visible = 0;
-            // Shadow: hgOffset=1, hgStride=2, missIdx=1
-            TraceRay(tlas,
-                     RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
-                     0xFF, 1, 2, 1, sr, sp);
-            visibility += float(sp.visible);
-        }
-        visibility /= float(N);
-    }
+    // float visibility = 0.0f;
+    // uint  N = max(1u, pc.shadowTaps);
+    // {
+    //     float3 sunAxis = normalize(-frameConstants.sunDirection);
+    //     float3 origin  = p.wsPos + p.normal * 1e-3f;
+    //     for (uint i = 0; i < N; ++i) {
+    //         float2 xi = hammersley(i + pc.frameSeed, N);
+    //         float3 sdir = sampleConeDir(sunAxis, pc.sunConeRadius, xi);
+    //         RayDesc sr;
+    //         sr.Origin    = origin;
+    //         sr.Direction = sdir;
+    //         sr.TMin      = 1e-3f;
+    //         sr.TMax      = 1e30f;
+    //         ShadowPayload sp;
+    //         sp.visible = 0;
+    //         // Shadow: hgOffset=1, hgStride=2, missIdx=1
+    //         TraceRay(tlas,
+    //                  RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+    //                  0xFF, 1, 2, 1, sr, sp);
+    //         visibility += float(sp.visible);
+    //     }
+    //     visibility /= float(N);
+    // }
 
-    // --- Direct lighting (sun) — same formula as deferredlighting.hlsl ---
-    half3 result = lightingShader(surfaceData, 0, float4(p.wsPos, 1.0),
-                                  frameConstants, cameraParams) * (half)visibility;
+    // // --- Direct lighting (sun) — same formula as deferredlighting.hlsl ---
+    // half3 result = lightingShader(surfaceData, 0, float4(p.wsPos, 1.0),
+    //                               frameConstants, cameraParams) * (half)visibility;
 
-    // --- Point lights — full unculled loop, no shadow (matches raster cluster path) ---
-    for (uint i = 0; i < pc.pointLightCount; ++i) {
-        AAPLPointLightCullingData L = pointLightsRT[i];
-        // posRadius.w in this buffer is RADIUS (linear), but lightingShaderPointSpot expects
-        // posSqrRadius (w = radius^2). Match the encoding used by deferredlighting cluster path.
-        float r2 = L.posRadius.w * L.posRadius.w;
-        float4 posSqrR = float4(L.posRadius.xyz, r2);
-        result += lightingShaderPointSpot(surfaceData, 0, float4(p.wsPos, 1.0),
-                                           frameConstants, cameraParams,
-                                           posSqrR, L.color.xyz);
-    }
+    // // --- Point lights — full unculled loop, no shadow (matches raster cluster path) ---
+    // for (uint i = 0; i < pc.pointLightCount; ++i) {
+    //     AAPLPointLightCullingData L = pointLightsRT[i];
+    //     // posRadius.w in this buffer is RADIUS (linear), but lightingShaderPointSpot expects
+    //     // posSqrRadius (w = radius^2). Match the encoding used by deferredlighting cluster path.
+    //     float r2 = L.posRadius.w * L.posRadius.w;
+    //     float4 posSqrR = float4(L.posRadius.xyz, r2);
+    //     result += lightingShaderPointSpot(surfaceData, 0, float4(p.wsPos, 1.0),
+    //                                        frameConstants, cameraParams,
+    //                                        posSqrR, L.color.xyz);
+    // }
 
-    outLitColor[px] = float4((float3)result, 1.0f);
+    outLitColor[px] = float4((float3)p.albedo, 1.0f);
 }
 
 [shader("miss")]
@@ -279,7 +279,7 @@ void ClosestHitPrimary(inout PrimaryPayload p,
     HitInputs h = gatherHit(attribs);
     AAPLShaderMaterial mat = materialsRT[h.materialIndex];
 
-    float lod = coneMipLOD(h.hitT);
+    float lod = 0;//coneMipLOD(h.hitT);
 
     half4 baseColor = _Textures[mat.albedo_texture_index].SampleLevel(
         _LinearRepeatSampler, h.uv, lod);

@@ -15,7 +15,7 @@ constexpr VkDeviceSize alignUp(VkDeviceSize x, VkDeviceSize a) {
 }  // namespace
 
 RayTracing::RayTracing(VulkanDevice &device, GpuScene &scene)
-    : _device(device), _scene(scene) {}
+    : _device(device), _scene(scene), _rootPath(scene._rootPath) {}
 
 RayTracing::~RayTracing() {
   VkDevice dev = _device.getLogicalDevice();
@@ -346,7 +346,7 @@ void RayTracing::CreatePipelineAndSBT() {
   VkDevice dev = _device.getLogicalDevice();
 
   // 1) Load SPIR-V library blob
-  std::vector<char> spv = readFile("shaders/rt_lighting.lib.spv");
+  std::vector<char> spv = readFile((_rootPath / "shaders/rt_lighting.lib.spv").generic_string());
   VkShaderModuleCreateInfo smInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   smInfo.codeSize = spv.size();
   smInfo.pCode = reinterpret_cast<const uint32_t *>(spv.data());
