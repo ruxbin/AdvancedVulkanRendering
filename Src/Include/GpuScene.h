@@ -350,6 +350,28 @@ private:
   void generateSAODepthPyramid(VkCommandBuffer cmd);
   void dispatchSAO(VkCommandBuffer cmd);
 
+  // Screen-space decals
+  VkDescriptorSetLayout _decalSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool _decalDescriptorPool = VK_NULL_HANDLE;
+  VkPipelineLayout _decalPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline _decalPipeline = VK_NULL_HANDLE;
+  VkRenderPass _decalRenderPass = VK_NULL_HANDLE;
+  std::vector<VkFramebuffer> _decalFramebuffers;
+  std::vector<VkDescriptorSet> _decalDescriptorSets;
+  std::vector<VkBuffer> _decalUniformBuffers;
+  std::vector<VkDeviceMemory> _decalUniformBufferMemories;
+  VkBuffer _decalVertexBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _decalVertexBufferMemory = VK_NULL_HANDLE;
+  VkBuffer _decalIndexBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _decalIndexBufferMemory = VK_NULL_HANDLE;
+  uint32_t _decalIndexCount = 0;
+  uint32_t _activeDecalCount = 0;
+  std::vector<DecalData> _decals;
+
+  void createDecalResources();
+  void createDecalRenderPass();
+  void drawDecals(VkCommandBuffer commandBuffer);
+
   // ImGui overlay
   VkDescriptorPool _imguiDescriptorPool = VK_NULL_HANDLE;
   bool _imguiInitialized = false;

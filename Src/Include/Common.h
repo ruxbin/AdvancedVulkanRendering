@@ -92,6 +92,14 @@ inline bool hasStencilComponent(VkFormat format) {
          format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
+struct alignas(16) DecalData {
+  mat4 worldToLocal;  // world space → decal local space (unit cube [-1,1]^3)
+  mat4 localToWorld;  // decal local space → world space
+  vec4 albedoTint;    // .rgb = color tint, .a = blend opacity
+};
+
+#define MAX_DECALS 8
+
 #define LIGHT_FOR_TRANSPARENT_FLAG (0x00000001)
 // PointLightData is stored in the dynmaic uniform buffer, it requires that
 // offset should be 64 bytes aligned when binding the descriptorset
