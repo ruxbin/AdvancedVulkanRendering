@@ -368,9 +368,41 @@ private:
   uint32_t _activeDecalCount = 0;
   std::vector<DecalData> _decals;
 
+  // Decal texture
+  VkImage _decalTextureImage = VK_NULL_HANDLE;
+  VkDeviceMemory _decalTextureMemory = VK_NULL_HANDLE;
+  VkImageView _decalTextureView = VK_NULL_HANDLE;
+
+  // Interactive decal state
+  bool _decalEditMode = false;
+  int _selectedDecal = -1;           // -1 = none, >=0 = index
+  bool _isDraggingDecal = false;
+  bool _isRotatingDecal = false;
+  float _lastMouseX = 0, _lastMouseY = 0;
+  float _decalPlaceHeight = 0.0f;    // height for ground-plane intersection
+  int _decalTexIndex = 0;            // 0=solid color, 1+=texture presets
+  static constexpr int DECAL_TEX_COUNT = 4;
+  const char* _decalTexPaths[DECAL_TEX_COUNT] = {
+    "textures/UV_Grid_Sm.png",
+    "textures/WoodFloor.png",
+    "textures/Metal_scratched.png",
+    "textures/RustedIron.png"
+  };
+
   void createDecalResources();
   void createDecalRenderPass();
   void drawDecals(VkCommandBuffer commandBuffer);
+  void loadDecalTexture(const char *path);
+  vec3 rayPlaneIntersect(const vec3 &rayOrigin, const vec3 &rayDir,
+                         float planeHeight) const;
+  void updateDecalFromMouse(float mouseX, float mouseY, bool placeNew);
+  void onMouseDownDecal(float mouseX, float mouseY);
+  void onMouseMoveDecal(float mouseX, float mouseY);
+  void onMouseUpDecal();
+  void onScrollDecal(float deltaY);
+  void cycleDecalTexture();
+  void setDecalPreview(const vec3 &worldPos, const vec3 &normal,
+                       const vec3 &scale);
 
   // ImGui overlay
   VkDescriptorPool _imguiDescriptorPool = VK_NULL_HANDLE;
@@ -444,6 +476,34 @@ public:
 
   void DrawChunks(VkCommandBuffer commandBuffer);
   void TriggerClusterLighting() { useClusterLighting = !useClusterLighting; }
+
+  // Decal interaction
+  void ToggleDecalMode() { _decalEditMode = !_decalEditMode; }
+  bool IsDecalMode() const { return _decalEditMode; }
+  void OnDecalMouseDown(float mx, float my) {
+    if (_decalEditMode) onMouseDownDecal(mx, my);
+  }
+  void OnDecalMouseMove(float mx, float my) {
+    if (_decalEditMode) onMouseMoveDecal(mx, my);
+  }
+  void OnDecalMouseUp() {
+    if (_decalEditMode) onMouseUpDecal();
+  }
+  void OnDecalScroll(float dy) {
+    if (_decalEditMode) onScrollDecal(dy);
+  }
+  void OnDecalCycleTexture() {
+    if (_decalEditMode) cycleDecalTexture();
+  }
+  void OnDecalStartRotate() {
+    if (_decalEditMode) { _isDraggingDecal = false; _isRotatingDecal = true; }
+  }
+  void OnDecalDelete() {
+    if (_decalEditMode && _selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
+      _decals.erase(_decals.begin() + _selectedDecal);
+      _selectedDecal = -1;
+    }
+  }
 
   void DrawChunksBasePass(VkCommandBuffer commandBuffer);
 

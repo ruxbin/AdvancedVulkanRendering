@@ -147,3 +147,34 @@ void Camera::RotateY(float angle) {
   _z = _x.cross(_y);
   updateCameraMatrix();
 }
+
+vec3 Camera::ScreenToWorldRay(float screenX, float screenY, float screenW,
+                              float screenH, float depthNDC, vec3 &outOrigin,
+                              vec3 &outDir) {
+  float ndcX = (2.0f * screenX / screenW) - 1.0f;
+  float ndcY = 1.0f - (2.0f * screenY / screenH);
+
+  // Reverse-Z: near plane → depthNDC ~ 1.0, far → ~0.0
+  vec4 nearNDC(ndcX, ndcY, 1.0f, 1.0f);
+  vec4 farNDC(ndcX, ndcY, 0.0f, 1.0f);
+
+  vec4 nearWorld = _invViewProjectionMatrix * nearNDC;
+  nearWorld = nearWorld / nearWorld.w;
+  vec4 farWorld = _invViewProjectionMatrix * farNDC;
+  farWorld = farWorld / farWorld.w;
+
+  outOrigin = nearWorld.xyz();
+  outDir = normalize((farWorld - nearWorld).xyz());
+  return outOrigin;
+}
+
+vec3 Camera::ScreenToWorldPos(float screenX, float screenY, float screenW,
+                              float screenH, float depthNDC) {
+  float ndcX = (2.0f * screenX / screenW) - 1.0f;
+  float ndcY = 1.0f - (2.0f * screenY / screenH);
+
+  vec4 ndc(ndcX, ndcY, depthNDC, 1.0f);
+  vec4 worldPos = _invViewProjectionMatrix * ndc;
+  worldPos = worldPos / worldPos.w;
+  return worldPos.xyz();
+}

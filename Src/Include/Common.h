@@ -93,9 +93,11 @@ inline bool hasStencilComponent(VkFormat format) {
 }
 
 struct alignas(16) DecalData {
-  mat4 worldToLocal;  // world space → decal local space (unit cube [-1,1]^3)
-  mat4 localToWorld;  // decal local space → world space
-  vec4 albedoTint;    // .rgb = color tint, .a = blend opacity
+  mat4 worldToLocal;
+  mat4 localToWorld;
+  vec4 albedoTint;
+  uint32_t hasTexture;
+  uint32_t _pad0, _pad1, _pad2;
 };
 
 #define MAX_DECALS 8
