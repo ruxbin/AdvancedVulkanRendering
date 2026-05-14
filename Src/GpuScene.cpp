@@ -3810,6 +3810,7 @@ void GpuScene::Draw() {
   }
 
   // 前进到下一帧
+  _currentFrameIndex = currentFrame;
   currentFrame = (currentFrame + 1) % framesInFlight;
 }
 
@@ -5956,6 +5957,33 @@ void GpuScene::createDecalResources() {
     loadDecalTexture(std::string(_rootPath.generic_string() + "/" + _decalTexPaths[0]).c_str());
   }
 
+  // --- 6. Create depth readback buffer (single float for decal placement) ---
+  {
+    VkBufferCreateInfo bufInfo{};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufInfo.size = sizeof(float);
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device.getLogicalDevice(), &bufInfo, nullptr, &_depthReadbackBuffer) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create depth readback buffer!");
+    }
+
+    VkMemoryRequirements memReqs;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _depthReadbackBuffer, &memReqs);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = device.findMemoryType(memReqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_depthReadbackBufferMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate depth readback buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _depthReadbackBuffer, _depthReadbackBufferMemory, 0);
+  }
+
   spdlog::info("Decal resources created: {}x{}, ready for {} decals", w, h, MAX_DECALS);
 }
 
@@ -6127,16 +6155,97 @@ void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
 
 // --- Interactive decal helpers ---
 
-vec3 GpuScene::rayPlaneIntersect(const vec3 &rayOrigin, const vec3 &rayDir,
-                                 float planeHeight) const {
-  float denom = rayDir.y;
-  if (fabsf(denom) < 0.0001f)
-    return rayOrigin; // ray parallel to plane
-  float t = (planeHeight - rayOrigin.y) / denom;
-  if (t < 0.0f)
-    return rayOrigin;
-  return vec3(rayOrigin.x + rayDir.x * t, planeHeight,
-              rayOrigin.z + rayDir.z * t);
+vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
+  Camera *cam = GetMainCamera();
+  float w = (float)device.getSwapChainExtent().width;
+  float h = (float)device.getSwapChainExtent().height;
+
+  int px = (int)mouseX;
+  int py = (int)mouseY;
+  if (px < 0) px = 0;
+  if (px >= (int)w) px = (int)w - 1;
+  if (py < 0) py = 0;
+  if (py >= (int)h) py = (int)h - 1;
+
+  VkImage depthImg = device.getWindowDepthImage(_currentFrameIndex);
+  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+
+  // Transition depth to TRANSFER_SRC_OPTIMAL
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = depthImg;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  // Copy single pixel to staging buffer
+  {
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {px, py, 0};
+    region.imageExtent = {1, 1, 1};
+
+    vkCmdCopyImageToBuffer(cmd, depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           _depthReadbackBuffer, 1, &region);
+  }
+
+  // Transition depth back
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = depthImg;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  device.endSingleTimeCommands(cmd);
+
+  // Read back depth value
+  float depth = 0.0f;
+  void *data;
+  vkMapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory, 0, sizeof(float), 0, &data);
+  memcpy(&depth, data, sizeof(float));
+  vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
+
+  // Reverse-Z: far plane has depth 0, but ScreenToWorldPos expects NDC depth
+  // If no geometry was rendered at this pixel, depth will be 0 (far plane in reverse-Z)
+  // which maps to the far plane. For decal placement, this is acceptable.
+  return cam->ScreenToWorldPos(mouseX, mouseY, w, h, depth);
 }
 
 void GpuScene::setDecalPreview(const vec3 &worldPos, const vec3 &normal,
@@ -6168,35 +6277,38 @@ void GpuScene::updateDecalFromMouse(float mouseX, float mouseY, bool placeNew) {
   float w = (float)device.getSwapChainExtent().width;
   float h = (float)device.getSwapChainExtent().height;
 
-  vec3 rayOrigin, rayDir;
-  cam->ScreenToWorldRay(mouseX, mouseY, w, h, 0.5f, rayOrigin, rayDir);
-
-  vec3 hitPos = rayPlaneIntersect(rayOrigin, rayDir, _decalPlaceHeight);
-
   if (placeNew && _decals.size() < MAX_DECALS) {
+    vec3 hitPos = getWorldPosFromDepth(mouseX, mouseY);
     setDecalPreview(hitPos, vec3(0, 1, 0), vec3(1.0f, 0.8f, 0.3f));
   } else if (_selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
     DecalData &d = _decals[_selectedDecal];
     vec3 pos = d.localToWorld.w.xyz();
 
     if (_isDraggingDecal) {
-      vec3 offset = hitPos - pos;
-      d.localToWorld.w.x += offset.x;
-      d.localToWorld.w.y += offset.y;
-      d.localToWorld.w.z += offset.z;
-      d.worldToLocal = inverse(d.localToWorld);
+      vec3 rayOrigin, rayDir;
+      cam->ScreenToWorldRay(mouseX, mouseY, w, h, 0.5f, rayOrigin, rayDir);
+      vec3 planeNormal = cam->GetCameraDir();
+      float denom = rayDir.dot(planeNormal);
+      if (fabsf(denom) > 0.0001f) {
+        float t = (pos - rayOrigin).dot(planeNormal) / denom;
+        if (t > 0.0f) {
+          vec3 hitPos = rayOrigin + rayDir * t;
+          vec3 offset = hitPos - pos;
+          d.localToWorld.w.x += offset.x;
+          d.localToWorld.w.y += offset.y;
+          d.localToWorld.w.z += offset.z;
+          d.worldToLocal = inverse(d.localToWorld);
+        }
+      }
     } else if (_isRotatingDecal) {
       float dx = mouseX - _lastMouseX;
       float angle = dx * 0.5f;
-      vec3 axis = vec3(0, 1, 0);
-      // Rotate the basis vectors
       float c = cosf(angle * 3.1415926f / 180.0f);
       float s = sinf(angle * 3.1415926f / 180.0f);
       vec3 xCol = d.localToWorld.x.xyz();
       vec3 zCol = d.localToWorld.z.xyz();
       vec3 newX = xCol * c + zCol * s;
-      vec3 newZ = normalize(xCol.cross(vec3(0, 1, 0))) * c +
-                  zCol * s;
+      vec3 newZ = normalize(xCol.cross(vec3(0, 1, 0))) * c + zCol * s;
       d.localToWorld.x = vec4(newX, 0);
       d.localToWorld.z = vec4(normalize(newZ), 0);
       d.worldToLocal = inverse(d.localToWorld);
@@ -6263,8 +6375,6 @@ void GpuScene::onScrollDecal(float deltaY) {
     d.localToWorld.y = vec4(d.localToWorld.y.xyz() * s, 0);
     d.localToWorld.z = vec4(d.localToWorld.z.xyz() * s, 0);
     d.worldToLocal = inverse(d.localToWorld);
-  } else {
-    _decalPlaceHeight += deltaY * 0.1f;
   }
 }
 

@@ -379,8 +379,10 @@ private:
   bool _isDraggingDecal = false;
   bool _isRotatingDecal = false;
   float _lastMouseX = 0, _lastMouseY = 0;
-  float _decalPlaceHeight = 0.0f;    // height for ground-plane intersection
   int _decalTexIndex = 0;            // 0=solid color, 1+=texture presets
+  uint32_t _currentFrameIndex = 0;
+  VkBuffer _depthReadbackBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _depthReadbackBufferMemory = VK_NULL_HANDLE;
   static constexpr int DECAL_TEX_COUNT = 4;
   const char* _decalTexPaths[DECAL_TEX_COUNT] = {
     "textures/UV_Grid_Sm.png",
@@ -393,8 +395,7 @@ private:
   void createDecalRenderPass();
   void drawDecals(VkCommandBuffer commandBuffer);
   void loadDecalTexture(const char *path);
-  vec3 rayPlaneIntersect(const vec3 &rayOrigin, const vec3 &rayDir,
-                         float planeHeight) const;
+  vec3 getWorldPosFromDepth(float mouseX, float mouseY);
   void updateDecalFromMouse(float mouseX, float mouseY, bool placeNew);
   void onMouseDownDecal(float mouseX, float mouseY);
   void onMouseMoveDecal(float mouseX, float mouseY);
