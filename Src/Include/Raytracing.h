@@ -101,9 +101,24 @@ private:
   std::vector<VkImage> _rtLitImage;
   std::vector<VkDeviceMemory> _rtLitMemory;
   std::vector<VkImageView> _rtLitImageView;
+
+  // Accumulation images (per-frame; R32G32B32A32_SFLOAT; persistent across frames)
+  std::vector<VkImage> _accumImage;
+  std::vector<VkDeviceMemory> _accumMemory;
+  std::vector<VkImageView> _accumImageView;
+
   VkExtent2D _rtExtent{};
+
+  // Progressive accumulation state
+  uint32_t _accumCount = 0;
+  mat4     _prevViewMatrix{};   // detect camera movement → reset accumulation
 
   // Composite render pass (load swapchain, draw ImGui, present)
   VkRenderPass _rtImguiPass = VK_NULL_HANDLE;
   std::vector<VkFramebuffer> _rtImguiFrameBuffer;
+
+public:
+  uint32_t maxBounces = 4;      // exposed for ImGui
+  uint32_t getAccumCount() const { return _accumCount; }
+  void resetAccumulation() { _accumCount = 0; }
 };
