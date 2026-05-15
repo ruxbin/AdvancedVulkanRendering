@@ -279,22 +279,22 @@ void ClosestHitPrimary(inout PrimaryPayload p,
     HitInputs h = gatherHit(attribs);
     AAPLShaderMaterial mat = materialsRT[h.materialIndex];
 
-    float lod = coneMipLOD(h.hitT);
+    float lod = 0;//coneMipLOD(h.hitT);
 
-    half4 baseColor = _Textures[mat.albedo_texture_index].SampleLevel(
+    half4 baseColor = _Textures[NonUniformResourceIndex(mat.albedo_texture_index)].SampleLevel(
         _LinearRepeatSampler, h.uv, lod);
 
     half4 materialData = half4(0,0,0,0);
     if (mat.hasMetallicRoughness > 0)
-        materialData = _Textures[mat.roughness_texture_index].SampleLevel(
+        materialData = _Textures[NonUniformResourceIndex(mat.roughness_texture_index)].SampleLevel(
             _LinearRepeatSampler, h.uv, lod);
 
     half4 emissive = half4(0,0,0,0);
     if (mat.hasEmissive > 0)
-        emissive = _Textures[mat.emissive_texture_index].SampleLevel(
+        emissive = _Textures[NonUniformResourceIndex(mat.emissive_texture_index)].SampleLevel(
             _LinearRepeatSampler, h.uv, lod);
 
-    half4 texnormal = _Textures[mat.normal_texture_index].SampleLevel(
+    half4 texnormal = _Textures[NonUniformResourceIndex(mat.normal_texture_index)].SampleLevel(
         _LinearRepeatSampler, h.uv, lod);
     texnormal.xy = (half)2 * texnormal.xy - (half)1;
     texnormal.z  = sqrt(saturate(1.0f - dot(texnormal.xy, texnormal.xy)));
@@ -307,7 +307,7 @@ void ClosestHitPrimary(inout PrimaryPayload p,
     half3 normal    = normalize(texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinorm);
 
     p.wsPos     = h.wsPos;
-    p.normal    = (float3)geonormal;
+    p.normal    = (float3)normal;
     p.albedo    = (float3)lerp(baseColor.rgb, (half3)0.0h, materialData.b);
     p.F0        = (float3)lerp((half3)0.04h, baseColor.rgb, materialData.b);
     p.roughness = (float)max((half)0.08, materialData.g);
@@ -322,7 +322,7 @@ void AnyHitAlpha(inout PrimaryPayload p,
                  BuiltInTriangleIntersectionAttributes attribs) {
     HitInputs h = gatherHit(attribs);
     AAPLShaderMaterial mat = materialsRT[h.materialIndex];
-    half4 baseColor = _Textures[mat.albedo_texture_index].SampleLevel(
+    half4 baseColor = _Textures[NonUniformResourceIndex(mat.albedo_texture_index)].SampleLevel(
         _LinearRepeatSampler, h.uv, 0);
     if (baseColor.a < (half)ALPHA_CUTOUT)
         IgnoreHit();
@@ -334,7 +334,7 @@ void AnyHitAlphaShadow(inout ShadowPayload sp,
                        BuiltInTriangleIntersectionAttributes attribs) {
     HitInputs h = gatherHit(attribs);
     AAPLShaderMaterial mat = materialsRT[h.materialIndex];
-    half4 baseColor = _Textures[mat.albedo_texture_index].SampleLevel(
+    half4 baseColor = _Textures[NonUniformResourceIndex(mat.albedo_texture_index)].SampleLevel(
         _LinearRepeatSampler, h.uv, 0);
     if (baseColor.a < (half)ALPHA_CUTOUT)
         IgnoreHit();
