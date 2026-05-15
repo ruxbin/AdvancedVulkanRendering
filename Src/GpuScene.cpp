@@ -3489,7 +3489,17 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   // Screen-space decal pass: modify GBuffer before deferred lighting.
   // drawDecals() owns the depth layout transition (only fires if _decals
   // is non-empty), so callers don't pay for it when there are no decals.
-  drawDecals(commandBuffer);
+  drawDecals(commandBuffer, (uint32_t)imageIndex);
+
+  // Ensure depth is in DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL for ALL
+  // downstream passes. Use imageIndex (swapchain-scoped) to match the depth
+  // image that the deferred-lighting framebuffer is bound to.
+  if (_decals.empty()) {
+    transitionImageLayout(
+        device.getWindowDepthImage((uint32_t)imageIndex), device.getWindowDepthFormat(),
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
+  }
 
   {
     if (useClusterLighting) {
@@ -3503,63 +3513,31 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       transitionImageLayout(_lightCuller->GetTraditionalDebugImage(),
                             VK_FORMAT_R32G32B32A32_SFLOAT,
                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, commandBuffer);
-      
+
       _lightCuller->ClusterLightForScreen(commandBuffer, device, *this,
                                           device.getSwapChainExtent().width,
                                           device.getSwapChainExtent().height);
     }
   }
-  // vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
-  // egraphicsPipeline); VkBuffer vertexBuffers[] = {vertexBuffer}; VkDeviceSize
-  // offsets[] = {0};
-
-  // vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-  // vkCmdBindIndexBuffer(commandBuffer,indexBuffer,0,VK_INDEX_TYPE_UINT16);
-  // if the descriptor set data isn't change we can omit this?
-  // vkCmdBindDescriptorSets(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,epipelineLayout,0,1,&globalDescriptorSet,0,nullptr);
-  // if the constant isn't changed we can omit this?
-  // mat4 scaleM = scale(modelScale);
-  // mat4 withScale = transpose(maincamera->getObjectToCamera()) * scaleM;
-  // vkCmdPushConstants(commandBuffer,epipelineLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(mat4),withScale.value_ptr());
-  // vkCmdDrawIndexed(commandBuffer,getIndexSize()/sizeof(unsigned
-  // short),1,0,0,0);
 
   {
     // GBuffer layout transition is now handled by render pass finalLayout
     // (SHADER_READ_ONLY_OPTIMAL) + exit subpass dependency
     // Shadow map layout transition is handled by shadow render pass finalLayout
+    // Depth was already transitioned to READ_ONLY_STENCIL_ATTACHMENT above
+    // (either by drawDecals or the conditional transition).
 
     if (useClusterLighting) {
-      // don't need to write stencil anymore
-      VkImageMemoryBarrier barrier{};
-      barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-      barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.image = device.getWindowDepthImage(currentFrame);
-      barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-      barrier.subresourceRange.baseMipLevel = 0;
-      barrier.subresourceRange.levelCount = 1;
-      barrier.subresourceRange.baseArrayLayer = 0;
-      barrier.subresourceRange.layerCount = 1;
-      barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      // Memory barrier between cluster-lighting compute shader (writes light
+      // indices SSBO) and deferred lighting fragment shader (reads it).
+      // No image layout change needed — pure memory/execution sync.
+      VkMemoryBarrier memBarrier{};
+      memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
       vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                           0, nullptr, 1, &barrier);
-    } else {
-      // Depth currently in either:
-      //   - DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL (when drawDecals ran), or
-      //   - DEPTH_STENCIL_ATTACHMENT_OPTIMAL          (when _decals was empty).
-      // Transition only in the second case so the deferred/SAO path always
-      // sees DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL.
-      if (_decals.empty()) {
-        transitionImageLayout(
-            device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
-      }
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                           1, &memBarrier, 0, nullptr, 0, nullptr);
     }
   }
 
@@ -3793,9 +3771,9 @@ void GpuScene::Draw() {
   // draw mesh
   // submit commandbuffer
 
-  // 等待当前帧的 fence 完成
-  VkResult fenceResult = vkWaitForFences(device.getLogicalDevice(), 1, 
-                  &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+  // 等待当前 sync slot 的 fence 完成（保证 cmd buffer / semaphore / fence 可复用）
+  VkResult fenceResult = vkWaitForFences(device.getLogicalDevice(), 1,
+                  &inFlightFences[_syncSlot], VK_TRUE, UINT64_MAX);
   if (fenceResult != VK_SUCCESS) {
     spdlog::error("failed to wait for fence! {}", static_cast<int>(fenceResult));
     return;
@@ -3804,9 +3782,9 @@ void GpuScene::Draw() {
   // 获取下一个 swapchain image
   uint32_t imageIndex;
   VkResult acquireResult = vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(),
-                        UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE,
+                        UINT64_MAX, imageAvailableSemaphores[_syncSlot], VK_NULL_HANDLE,
                         &imageIndex);
-  
+
   // 处理 swapchain 过期的情况（例如窗口大小改变）
   if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
     spdlog::warn("Swapchain out of date, needs recreation");
@@ -3817,15 +3795,31 @@ void GpuScene::Draw() {
     throw std::runtime_error("failed to acquire swap chain image!");
   }
 
-  // 只有在成功获取 image 后才 reset fence，避免死锁
-  vkResetFences(device.getLogicalDevice(), 1, &inFlightFences[currentFrame]);
+  // imagesInFlight 模式：同一个 swapchain image 可能上一次是被另一个 sync slot
+  // 提交的；它的 GPU 工作可能尚未完成。在我们 CPU 写 per-image 资源（uniform、
+  // SSBO、descriptor 引用的 buffer）之前要先等 image 自己的 fence。
+  if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+    vkWaitForFences(device.getLogicalDevice(), 1,
+                    &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+  }
+  // 这一帧用 _syncSlot 的 fence 提交工作；记录 image 现在被这个 fence 跟踪。
+  imagesInFlight[imageIndex] = inFlightFences[_syncSlot];
 
-  // Readback culling stats from current frame's PREVIOUS submission
-  // (fence guarantees currentFrame's last GPU work is done)
+  // 只有在成功获取 image 后才 reset fence，避免死锁
+  vkResetFences(device.getLogicalDevice(), 1, &inFlightFences[_syncSlot]);
+
+  // 让 record 路径里所有 currentFrame 引用都正确指向这个 swapchain image。
+  // 这是本次重构的核心：currentFrame == imageIndex 永远成立，所以
+  // _basePassFrameBuffer[currentFrame] / depth[currentFrame] / 各 descriptor set
+  // 都和 _deferredFrameBuffer[imageIndex] 用的是同一份资源。
+  currentFrame = imageIndex;
+
+  // Readback culling stats from THIS image's PREVIOUS submission
+  // (imagesInFlight[imageIndex] fence guaranteed it's done above).
   readbackCullingStats(currentFrame);
 
-  // 使用当前帧的 command buffer
-  VkCommandBuffer& currentCmdBuffer = commandBuffers[currentFrame];
+  // 使用当前 sync slot 的 command buffer
+  VkCommandBuffer& currentCmdBuffer = commandBuffers[_syncSlot];
   vkResetCommandBuffer(currentCmdBuffer, /*VkCommandBufferResetFlagBits*/ 0);
 
   recordCommandBuffer(imageIndex, currentCmdBuffer);
@@ -3833,7 +3827,7 @@ void GpuScene::Draw() {
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-  VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+  VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[_syncSlot]};
   VkPipelineStageFlags waitStages[] = {
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
   submitInfo.waitSemaphoreCount = 1;
@@ -3843,11 +3837,11 @@ void GpuScene::Draw() {
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &currentCmdBuffer;
 
-  VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+  VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[_syncSlot]};
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
   VkResult submitResult =
-      vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFences[currentFrame]);
+      vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFences[_syncSlot]);
   if (submitResult != VK_SUCCESS) {
     spdlog::error("failed to submit draw command buffer! {}", static_cast<int>(submitResult));
     throw std::runtime_error("failed to submit draw command buffer!");
@@ -3866,7 +3860,7 @@ void GpuScene::Draw() {
   presentInfo.pImageIndices = &imageIndex;
 
   VkResult presentResult = vkQueuePresentKHR(device.getPresentQueue(), &presentInfo);
-  
+
   // 检查呈现结果，处理 swapchain 需要重建的情况
   if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || framebufferResized) {
     framebufferResized = false;
@@ -3877,9 +3871,9 @@ void GpuScene::Draw() {
     throw std::runtime_error("failed to present swap chain image!");
   }
 
-  // 前进到下一帧
+  // 推进 sync slot（独立于 currentFrame，currentFrame 下次 acquire 时会被重置）
   _currentFrameIndex = currentFrame;
-  currentFrame = (currentFrame + 1) % framesInFlight;
+  _syncSlot = (_syncSlot + 1) % framesInFlight;
 }
 
 void GpuScene::cleanupSwapChainResources() {
@@ -3976,9 +3970,15 @@ void GpuScene::recreateSwapChain() {
     
     // 重新创建命令缓冲区
     createCommandBuffers(device.getCommandPool());
-    
-    // 重置 currentFrame 以避免越界访问
+
+    // 重置 frame 索引以避免越界访问
+    _syncSlot = 0;
     currentFrame = 0;
+  } else {
+    // 即便 image count 没变，imagesInFlight 中存的 fence 句柄也已失效（被
+    // cleanupSwapChainResources 间接销毁的资源不包含 fence，但下次 wait 之前
+    // 重置一下更安全）。
+    std::fill(imagesInFlight.begin(), imagesInFlight.end(), VK_NULL_HANDLE);
   }
   
   // 重新创建 GpuScene 中依赖 swapchain 的资源
@@ -4407,10 +4407,16 @@ void GpuScene::generateHiZPyramid(VkCommandBuffer commandBuffer) {
 void GpuScene::createSyncObjects() {
   // framesInFlight 由 swapchain 图像数量决定
     framesInFlight = device.getSwapChainImageCount();
-  
+
   imageAvailableSemaphores.resize(framesInFlight);
   renderFinishedSemaphores.resize(framesInFlight);
   inFlightFences.resize(framesInFlight);
+  // imagesInFlight tracks which fence is currently associated with each
+  // swapchain image. Since framesInFlight == swapChainImageCount in this
+  // project, we size it the same. Initially all NULL (no image used yet).
+  imagesInFlight.assign(framesInFlight, VK_NULL_HANDLE);
+  _syncSlot = 0;
+  currentFrame = 0;
 
   VkSemaphoreCreateInfo semaphoreInfo{};
   semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -6179,21 +6185,28 @@ void GpuScene::loadDecalTexture(const char *path) {
   spdlog::info("Decal texture loaded: {} ({}x{})", path, texW, texH);
 }
 
-void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
+void GpuScene::drawDecals(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
   if (_decalPipeline == VK_NULL_HANDLE || _decals.empty())
     return;
 
   // Fix #5: Layout transition only when we actually have decals to draw.
   // The transition is owned by drawDecals so callers don't pay the cost when
   // _decals is empty.
+  // NOTE: depth image and decal framebuffer are indexed by SWAPCHAIN imageIndex
+  // (not currentFrame) — the depth image array and the framebuffer's bound
+  // depth view are both swapchain-scoped, while the deferred-lighting framebuffer
+  // also uses imageIndex. Indexing by currentFrame here can transition the wrong
+  // depth image when imageIndex != currentFrame, causing layout-mismatch
+  // validation errors at the deferred lighting render pass begin.
   transitionImageLayout(
-      device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
+      device.getWindowDepthImage(imageIndex), device.getWindowDepthFormat(),
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
       VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
 
   // Fix #1: Upload the entire decal array ONCE before recording any draws.
   // The previous per-iteration mapMemory inside the recorded loop overwrote
   // the same memory, so all draws ended up using the last decal's data.
+  // Per-frame uniform buffer is currentFrame-scoped (in-flight resource).
   const uint32_t decalCount = std::min<uint32_t>((uint32_t)_decals.size(), MAX_DECALS);
   {
     void *data;
@@ -6206,7 +6219,8 @@ void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
   VkRenderPassBeginInfo rpInfo{};
   rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   rpInfo.renderPass = _decalRenderPass;
-  rpInfo.framebuffer = _decalFramebuffers[currentFrame];
+  // Framebuffer must be imageIndex-scoped to match the depth image transitioned above.
+  rpInfo.framebuffer = _decalFramebuffers[imageIndex];
   rpInfo.renderArea.offset = {0, 0};
   rpInfo.renderArea.extent = device.getSwapChainExtent();
   rpInfo.clearValueCount = 0;
@@ -6245,6 +6259,12 @@ void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
   }
 
   vkCmdEndRenderPass(commandBuffer);
+
+  // Log once per ~60 frames so we know drawDecals is actually being recorded.
+  static uint32_t s_decalDrawCounter = 0;
+  if ((s_decalDrawCounter++ % 60) == 0) {
+    spdlog::info("drawDecals recorded {} decal(s)", decalCount);
+  }
 }
 
 // --- Interactive decal helpers ---
@@ -6261,16 +6281,24 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
   if (py < 0) py = 0;
   if (py >= (int)h) py = (int)h - 1;
 
+  // Pre-fill the readback buffer with a sentinel so we can tell whether
+  // vkCmdCopyImageToBuffer actually wrote anything (vs. depth being literally 0).
+  {
+    void *seed;
+    vkMapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory, 0, sizeof(uint32_t), 0, &seed);
+    uint32_t sentinel = 0xDEADBEEF;
+    memcpy(seed, &sentinel, sizeof(uint32_t));
+    vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
+  }
+
   // Fix #3: this is invoked from a mouse callback between frames. The depth
-  // image's last-seen layout depends on the previous frame's deferred path:
-  // it is left in DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL by drawDecals
-  // (or the equivalent transition in the deferred branch). Using
-  // DEPTH_STENCIL_ATTACHMENT_OPTIMAL here would produce an oldLayout
-  // mismatch validation error.
-  // We restore to the same layout at the end so subsequent frames don't
+  // image's last-seen layout is the finalLayout of the LAST render pass that
+  // touched it. After all the deferred / forward passes, deferred lighting's
+  // finalLayout = DEPTH_STENCIL_ATTACHMENT_OPTIMAL is what leaves the image
+  // in. We restore to the same layout at the end so subsequent frames don't
   // see a different starting state.
   const VkImageLayout depthCurrentLayout =
-      VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   // Fix #4: avoid vkQueueWaitIdle (full-queue stall). Use a per-call fence
   // so we only block on this single submit.
@@ -6289,7 +6317,7 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
 
   VkImage depthImg = device.getWindowDepthImage(_currentFrameIndex);
 
-  // depth READ_ONLY_STENCIL_ATTACHMENT → TRANSFER_SRC
+  // depth DEPTH_STENCIL_ATTACHMENT_OPTIMAL → TRANSFER_SRC_OPTIMAL
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -6303,11 +6331,11 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
     vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
@@ -6329,7 +6357,7 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
                            _depthReadbackBuffer, 1, &region);
   }
 
-  // TRANSFER_SRC → READ_ONLY_STENCIL_ATTACHMENT (same as the entering layout)
+  // TRANSFER_SRC_OPTIMAL → DEPTH_STENCIL_ATTACHMENT_OPTIMAL (restore)
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -6344,11 +6372,12 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
 
@@ -6374,16 +6403,51 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
 
   // Read back depth value
   float depth = 0.0f;
+  uint32_t rawBytes = 0;
   void *data;
   vkMapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory, 0, sizeof(float), 0, &data);
   memcpy(&depth, data, sizeof(float));
+  memcpy(&rawBytes, data, sizeof(uint32_t));
   vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
 
-  // Reverse-Z: far plane has depth 0, but ScreenToWorldPos expects NDC depth.
-  // If no geometry was rendered at this pixel, depth will be 0 (far plane in
-  // reverse-Z) which maps to the far plane. For decal placement, this is
-  // acceptable.
-  return cam->ScreenToWorldPos(mouseX, mouseY, w, h, depth);
+  // The depth format may be D24_UNORM_S8_UINT (not D32_SFLOAT_S8_UINT) on some
+  // drivers. In that case the 4-byte depth aspect is a 24-bit unsigned-normalized
+  // value packed in the low (or high) bits. Reading it as float gives garbage.
+  // Detect and reinterpret if needed.
+  VkFormat depthFmt = device.getWindowDepthFormat();
+  if (depthFmt == VK_FORMAT_D24_UNORM_S8_UINT) {
+    // Vulkan packs D24 in the LOW 24 bits of the 32-bit element (per spec for
+    // VK_FORMAT_X8_D24_UNORM_PACK32-style copy). Mask and normalize.
+    uint32_t d24 = rawBytes & 0x00FFFFFFu;
+    depth = (float)d24 / (float)0x00FFFFFFu;
+  }
+  // Try sampling the center pixel + a few alternatives, to rule out coordinate / index bugs.
+  spdlog::info("getWorldPosFromDepth raw read: pixel=({},{}) extent=({}x{}) "
+               "_currentFrameIndex={} useRayTracing={} depthFmt={} depth={} rawBytes=0x{:08x}",
+               px, py, (uint32_t)w, (uint32_t)h, _currentFrameIndex, useRayTracing,
+               (int)depthFmt, depth, rawBytes);
+
+  // Reverse-Z: depth=0 means far plane (no geometry rendered at this pixel).
+  // Common cause: RT mode is on (raster pipeline skipped → depth never written).
+  // Putting a decal at the far plane makes it microscopic (and possibly off-
+  // screen). Fall back to "place 5 units in front of the camera" so the user
+  // sees something they can then drag onto real geometry.
+  if (depth <= 0.0f) {
+    vec3 origin = cam->GetOrigin();
+    vec3 fallback = origin + cam->GetCameraDir() * 5.0f;
+    spdlog::warn("getWorldPosFromDepth: depth=0 at px=({},{}). useRayTracing={}, "
+                 "_currentFrameIndex={}. Placing decal at camera+5 ({},{},{}) "
+                 "instead. (If RT mode is on, depth buffer isn't written — "
+                 "turn RT off in the ImGui overlay or click on close geometry.)",
+                 px, py, useRayTracing, _currentFrameIndex,
+                 fallback.x, fallback.y, fallback.z);
+    return fallback;
+  }
+
+  vec3 result = cam->ScreenToWorldPos(mouseX, mouseY, w, h, depth);
+  spdlog::info("getWorldPosFromDepth: mouse=({},{}) px=({},{}) depth={} → world=({},{},{})",
+               mouseX, mouseY, px, py, depth, result.x, result.y, result.z);
+  return result;
 }
 
 void GpuScene::setDecalPreview(const vec3 &worldPos, const vec3 &normal,
@@ -6408,6 +6472,12 @@ void GpuScene::setDecalPreview(const vec3 &worldPos, const vec3 &normal,
   d.hasTexture = (_decalTexIndex > 0) ? 1 : 0;
 
   _decals.push_back(d);
+
+  spdlog::info("Decal placed: pos=({},{},{}) normal=({},{},{}) scale=({},{},{}) total={}",
+               worldPos.x, worldPos.y, worldPos.z,
+               normal.x, normal.y, normal.z,
+               scale.x, scale.y, scale.z,
+               _decals.size());
 }
 
 void GpuScene::updateDecalFromMouse(float mouseX, float mouseY, bool placeNew) {

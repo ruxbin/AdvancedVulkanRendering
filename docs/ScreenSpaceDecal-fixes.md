@@ -103,20 +103,42 @@ vkDestroyFence(...);
 
 **Bug**：原代码无论 `_decals` 是否为空都做 `transitionImageLayout`，浪费 barrier 不说，`drawDecals` 内部又判 `_decals.empty() return`，外层做了 transition 但 render pass 没跑。
 
-**修法**：把 transition 移进 `drawDecals` 内部、放在 early-return 之后，让它和实际绘制绑定。下游 deferred 路径做了对应判断：`_decals` 为空时它自己负责把 depth 转到 read-only。
+**修法**：把 transition 移进 `drawDecals` 内部、放在 early-return 之后，让它和实际绘制绑定。
 
 ```cpp
 // drawDecals 内部
 if (_decalPipeline == VK_NULL_HANDLE || _decals.empty())
     return;
 transitionImageLayout(... DEPTH_STENCIL_ATTACHMENT_OPTIMAL → DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL ...);
+```
 
-// 调用方
+**配套**：调用方紧跟一个无条件的 ensure-transition：
+
+```cpp
 drawDecals(commandBuffer);
 
-// 下游 useClusterLighting=false 分支
+// 如果 drawDecals 没运行（_decals 为空），depth 仍在 DEPTH_STENCIL_ATTACHMENT_OPTIMAL，
+// 需要补转换成 READ_ONLY_STENCIL_ATTACHMENT，让下游所有 pass（cluster lighting / SAO /
+// deferred lighting）都能看到一致 layout。deferred lighting render pass 的
+// initialLayout = READ_ONLY_STENCIL_ATTACHMENT，必须保证此 layout，否则 validation error:
+//
+//   "expects DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL — instead, current layout is
+//    DEPTH_STENCIL_ATTACHMENT_OPTIMAL"
+//
 if (_decals.empty()) {
-    transitionImageLayout(... DEPTH_STENCIL → DEPTH_READ_ONLY_STENCIL ...);
+    transitionImageLayout(... DEPTH_STENCIL_ATTACHMENT_OPTIMAL → READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL ...);
+}
+```
+
+**附带修复（pre-existing）**：原 `useClusterLighting=true` 分支的 barrier 用了错误的 layout enum (`DEPTH_READ_ONLY_OPTIMAL`，应该是 `_STENCIL_ATTACHMENT` 后缀，因为 image 带 stencil 通道)，且实际并不需要 layout 变更（depth 早被上面转好），改成纯 memory barrier：
+
+```cpp
+if (useClusterLighting) {
+  // compute write 灯光索引 SSBO → fragment read in deferred lighting
+  VkMemoryBarrier memBarrier{};
+  memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(cmd, COMPUTE_SHADER, FRAGMENT_SHADER, 0, 1, &memBarrier, 0, ...);
 }
 ```
 

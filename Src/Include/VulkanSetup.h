@@ -359,7 +359,10 @@ VkFormat depthFormat;
     for (uint32_t f = 0; f < numFrames; ++f) {
     createImage(
         swapChainExtent.width, swapChainExtent.height, depthFormat,
-        VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,  // for getWorldPosFromDepth pixel readback
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage[f], depthImageMemory[f]);
     // depthImageView = createImageView(depthImage, depthFormat);
     VkImageViewCreateInfo createInfo{};

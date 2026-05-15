@@ -180,10 +180,29 @@ private:
   std::vector<VkSemaphore> imageAvailableSemaphores;
   std::vector<VkSemaphore> renderFinishedSemaphores;
   std::vector<VkFence> inFlightFences;
+  // Per-swapchain-image fence tracking (size = swapChainImageCount).
+  // imagesInFlight[N] == fence currently associated with submitting work for
+  // swapchain image N. NULL means the image has not been used yet. Used by the
+  // imagesInFlight pattern: after vkAcquireNextImageKHR returns imageIndex, we
+  // wait on imagesInFlight[imageIndex] before writing to per-image resources
+  // (uniform buffers, descriptor data) that the GPU might still be reading.
+  std::vector<VkFence> imagesInFlight;
+  // Cycles 0..framesInFlight-1 each frame. Drives sync slot allocation
+  // (cmd buffer / semaphore / fence). Decoupled from currentFrame, which is
+  // tied to imageIndex (set after acquire) so that per-image record-path
+  // accesses index the SAME swapchain-scoped resource that
+  // _deferredFrameBuffer[imageIndex] / _forwardFrameBuffer[imageIndex] are
+  // bound to.
+  uint32_t _syncSlot = 0;
+  // After vkAcquireNextImageKHR returns imageIndex, we set currentFrame =
+  // imageIndex. The record path then accesses any per-frame-or-per-image
+  // resource via currentFrame and stays consistent with the deferred/forward
+  // framebuffers (both indexed by imageIndex).
   uint32_t currentFrame = 0;
   
-  // 获取当前帧的 command buffer
-  VkCommandBuffer& getCurrentCommandBuffer() { return commandBuffers[currentFrame]; }
+  // Get the command buffer for the current sync slot.
+  // (Command buffers are sync-resources, indexed by _syncSlot.)
+  VkCommandBuffer& getCurrentCommandBuffer() { return commandBuffers[_syncSlot]; }
   
   float modelScale;
 
@@ -302,7 +321,7 @@ private:
   LightCuller *_lightCuller = nullptr;
 
   bool useClusterLighting = true;
-  bool useRayTracing = true;     // ImGui toggle: switch to full RT path
+  bool useRayTracing = false;     // ImGui toggle: switch to full RT path
 
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
@@ -390,15 +409,15 @@ private:
   VkDeviceMemory _depthReadbackBufferMemory = VK_NULL_HANDLE;
   static constexpr int DECAL_TEX_COUNT = 4;
   const char* _decalTexPaths[DECAL_TEX_COUNT] = {
-    "textures/UV_Grid_Sm.png",
-    "textures/WoodFloor.png",
-    "textures/Metal_scratched.png",
-    "textures/RustedIron.png"
+    "textures/1.png",
+    "textures/2.png",
+    "textures/3.png",
+    "textures/texture.jpg"
   };
 
   void createDecalResources();
   void createDecalRenderPass();
-  void drawDecals(VkCommandBuffer commandBuffer);
+  void drawDecals(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   void loadDecalTexture(const char *path);
   vec3 getWorldPosFromDepth(float mouseX, float mouseY);
   void updateDecalFromMouse(float mouseX, float mouseY, bool placeNew);
