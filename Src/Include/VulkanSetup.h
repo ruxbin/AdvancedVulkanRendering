@@ -448,9 +448,6 @@ VkFormat depthFormat;
     throw std::runtime_error("failed to find suitable memory type!");
   }*/
 
-public:
-  VkCommandBuffer beginSingleTimeCommands()const;
-  void endSingleTimeCommands(VkCommandBuffer commandBuffer)const;
 private:
   void createRenderPass();
   void cleanupSwapChain();
@@ -458,6 +455,9 @@ private:
 
   public:
   void recreateSwapChain();
+
+      VkCommandBuffer beginSingleTimeCommands() const;
+      void endSingleTimeCommands(VkCommandBuffer commandBuffer) const;
 
       void transitionImageLayout(VkImage image, VkFormat format,
           VkImageLayout oldLayout, VkImageLayout newLayout,uint32_t mipcount=1) const;

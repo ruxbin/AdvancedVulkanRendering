@@ -134,6 +134,19 @@ int main(int nargs, char **args) {
         case SDL_SCANCODE_C:
           gpuScene.TriggerClusterLighting();
           break;
+        case SDL_SCANCODE_T:
+          gpuScene.ToggleDecalMode();
+          spdlog::info("Decal mode: {}", gpuScene.IsDecalMode() ? "ON" : "OFF");
+          break;
+        case SDL_SCANCODE_1:
+          gpuScene.OnDecalCycleTexture();
+          break;
+        case SDL_SCANCODE_DELETE:
+          gpuScene.OnDecalDelete();
+          break;
+        case SDL_SCANCODE_R:
+          gpuScene.OnDecalStartRotate();
+          break;
         default:
           spdlog::info("keypressed {}\n", e.key.keysym.scancode);
           break;
@@ -143,7 +156,9 @@ int main(int nargs, char **args) {
                      gpuScene.GetMainCamera()->GetOrigin().y,
                      gpuScene.GetMainCamera()->GetOrigin().z);
       } else if (e.type == SDL_MOUSEMOTION) {
-        if (mouseDown) {
+        if (gpuScene.IsDecalMode()) {
+          gpuScene.OnDecalMouseMove((float)e.motion.x, (float)e.motion.y);
+        } else if (mouseDown) {
           spdlog::info("xrel:{} yrel:{} zdegree{}", e.motion.xrel,
                        e.motion.yrel, currentZDegree);
           if (abs(e.motion.xrel) > abs(e.motion.yrel)) {
@@ -160,11 +175,21 @@ int main(int nargs, char **args) {
                        gpuScene.GetMainCamera()->GetCameraDir().z);
         }
       } else if (e.type == SDL_MOUSEBUTTONDOWN) {
-        mouseDown = true;
+        if (gpuScene.IsDecalMode() && e.button.button == SDL_BUTTON_LEFT) {
+          gpuScene.OnDecalMouseDown((float)e.button.x, (float)e.button.y);
+        } else {
+          mouseDown = true;
+        }
       } else if (e.type == SDL_MOUSEBUTTONUP) {
-        mouseDown = false;
-        currentZDegree = 0;
-        currentYDegree = 0;
+        if (gpuScene.IsDecalMode() && e.button.button == SDL_BUTTON_LEFT) {
+          gpuScene.OnDecalMouseUp();
+        } else {
+          mouseDown = false;
+          currentZDegree = 0;
+          currentYDegree = 0;
+        }
+      } else if (e.type == SDL_MOUSEWHEEL) {
+        gpuScene.OnDecalScroll((float)e.wheel.y);
       }
 #ifdef __ANDROID__
       // Touch input: single-finger drag rotates camera

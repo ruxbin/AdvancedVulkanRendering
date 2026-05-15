@@ -41,6 +41,10 @@ public:
   float Far() { return _far; }
   const vec3 &GetOrigin() const { return _origin; }
   vec3 GetCameraDir() const;
+  vec3 ScreenToWorldRay(float screenX, float screenY, float screenW, float screenH,
+                        float depthNDC, vec3 &outOrigin, vec3 &outDir);
+  vec3 ScreenToWorldPos(float screenX, float screenY, float screenW, float screenH,
+                        float depthNDC);
 
   vec3 _frustumCorners[8];
 };

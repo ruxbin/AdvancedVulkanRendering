@@ -2712,6 +2712,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createHiZResources(); // Stage 3: creates Hi-Z texture and updates gpuCullDescriptorSet
   init_deferredlighting_descriptors();
   createSAOResources();
+  createDecalResources();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
   createOccluderWireframePipeline();
@@ -3484,6 +3485,18 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdEndRenderPass(commandBuffer);
   }
+
+  // Screen-space decal pass: modify GBuffer before deferred lighting
+  {
+    // Transition depth for decal pass (depth read-only + sampleable)
+    transitionImageLayout(
+        device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
+
+    drawDecals(commandBuffer);
+  }
+
   {
     if (useClusterLighting) {
       if (!_lightCuller) {
@@ -3864,6 +3877,7 @@ void GpuScene::Draw() {
   }
 
   // 前进到下一帧
+  _currentFrameIndex = currentFrame;
   currentFrame = (currentFrame + 1) % framesInFlight;
 }
 
@@ -3897,16 +3911,29 @@ void GpuScene::cleanupSwapChainResources() {
     vkDestroyImageView(device.getLogicalDevice(), _gbufferF0RoughnessTextureView, nullptr);
   }
 
+  // 清理 decal framebuffers
+  for (auto framebuffer : _decalFramebuffers) {
+    vkDestroyFramebuffer(device.getLogicalDevice(), framebuffer, nullptr);
+  }
+  _decalFramebuffers.clear();
+
   // 注意：如果 GBuffer images 也是独立创建的，也需要在这里销毁
   // vkDestroyImage, vkFreeMemory 等
 }
 
 void GpuScene::recreateSwapChainResources() {
   // 重新创建依赖 swapchain 尺寸的资源
-  
+
   // 重新创建 deferred/forward framebuffers
   CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
   CreateForwardLightingFrameBuffer(device.getSwapChainImageCount());
+
+  // 重新创建 decal render pass + framebuffers
+  if (_decalRenderPass != VK_NULL_HANDLE) {
+    vkDestroyRenderPass(device.getLogicalDevice(), _decalRenderPass, nullptr);
+    _decalRenderPass = VK_NULL_HANDLE;
+    createDecalRenderPass();
+  }
   
   // 更新 camera aspect ratio
   if (maincamera) {
@@ -5581,6 +5608,856 @@ void GpuScene::dispatchSAO(VkCommandBuffer commandBuffer) {
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+}
+
+// --- Screen-space Decals ---
+
+void GpuScene::createDecalRenderPass() {
+  uint32_t w = device.getSwapChainExtent().width;
+  uint32_t h = device.getSwapChainExtent().height;
+
+  VkAttachmentDescription colorAttachments[4] = {};
+  for (int i = 0; i < 4; i++) {
+    colorAttachments[i].format = _gbufferFormat[i];
+    colorAttachments[i].samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachments[i].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    colorAttachments[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+
+  VkAttachmentDescription depthAttachment{};
+  depthAttachment.format = device.getWindowDepthFormat();
+  depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+  depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+  depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+  depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+
+  VkAttachmentReference colorRefs[4] = {};
+  for (int i = 0; i < 4; i++) {
+    colorRefs[i].attachment = i;
+    colorRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  }
+
+  VkAttachmentReference depthRef{};
+  depthRef.attachment = 4;
+  depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+
+  VkSubpassDescription subpass{};
+  subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpass.colorAttachmentCount = 4;
+  subpass.pColorAttachments = colorRefs;
+  subpass.pDepthStencilAttachment = &depthRef;
+
+  // Entry: shader read → color attachment write; depth attachment → depth read
+  VkSubpassDependency inDep{};
+  inDep.srcSubpass = VK_SUBPASS_EXTERNAL;
+  inDep.dstSubpass = 0;
+  inDep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  inDep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  inDep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  inDep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+  // Exit: color write → shader read
+  VkSubpassDependency outDep{};
+  outDep.srcSubpass = 0;
+  outDep.dstSubpass = VK_SUBPASS_EXTERNAL;
+  outDep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  outDep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  outDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  outDep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  VkAttachmentDescription allAttachments[5] = {
+      colorAttachments[0], colorAttachments[1], colorAttachments[2],
+      colorAttachments[3], depthAttachment};
+  VkSubpassDependency deps[2] = {inDep, outDep};
+
+  VkRenderPassCreateInfo rpInfo{};
+  rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  rpInfo.attachmentCount = 5;
+  rpInfo.pAttachments = allAttachments;
+  rpInfo.subpassCount = 1;
+  rpInfo.pSubpasses = &subpass;
+  rpInfo.dependencyCount = 2;
+  rpInfo.pDependencies = deps;
+
+  vkCreateRenderPass(device.getLogicalDevice(), &rpInfo, nullptr, &_decalRenderPass);
+
+  // Create per-frame framebuffers
+  _decalFramebuffers.resize(framesInFlight);
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkImageView attachments[5] = {
+        _gbuffersView[0][f], _gbuffersView[1][f], _gbuffersView[2][f],
+        _gbuffersView[3][f], device.getWindowDepthImageView(f)};
+    VkFramebufferCreateInfo fbInfo{};
+    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbInfo.renderPass = _decalRenderPass;
+    fbInfo.attachmentCount = 5;
+    fbInfo.pAttachments = attachments;
+    fbInfo.width = w;
+    fbInfo.height = h;
+    fbInfo.layers = 1;
+    vkCreateFramebuffer(device.getLogicalDevice(), &fbInfo, nullptr, &_decalFramebuffers[f]);
+  }
+}
+
+void GpuScene::createDecalResources() {
+  uint32_t w = device.getSwapChainExtent().width;
+  uint32_t h = device.getSwapChainExtent().height;
+
+  // --- 1. Unit cube geometry ---
+  {
+    float vertices[] = {
+        // Back face (Z = -1)
+        -1, -1, -1,    1, -1, -1,    1,  1, -1,   -1,  1, -1,
+        // Front face (Z = 1)
+        -1, -1,  1,    1, -1,  1,    1,  1,  1,   -1,  1,  1,
+        // Left face (X = -1)
+        -1, -1, -1,   -1, -1,  1,   -1,  1,  1,   -1,  1, -1,
+        // Right face (X = 1)
+         1, -1, -1,    1, -1,  1,    1,  1,  1,    1,  1, -1,
+        // Bottom face (Y = -1)
+        -1, -1, -1,    1, -1, -1,    1, -1,  1,   -1, -1,  1,
+        // Top face (Y = 1)
+        -1,  1, -1,    1,  1, -1,    1,  1,  1,   -1,  1,  1,
+    };
+
+    uint32_t indices[] = {
+         0,  1,  2,  2,  3,  0,   // back
+         4,  5,  6,  6,  7,  4,   // front
+         8,  9, 10, 10, 11,  8,   // left
+        12, 13, 14, 14, 15, 12,   // right
+        16, 17, 18, 18, 19, 16,   // bottom
+        20, 21, 22, 22, 23, 20,   // top
+    };
+    _decalIndexCount = 36;
+
+    VkDeviceSize vbSize = sizeof(vertices);
+    createBuffer(vbSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 _decalVertexBuffer, _decalVertexBufferMemory);
+    void *data;
+    vkMapMemory(device.getLogicalDevice(), _decalVertexBufferMemory, 0, vbSize, 0, &data);
+    memcpy(data, vertices, vbSize);
+    vkUnmapMemory(device.getLogicalDevice(), _decalVertexBufferMemory);
+
+    VkDeviceSize ibSize = sizeof(indices);
+    createBuffer(ibSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 _decalIndexBuffer, _decalIndexBufferMemory);
+    vkMapMemory(device.getLogicalDevice(), _decalIndexBufferMemory, 0, ibSize, 0, &data);
+    memcpy(data, indices, ibSize);
+    vkUnmapMemory(device.getLogicalDevice(), _decalIndexBufferMemory);
+  }
+
+  // --- 2. Decal data uniform buffers (per-frame) ---
+  {
+    _decalUniformBuffers.resize(framesInFlight);
+    _decalUniformBufferMemories.resize(framesInFlight);
+    for (uint32_t i = 0; i < framesInFlight; ++i) {
+      VkBufferCreateInfo bufInfo{};
+      bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bufInfo.size = sizeof(DecalData);
+      bufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+      bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      vkCreateBuffer(device.getLogicalDevice(), &bufInfo, nullptr, &_decalUniformBuffers[i]);
+
+      VkMemoryRequirements memReqs;
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), _decalUniformBuffers[i], &memReqs);
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memReqs.size;
+      allocInfo.memoryTypeIndex = device.findMemoryType(
+          memReqs.memoryTypeBits,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_decalUniformBufferMemories[i]);
+      vkBindBufferMemory(device.getLogicalDevice(), _decalUniformBuffers[i],
+                         _decalUniformBufferMemories[i], 0);
+    }
+  }
+
+  // --- 3. Descriptor set layout and pipeline ---
+  {
+    VkDescriptorSetLayoutBinding bindings[4] = {};
+    // Binding 0: depth texture (sampled)
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Binding 1: nearest clamp sampler
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Binding 2: DecalData uniform buffer
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+    // Binding 3: decal albedo texture
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 4;
+    layoutInfo.pBindings = bindings;
+    vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr, &_decalSetLayout);
+
+    // Pipeline layout: set 0 = global (camera), set 1 = decal resources
+    VkDescriptorSetLayout setLayouts[2] = {globalSetLayout, _decalSetLayout};
+    VkPipelineLayoutCreateInfo pipeLayoutInfo{};
+    pipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeLayoutInfo.setLayoutCount = 2;
+    pipeLayoutInfo.pSetLayouts = setLayouts;
+    vkCreatePipelineLayout(device.getLogicalDevice(), &pipeLayoutInfo, nullptr, &_decalPipelineLayout);
+
+    // Load shaders
+    auto vsCode = readFile((_rootPath / "shaders/decal.vs.spv").generic_string());
+    auto psCode = readFile((_rootPath / "shaders/decal.ps.spv").generic_string());
+    VkShaderModule vsModule = createShaderModule(vsCode);
+    VkShaderModule psModule = createShaderModule(psCode);
+
+    VkPipelineShaderStageCreateInfo vsStage{};
+    vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vsStage.module = vsModule;
+    vsStage.pName = "DecalVS";
+
+    VkPipelineShaderStageCreateInfo psStage{};
+    psStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    psStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    psStage.module = psModule;
+    psStage.pName = "DecalPS";
+
+    VkPipelineShaderStageCreateInfo stages[] = {vsStage, psStage};
+
+    VkVertexInputBindingDescription vtxBind{};
+    vtxBind.binding = 0;
+    vtxBind.stride = 3 * sizeof(float);
+    vtxBind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription vtxAttr{};
+    vtxAttr.binding = 0;
+    vtxAttr.location = 0;
+    vtxAttr.format = VK_FORMAT_R32G32B32_SFLOAT;
+    vtxAttr.offset = 0;
+
+    VkPipelineVertexInputStateCreateInfo vtxInput{};
+    vtxInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vtxInput.vertexBindingDescriptionCount = 1;
+    vtxInput.pVertexBindingDescriptions = &vtxBind;
+    vtxInput.vertexAttributeDescriptionCount = 1;
+    vtxInput.pVertexAttributeDescriptions = &vtxAttr;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkViewport viewport{};
+    viewport.x = 0; viewport.y = (float)h;
+    viewport.width = (float)w; viewport.height = -(float)h;
+    viewport.minDepth = 0; viewport.maxDepth = 1;
+
+    VkRect2D scissor{};
+    scissor.extent = {w, h};
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // render backfaces for decals
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo msaa{};
+    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL; // reverse-Z: backfaces are farther (lower depth)
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    // Attachment 0 (albedo): alpha blend; Attachments 1-3: no write
+    VkPipelineColorBlendAttachmentState blendAttachments[4] = {};
+    blendAttachments[0].blendEnable = VK_TRUE;
+    blendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+    blendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                                          VK_COLOR_COMPONENT_G_BIT |
+                                          VK_COLOR_COMPONENT_B_BIT |
+                                          VK_COLOR_COMPONENT_A_BIT;
+    for (int i = 1; i < 4; i++) {
+      blendAttachments[i].blendEnable = VK_FALSE;
+      blendAttachments[i].colorWriteMask = 0; // preserve existing GBuffer channels
+    }
+
+    VkPipelineColorBlendStateCreateInfo colorBlend{};
+    colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlend.attachmentCount = 4;
+    colorBlend.pAttachments = blendAttachments;
+
+    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynState{};
+    dynState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynState.dynamicStateCount = 2;
+    dynState.pDynamicStates = dynStates;
+
+    // Create render pass first
+    createDecalRenderPass();
+
+    VkGraphicsPipelineCreateInfo pipeInfo{};
+    pipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeInfo.stageCount = 2;
+    pipeInfo.pStages = stages;
+    pipeInfo.pVertexInputState = &vtxInput;
+    pipeInfo.pInputAssemblyState = &inputAssembly;
+    pipeInfo.pViewportState = &viewportState;
+    pipeInfo.pRasterizationState = &rasterizer;
+    pipeInfo.pMultisampleState = &msaa;
+    pipeInfo.pDepthStencilState = &depthStencil;
+    pipeInfo.pColorBlendState = &colorBlend;
+    pipeInfo.pDynamicState = &dynState;
+    pipeInfo.layout = _decalPipelineLayout;
+    pipeInfo.renderPass = _decalRenderPass;
+    pipeInfo.subpass = 0;
+
+    vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipeInfo,
+                               nullptr, &_decalPipeline);
+
+    vkDestroyShaderModule(device.getLogicalDevice(), vsModule, nullptr);
+    vkDestroyShaderModule(device.getLogicalDevice(), psModule, nullptr);
+  }
+
+  // --- 4. Descriptor pool and per-frame descriptor sets ---
+  {
+    VkDescriptorPoolSize poolSizes[] = {
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * framesInFlight},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, framesInFlight},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, framesInFlight},
+    };
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 3;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = framesInFlight;
+    vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &_decalDescriptorPool);
+
+    std::vector<VkDescriptorSetLayout> layouts(framesInFlight, _decalSetLayout);
+    _decalDescriptorSets.resize(framesInFlight);
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = _decalDescriptorPool;
+    allocInfo.descriptorSetCount = framesInFlight;
+    allocInfo.pSetLayouts = layouts.data();
+    vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, _decalDescriptorSets.data());
+
+    for (uint32_t i = 0; i < framesInFlight; i++) {
+      VkDescriptorImageInfo depthInfo{};
+      depthInfo.imageView = device.getWindowDepthOnlyImageView(i);
+      depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+
+      VkDescriptorImageInfo samplerInfo{};
+      samplerInfo.sampler = nearestClampSampler;
+
+      VkDescriptorBufferInfo bufInfo{};
+      bufInfo.buffer = _decalUniformBuffers[i];
+      bufInfo.offset = 0;
+      bufInfo.range = sizeof(DecalData);
+
+      VkDescriptorImageInfo texInfo{};
+      texInfo.imageView = _decalTextureView;
+      texInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+      VkWriteDescriptorSet writes[4] = {};
+      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[0].dstSet = _decalDescriptorSets[i];
+      writes[0].dstBinding = 0;
+      writes[0].descriptorCount = 1;
+      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[0].pImageInfo = &depthInfo;
+      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].dstSet = _decalDescriptorSets[i];
+      writes[1].dstBinding = 1;
+      writes[1].descriptorCount = 1;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+      writes[1].pImageInfo = &samplerInfo;
+      writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[2].dstSet = _decalDescriptorSets[i];
+      writes[2].dstBinding = 2;
+      writes[2].descriptorCount = 1;
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[2].pBufferInfo = &bufInfo;
+      writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[3].dstSet = _decalDescriptorSets[i];
+      writes[3].dstBinding = 3;
+      writes[3].descriptorCount = 1;
+      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[3].pImageInfo = &texInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 4, writes, 0, nullptr);
+    }
+  }
+
+  // --- 5. Load default decal texture ---
+  {
+    loadDecalTexture(std::string(_rootPath.generic_string() + "/" + _decalTexPaths[0]).c_str());
+  }
+
+  // --- 6. Create depth readback buffer (single float for decal placement) ---
+  {
+    VkBufferCreateInfo bufInfo{};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufInfo.size = sizeof(float);
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device.getLogicalDevice(), &bufInfo, nullptr, &_depthReadbackBuffer) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create depth readback buffer!");
+    }
+
+    VkMemoryRequirements memReqs;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _depthReadbackBuffer, &memReqs);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = device.findMemoryType(memReqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_depthReadbackBufferMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate depth readback buffer memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _depthReadbackBuffer, _depthReadbackBufferMemory, 0);
+  }
+
+  spdlog::info("Decal resources created: {}x{}, ready for {} decals", w, h, MAX_DECALS);
+}
+
+void GpuScene::loadDecalTexture(const char *path) {
+  if (_decalTextureView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _decalTextureView, nullptr);
+    _decalTextureView = VK_NULL_HANDLE;
+  }
+  if (_decalTextureImage != VK_NULL_HANDLE) {
+    vkDestroyImage(device.getLogicalDevice(), _decalTextureImage, nullptr);
+    _decalTextureImage = VK_NULL_HANDLE;
+  }
+  if (_decalTextureMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _decalTextureMemory, nullptr);
+    _decalTextureMemory = VK_NULL_HANDLE;
+  }
+
+  int texW, texH, texCh;
+  stbi_uc *pixels = stbi_load(path, &texW, &texH, &texCh, STBI_rgb_alpha);
+  if (!pixels) {
+    spdlog::warn("Failed to load decal texture: {}", path);
+    return;
+  }
+  VkDeviceSize imageSize = texW * texH * 4;
+
+  VkBuffer stagingBuf;
+  VkDeviceMemory stagingMem;
+  createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               stagingBuf, stagingMem);
+  void *d;
+  vkMapMemory(device.getLogicalDevice(), stagingMem, 0, imageSize, 0, &d);
+  memcpy(d, pixels, (size_t)imageSize);
+  vkUnmapMemory(device.getLogicalDevice(), stagingMem);
+  stbi_image_free(pixels);
+
+  VkImageCreateInfo imgInfo{};
+  imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imgInfo.imageType = VK_IMAGE_TYPE_2D;
+  imgInfo.extent = {(uint32_t)texW, (uint32_t)texH, 1};
+  imgInfo.mipLevels = 1;
+  imgInfo.arrayLayers = 1;
+  imgInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imgInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  vkCreateImage(device.getLogicalDevice(), &imgInfo, nullptr, &_decalTextureImage);
+
+  VkMemoryRequirements memReqs;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _decalTextureImage, &memReqs);
+  VkMemoryAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.allocationSize = memReqs.size;
+  alloc.memoryTypeIndex = device.findMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(device.getLogicalDevice(), &alloc, nullptr, &_decalTextureMemory);
+  vkBindImageMemory(device.getLogicalDevice(), _decalTextureImage, _decalTextureMemory, 0);
+
+  // Transition and copy using device helpers
+  device.transitionImageLayout(_decalTextureImage, VK_FORMAT_R8G8B8A8_SRGB,
+                               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  device.copyBufferToImage(stagingBuf, _decalTextureImage, texW, texH);
+
+  // Need to transition to SHADER_READ_ONLY — use a one-shot cmd buffer
+  {
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = const_cast<VulkanDevice&>(device).getCommandPool();
+    allocInfo.commandBufferCount = 1;
+    VkCommandBuffer tmpCmd;
+    vkAllocateCommandBuffers(device.getLogicalDevice(), &allocInfo, &tmpCmd);
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(tmpCmd, &begin);
+    transitionImageLayout(_decalTextureImage, VK_FORMAT_R8G8B8A8_SRGB,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, tmpCmd);
+    vkEndCommandBuffer(tmpCmd);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &tmpCmd;
+    vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(device.getGraphicsQueue());
+    vkFreeCommandBuffers(device.getLogicalDevice(),
+                         const_cast<VulkanDevice&>(device).getCommandPool(), 1, &tmpCmd);
+  }
+
+  vkDestroyBuffer(device.getLogicalDevice(), stagingBuf, nullptr);
+  vkFreeMemory(device.getLogicalDevice(), stagingMem, nullptr);
+
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = _decalTextureImage;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_decalTextureView);
+
+  // Update descriptor sets with new texture view
+  for (uint32_t i = 0; i < framesInFlight; ++i) {
+    VkDescriptorImageInfo texInfo{};
+    texInfo.imageView = _decalTextureView;
+    texInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = _decalDescriptorSets[i];
+    write.dstBinding = 3;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &texInfo;
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
+  }
+  spdlog::info("Decal texture loaded: {} ({}x{})", path, texW, texH);
+}
+
+void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
+  if (_decalPipeline == VK_NULL_HANDLE || _decals.empty())
+    return;
+
+  VkRenderPassBeginInfo rpInfo{};
+  rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  rpInfo.renderPass = _decalRenderPass;
+  rpInfo.framebuffer = _decalFramebuffers[currentFrame];
+  rpInfo.renderArea.offset = {0, 0};
+  rpInfo.renderArea.extent = device.getSwapChainExtent();
+  rpInfo.clearValueCount = 0;
+  rpInfo.pClearValues = nullptr;
+
+  vkCmdBeginRenderPass(commandBuffer, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _decalPipeline);
+
+  VkDescriptorSet sets[2] = {globalDescriptorSets[currentFrame],
+                             _decalDescriptorSets[currentFrame]};
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          _decalPipelineLayout, 0, 2, sets, 0, nullptr);
+
+  VkDeviceSize vtxOffset = 0;
+  vkCmdBindVertexBuffers(commandBuffer, 0, 1, &_decalVertexBuffer, &vtxOffset);
+  vkCmdBindIndexBuffer(commandBuffer, _decalIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+  VkExtent2D extent = device.getSwapChainExtent();
+  VkViewport viewport{};
+  viewport.x = 0; viewport.y = (float)extent.height;
+  viewport.width = (float)extent.width; viewport.height = -(float)extent.height;
+  viewport.minDepth = 0; viewport.maxDepth = 1;
+  vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+  VkRect2D scissor{};
+  scissor.extent = extent;
+  vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+  for (size_t d = 0; d < _decals.size(); ++d) {
+    void *data;
+    vkMapMemory(device.getLogicalDevice(), _decalUniformBufferMemories[currentFrame],
+                0, sizeof(DecalData), 0, &data);
+    memcpy(data, &_decals[d], sizeof(DecalData));
+    vkUnmapMemory(device.getLogicalDevice(), _decalUniformBufferMemories[currentFrame]);
+
+    vkCmdDrawIndexed(commandBuffer, _decalIndexCount, 1, 0, 0, 0);
+  }
+
+  vkCmdEndRenderPass(commandBuffer);
+}
+
+// --- Interactive decal helpers ---
+
+vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
+  Camera *cam = GetMainCamera();
+  float w = (float)device.getSwapChainExtent().width;
+  float h = (float)device.getSwapChainExtent().height;
+
+  int px = (int)mouseX;
+  int py = (int)mouseY;
+  if (px < 0) px = 0;
+  if (px >= (int)w) px = (int)w - 1;
+  if (py < 0) py = 0;
+  if (py >= (int)h) py = (int)h - 1;
+
+  VkImage depthImg = device.getWindowDepthImage(_currentFrameIndex);
+  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+
+  // Transition depth to TRANSFER_SRC_OPTIMAL
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = depthImg;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  // Copy single pixel to staging buffer
+  {
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {px, py, 0};
+    region.imageExtent = {1, 1, 1};
+
+    vkCmdCopyImageToBuffer(cmd, depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           _depthReadbackBuffer, 1, &region);
+  }
+
+  // Transition depth back
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = depthImg;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  device.endSingleTimeCommands(cmd);
+
+  // Read back depth value
+  float depth = 0.0f;
+  void *data;
+  vkMapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory, 0, sizeof(float), 0, &data);
+  memcpy(&depth, data, sizeof(float));
+  vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
+
+  // Reverse-Z: far plane has depth 0, but ScreenToWorldPos expects NDC depth
+  // If no geometry was rendered at this pixel, depth will be 0 (far plane in reverse-Z)
+  // which maps to the far plane. For decal placement, this is acceptable.
+  return cam->ScreenToWorldPos(mouseX, mouseY, w, h, depth);
+}
+
+void GpuScene::setDecalPreview(const vec3 &worldPos, const vec3 &normal,
+                               const vec3 &scale) {
+  // Build localToWorld from position, normal, and scale
+  vec3 up(0, 1, 0);
+  if (fabsf(normal.dot(up)) > 0.99f)
+    up = vec3(1, 0, 0);
+  vec3 tangent = normalize(up.cross(normal));
+  vec3 bitangent = normal.cross(tangent);
+
+  mat4 localToWorld;
+  localToWorld.x = vec4(tangent * scale.x, 0);
+  localToWorld.y = vec4(bitangent * scale.y, 0);
+  localToWorld.z = vec4(normal * scale.z, 0);
+  localToWorld.w = vec4(worldPos, 1);
+
+  DecalData d;
+  d.localToWorld = localToWorld;
+  d.worldToLocal = inverse(localToWorld);
+  d.albedoTint = vec4(1, 1, 1, 0.5f);
+  d.hasTexture = (_decalTexIndex > 0) ? 1 : 0;
+
+  _decals.push_back(d);
+}
+
+void GpuScene::updateDecalFromMouse(float mouseX, float mouseY, bool placeNew) {
+  Camera *cam = GetMainCamera();
+  float w = (float)device.getSwapChainExtent().width;
+  float h = (float)device.getSwapChainExtent().height;
+
+  if (placeNew && _decals.size() < MAX_DECALS) {
+    vec3 hitPos = getWorldPosFromDepth(mouseX, mouseY);
+    setDecalPreview(hitPos, vec3(0, 1, 0), vec3(1.0f, 0.8f, 0.3f));
+  } else if (_selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
+    DecalData &d = _decals[_selectedDecal];
+    vec3 pos = d.localToWorld.w.xyz();
+
+    if (_isDraggingDecal) {
+      vec3 rayOrigin, rayDir;
+      cam->ScreenToWorldRay(mouseX, mouseY, w, h, 0.5f, rayOrigin, rayDir);
+      vec3 planeNormal = cam->GetCameraDir();
+      float denom = rayDir.dot(planeNormal);
+      if (fabsf(denom) > 0.0001f) {
+        float t = (pos - rayOrigin).dot(planeNormal) / denom;
+        if (t > 0.0f) {
+          vec3 hitPos = rayOrigin + rayDir * t;
+          vec3 offset = hitPos - pos;
+          d.localToWorld.w.x += offset.x;
+          d.localToWorld.w.y += offset.y;
+          d.localToWorld.w.z += offset.z;
+          d.worldToLocal = inverse(d.localToWorld);
+        }
+      }
+    } else if (_isRotatingDecal) {
+      float dx = mouseX - _lastMouseX;
+      float angle = dx * 0.5f;
+      float c = cosf(angle * 3.1415926f / 180.0f);
+      float s = sinf(angle * 3.1415926f / 180.0f);
+      vec3 xCol = d.localToWorld.x.xyz();
+      vec3 zCol = d.localToWorld.z.xyz();
+      vec3 newX = xCol * c + zCol * s;
+      vec3 newZ = normalize(xCol.cross(vec3(0, 1, 0))) * c + zCol * s;
+      d.localToWorld.x = vec4(newX, 0);
+      d.localToWorld.z = vec4(normalize(newZ), 0);
+      d.worldToLocal = inverse(d.localToWorld);
+    }
+  }
+}
+
+void GpuScene::onMouseDownDecal(float mouseX, float mouseY) {
+  // Check if clicking on an existing decal (simple 2D screen-space pick)
+  _selectedDecal = -1;
+  Camera *cam = GetMainCamera();
+  float w = (float)device.getSwapChainExtent().width;
+  float h = (float)device.getSwapChainExtent().height;
+
+  for (int i = (int)_decals.size() - 1; i >= 0; --i) {
+    DecalData &d = _decals[i];
+    vec4 worldCenter = d.localToWorld * vec4(0, 0, 0, 1);
+    vec3 center = worldCenter.xyz_w();
+
+    // Project center to screen
+    mat4 viewProj = cam->getProjectMatrix() * cam->getObjectToCamera();
+    vec4 clip = viewProj * vec4(center, 1);
+    if (clip.w <= 0.001f) continue;
+    float sx = (clip.x / clip.w * 0.5f + 0.5f) * w;
+    float sy = (1.0f - (clip.y / clip.w * 0.5f + 0.5f)) * h;
+
+    float dist = sqrtf((sx - mouseX) * (sx - mouseX) +
+                       (sy - mouseY) * (sy - mouseY));
+    if (dist < 50.0f) {
+      _selectedDecal = i;
+      _isDraggingDecal = true;
+      break;
+    }
+  }
+
+  if (_selectedDecal < 0 && _decals.size() < MAX_DECALS) {
+    // Place new decal at mouse position
+    updateDecalFromMouse(mouseX, mouseY, true);
+    _selectedDecal = (int)_decals.size() - 1;
+    _isDraggingDecal = true;
+  }
+  _lastMouseX = mouseX;
+  _lastMouseY = mouseY;
+}
+
+void GpuScene::onMouseMoveDecal(float mouseX, float mouseY) {
+  if (_isDraggingDecal || _isRotatingDecal) {
+    updateDecalFromMouse(mouseX, mouseY, false);
+  }
+  _lastMouseX = mouseX;
+  _lastMouseY = mouseY;
+}
+
+void GpuScene::onMouseUpDecal() {
+  _isDraggingDecal = false;
+  _isRotatingDecal = false;
+}
+
+void GpuScene::onScrollDecal(float deltaY) {
+  if (_selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
+    DecalData &d = _decals[_selectedDecal];
+    float s = (deltaY > 0) ? 1.1f : 0.9f;
+    d.localToWorld.x = vec4(d.localToWorld.x.xyz() * s, 0);
+    d.localToWorld.y = vec4(d.localToWorld.y.xyz() * s, 0);
+    d.localToWorld.z = vec4(d.localToWorld.z.xyz() * s, 0);
+    d.worldToLocal = inverse(d.localToWorld);
+  }
+}
+
+void GpuScene::cycleDecalTexture() {
+  _decalTexIndex = (_decalTexIndex + 1) % DECAL_TEX_COUNT;
+  if (_decalTexIndex > 0) {
+    std::string path = _rootPath.generic_string() + "/" + _decalTexPaths[_decalTexIndex];
+    loadDecalTexture(path.c_str());
+    // Update hasTexture flag on selected decal
+    if (_selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
+      _decals[_selectedDecal].hasTexture = 1;
+    }
+  } else {
+    if (_selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
+      _decals[_selectedDecal].hasTexture = 0;
+    }
   }
 }
 
