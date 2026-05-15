@@ -25,9 +25,9 @@ cbuffer cam {
 [[vk::binding(0,1)]] RaytracingAccelerationStructure tlas;
 [[vk::binding(1,1)]] RWTexture2D<float4>             outLitColor;
 
-[[vk::binding(2,1)]] StructuredBuffer<float3>        vbPositions;
-[[vk::binding(3,1)]] StructuredBuffer<float3>        vbNormals;
-[[vk::binding(4,1)]] StructuredBuffer<float3>        vbTangents;
+[[vk::binding(2,1)]] ByteAddressBuffer               vbPositions;  // tightly-packed float3 (stride=12)
+[[vk::binding(3,1)]] ByteAddressBuffer               vbNormals;    // tightly-packed float3 (stride=12)
+[[vk::binding(4,1)]] ByteAddressBuffer               vbTangents;   // tightly-packed float3 (stride=12)
 [[vk::binding(5,1)]] StructuredBuffer<float2>        vbUVs;
 [[vk::binding(6,1)]] ByteAddressBuffer               ibIndices;
 
@@ -156,7 +156,7 @@ void RayGen() {
     p.hitT      = 0.0f;
 
     // Primary: hgOffset=0, hgStride=2, missIdx=0
-    TraceRay(tlas, RAY_FLAG_NONE, 0xFF, 0, 2, 0, r, p);
+    TraceRay(tlas, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 2, 0, r, p);
 
     if (!p.hit) {
         outLitColor[px] = float4(0, 0, 0, 1);
@@ -212,7 +212,7 @@ void RayGen() {
     //                                        posSqrR, L.color.xyz);
     // }
 
-    outLitColor[px] = float4((float3)p.albedo, 1.0f);
+    outLitColor[px] = float4(p.normal * 0.5f + 0.5f, 1.0f);
 }
 
 [shader("miss")]
@@ -242,12 +242,12 @@ HitInputs gatherHit(BuiltInTriangleIntersectionAttributes attribs) {
     uint primIdx = PrimitiveIndex();
     uint3 idx = fetchTriangleIndices(chunk, primIdx);
 
-    float3 n0 = vbNormals[idx.x];
-    float3 n1 = vbNormals[idx.y];
-    float3 n2 = vbNormals[idx.z];
-    float3 t0 = vbTangents[idx.x];
-    float3 t1 = vbTangents[idx.y];
-    float3 t2 = vbTangents[idx.z];
+    float3 n0 = asfloat(vbNormals.Load3(idx.x * 12));
+    float3 n1 = asfloat(vbNormals.Load3(idx.y * 12));
+    float3 n2 = asfloat(vbNormals.Load3(idx.z * 12));
+    float3 t0 = asfloat(vbTangents.Load3(idx.x * 12));
+    float3 t1 = asfloat(vbTangents.Load3(idx.y * 12));
+    float3 t2 = asfloat(vbTangents.Load3(idx.z * 12));
     float2 u0 = vbUVs[idx.x];
     float2 u1 = vbUVs[idx.y];
     float2 u2 = vbUVs[idx.z];
@@ -300,13 +300,14 @@ void ClosestHitPrimary(inout PrimaryPayload p,
     texnormal.z  = sqrt(saturate(1.0f - dot(texnormal.xy, texnormal.xy)));
 
     // Same TBN combination as drawcluster.hlsl base pass.
+    // Gram-Schmidt: re-orthogonalize tangent against normal to ensure orthonormal TBN.
     half3 geonormal = (half3)normalize(h.geoN);
-    half3 geotan    = (half3)normalize(h.geoT);
+    half3 geotan    = (half3)normalize(h.geoT - dot(h.geoT, h.geoN) * h.geoN);
     half3 geobinorm = normalize(cross(geotan, geonormal));
-    half3 normal    = texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinorm;
+    half3 normal    = normalize(texnormal.b * geonormal - texnormal.g * geotan + texnormal.r * geobinorm);
 
     p.wsPos     = h.wsPos;
-    p.normal    = (float3)normal;
+    p.normal    = (float3)geonormal;
     p.albedo    = (float3)lerp(baseColor.rgb, (half3)0.0h, materialData.b);
     p.F0        = (float3)lerp((half3)0.04h, baseColor.rgb, materialData.b);
     p.roughness = (float)max((half)0.08, materialData.g);

@@ -251,7 +251,7 @@ void RayTracing::buildTLAS() {
   instance.mask = 0xFF;
   // hitGroupStride = 2 (primary + shadow per geometry); base offset = 0.
   instance.instanceShaderBindingTableRecordOffset = 0;
-  instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+  instance.flags = 0;
   instance.accelerationStructureReference = _blasAddress;
 
   // Upload via host-visible instance buffer (small, 64 bytes).
@@ -748,8 +748,9 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   spdlog::info("RT: descriptor set + {} output images created (extent {}x{})",
                N, _rtExtent.width, _rtExtent.height);
 
-  // 5) ImGui composite render pass: load swapchain (preserve blit), draw ImGui,
-  //    transition to PRESENT_SRC_KHR.
+  // 5) ImGui composite render pass: compatible with _forwardLightingPass so the
+  //    ImGui pipeline (created against _forwardLightingPass) can be reused here.
+  //    Must have identical subpass description (color + depth) and dependency.
   VkAttachmentDescription colorAtt{};
   colorAtt.format = _device.getSwapChainImageFormat();
   colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -760,23 +761,39 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   colorAtt.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   colorAtt.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
+  VkAttachmentDescription depthAtt{};
+  depthAtt.format  = _device.getWindowDepthFormat();
+  depthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
+  depthAtt.loadOp  = VK_ATTACHMENT_LOAD_OP_LOAD;
+  depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depthAtt.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  depthAtt.finalLayout   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
   VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
   VkSubpassDescription sub{};
-  sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-  sub.colorAttachmentCount = 1;
-  sub.pColorAttachments = &colorRef;
+  sub.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  sub.colorAttachmentCount    = 1;
+  sub.pColorAttachments       = &colorRef;
+  sub.pDepthStencilAttachment = &depthRef;
 
   VkSubpassDependency dep{};
-  dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-  dep.dstSubpass = 0;
-  dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+  dep.dstSubpass    = 0;
   dep.srcAccessMask = 0;
-  dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
+  std::array<VkAttachmentDescription, 2> attachments = {colorAtt, depthAtt};
   VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-  rpci.attachmentCount = 1;
-  rpci.pAttachments = &colorAtt;
+  rpci.attachmentCount = static_cast<uint32_t>(attachments.size());
+  rpci.pAttachments = attachments.data();
   rpci.subpassCount = 1;
   rpci.pSubpasses = &sub;
   rpci.dependencyCount = 1;
@@ -787,12 +804,15 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
 
   _rtImguiFrameBuffer.resize(N);
   for (uint32_t f = 0; f < N; ++f) {
-    VkImageView attView = _device.getSwapChainImageView((int)f);
+    std::array<VkImageView, 2> views = {
+        _device.getSwapChainImageView((int)f),
+        _device.getWindowDepthImageView(f)
+    };
     VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    fbci.renderPass = _rtImguiPass;
-    fbci.attachmentCount = 1;
-    fbci.pAttachments = &attView;
-    fbci.width = _rtExtent.width;
+    fbci.renderPass      = _rtImguiPass;
+    fbci.attachmentCount = static_cast<uint32_t>(views.size());
+    fbci.pAttachments    = views.data();
+    fbci.width  = _rtExtent.width;
     fbci.height = _rtExtent.height;
     fbci.layers = 1;
     if (vkCreateFramebuffer(dev, &fbci, nullptr, &_rtImguiFrameBuffer[f]) != VK_SUCCESS) {
