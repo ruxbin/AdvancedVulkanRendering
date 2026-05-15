@@ -3486,16 +3486,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     vkCmdEndRenderPass(commandBuffer);
   }
 
-  // Screen-space decal pass: modify GBuffer before deferred lighting
-  {
-    // Transition depth for decal pass (depth read-only + sampleable)
-    transitionImageLayout(
-        device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
-        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
-
-    drawDecals(commandBuffer);
-  }
+  // Screen-space decal pass: modify GBuffer before deferred lighting.
+  // drawDecals() owns the depth layout transition (only fires if _decals
+  // is non-empty), so callers don't pay for it when there are no decals.
+  drawDecals(commandBuffer);
 
   {
     if (useClusterLighting) {
@@ -3555,10 +3549,17 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
                            0, nullptr, 1, &barrier);
     } else {
-      transitionImageLayout(
-          device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
-          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer); // read depth while write stencil in the point lighting pass
+      // Depth currently in either:
+      //   - DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL (when drawDecals ran), or
+      //   - DEPTH_STENCIL_ATTACHMENT_OPTIMAL          (when _decals was empty).
+      // Transition only in the second case so the deferred/SAO path always
+      // sees DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL.
+      if (_decals.empty()) {
+        transitionImageLayout(
+            device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
+      }
     }
   }
 
@@ -5617,15 +5618,16 @@ void GpuScene::createDecalRenderPass() {
   uint32_t w = device.getSwapChainExtent().width;
   uint32_t h = device.getSwapChainExtent().height;
 
-  VkAttachmentDescription colorAttachments[4] = {};
-  for (int i = 0; i < 4; i++) {
-    colorAttachments[i].format = _gbufferFormat[i];
-    colorAttachments[i].samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    colorAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachments[i].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    colorAttachments[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  }
+  // Fix #10: decal shader only writes SV_Target0 (albedo). Use a single color
+  // attachment instead of all 4 GBuffer slots. Depth is bound read-only for
+  // sampling (the shader reconstructs world position from it).
+  VkAttachmentDescription colorAttachment{};
+  colorAttachment.format = _gbufferFormat[0];
+  colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+  colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  colorAttachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkAttachmentDescription depthAttachment{};
   depthAttachment.format = device.getWindowDepthFormat();
@@ -5637,20 +5639,18 @@ void GpuScene::createDecalRenderPass() {
   depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
   depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
-  VkAttachmentReference colorRefs[4] = {};
-  for (int i = 0; i < 4; i++) {
-    colorRefs[i].attachment = i;
-    colorRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  }
+  VkAttachmentReference colorRef{};
+  colorRef.attachment = 0;
+  colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
   VkAttachmentReference depthRef{};
-  depthRef.attachment = 4;
+  depthRef.attachment = 1;
   depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
   VkSubpassDescription subpass{};
   subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-  subpass.colorAttachmentCount = 4;
-  subpass.pColorAttachments = colorRefs;
+  subpass.colorAttachmentCount = 1;
+  subpass.pColorAttachments = &colorRef;
   subpass.pDepthStencilAttachment = &depthRef;
 
   // Entry: shader read → color attachment write; depth attachment → depth read
@@ -5673,14 +5673,12 @@ void GpuScene::createDecalRenderPass() {
   outDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   outDep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-  VkAttachmentDescription allAttachments[5] = {
-      colorAttachments[0], colorAttachments[1], colorAttachments[2],
-      colorAttachments[3], depthAttachment};
+  VkAttachmentDescription allAttachments[2] = {colorAttachment, depthAttachment};
   VkSubpassDependency deps[2] = {inDep, outDep};
 
   VkRenderPassCreateInfo rpInfo{};
   rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-  rpInfo.attachmentCount = 5;
+  rpInfo.attachmentCount = 2;
   rpInfo.pAttachments = allAttachments;
   rpInfo.subpassCount = 1;
   rpInfo.pSubpasses = &subpass;
@@ -5689,16 +5687,15 @@ void GpuScene::createDecalRenderPass() {
 
   vkCreateRenderPass(device.getLogicalDevice(), &rpInfo, nullptr, &_decalRenderPass);
 
-  // Create per-frame framebuffers
+  // Create per-frame framebuffers (only albedo + depth)
   _decalFramebuffers.resize(framesInFlight);
   for (uint32_t f = 0; f < framesInFlight; ++f) {
-    VkImageView attachments[5] = {
-        _gbuffersView[0][f], _gbuffersView[1][f], _gbuffersView[2][f],
-        _gbuffersView[3][f], device.getWindowDepthImageView(f)};
+    VkImageView attachments[2] = {
+        _gbuffersView[0][f], device.getWindowDepthImageView(f)};
     VkFramebufferCreateInfo fbInfo{};
     fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbInfo.renderPass = _decalRenderPass;
-    fbInfo.attachmentCount = 5;
+    fbInfo.attachmentCount = 2;
     fbInfo.pAttachments = attachments;
     fbInfo.width = w;
     fbInfo.height = h;
@@ -5756,29 +5753,30 @@ void GpuScene::createDecalResources() {
     vkUnmapMemory(device.getLogicalDevice(), _decalIndexBufferMemory);
   }
 
-  // --- 2. Decal data uniform buffers (per-frame) ---
+  // --- 2. Per-frame decal SSBO (MAX_DECALS entries; shader reads via push-constant index) ---
   {
-    _decalUniformBuffers.resize(framesInFlight);
-    _decalUniformBufferMemories.resize(framesInFlight);
+    _decalDataBuffers.resize(framesInFlight);
+    _decalDataBufferMemories.resize(framesInFlight);
+    const VkDeviceSize bufSize = sizeof(DecalData) * MAX_DECALS;
     for (uint32_t i = 0; i < framesInFlight; ++i) {
       VkBufferCreateInfo bufInfo{};
       bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-      bufInfo.size = sizeof(DecalData);
-      bufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+      bufInfo.size = bufSize;
+      bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
       bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-      vkCreateBuffer(device.getLogicalDevice(), &bufInfo, nullptr, &_decalUniformBuffers[i]);
+      vkCreateBuffer(device.getLogicalDevice(), &bufInfo, nullptr, &_decalDataBuffers[i]);
 
       VkMemoryRequirements memReqs;
-      vkGetBufferMemoryRequirements(device.getLogicalDevice(), _decalUniformBuffers[i], &memReqs);
+      vkGetBufferMemoryRequirements(device.getLogicalDevice(), _decalDataBuffers[i], &memReqs);
       VkMemoryAllocateInfo allocInfo{};
       allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
       allocInfo.allocationSize = memReqs.size;
       allocInfo.memoryTypeIndex = device.findMemoryType(
           memReqs.memoryTypeBits,
           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-      vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_decalUniformBufferMemories[i]);
-      vkBindBufferMemory(device.getLogicalDevice(), _decalUniformBuffers[i],
-                         _decalUniformBufferMemories[i], 0);
+      vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_decalDataBufferMemories[i]);
+      vkBindBufferMemory(device.getLogicalDevice(), _decalDataBuffers[i],
+                         _decalDataBufferMemories[i], 0);
     }
   }
 
@@ -5795,9 +5793,9 @@ void GpuScene::createDecalResources() {
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    // Binding 2: DecalData uniform buffer
+    // Binding 2: DecalData SSBO (array of MAX_DECALS)
     bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
     // Binding 3: decal albedo texture
@@ -5812,12 +5810,19 @@ void GpuScene::createDecalResources() {
     layoutInfo.pBindings = bindings;
     vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr, &_decalSetLayout);
 
-    // Pipeline layout: set 0 = global (camera), set 1 = decal resources
+    // Pipeline layout: set 0 = global (camera), set 1 = decal resources;
+    // push constant carries decal index (uint).
     VkDescriptorSetLayout setLayouts[2] = {globalSetLayout, _decalSetLayout};
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset = 0;
+    pcRange.size = sizeof(uint32_t);
     VkPipelineLayoutCreateInfo pipeLayoutInfo{};
     pipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipeLayoutInfo.setLayoutCount = 2;
     pipeLayoutInfo.pSetLayouts = setLayouts;
+    pipeLayoutInfo.pushConstantRangeCount = 1;
+    pipeLayoutInfo.pPushConstantRanges = &pcRange;
     vkCreatePipelineLayout(device.getLogicalDevice(), &pipeLayoutInfo, nullptr, &_decalPipelineLayout);
 
     // Load shaders
@@ -5888,35 +5893,34 @@ void GpuScene::createDecalResources() {
     msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    // Fix #9: depth test disabled — shader's bbox discard handles in/out tests
+    // accurately for any camera position relative to the decal volume.
+    // Depth-write is also off (decal must not modify scene depth).
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthTestEnable = VK_FALSE;
     depthStencil.depthWriteEnable = VK_FALSE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL; // reverse-Z: backfaces are farther (lower depth)
+    depthStencil.depthCompareOp = VK_COMPARE_OP_ALWAYS;
     depthStencil.stencilTestEnable = VK_FALSE;
 
-    // Attachment 0 (albedo): alpha blend; Attachments 1-3: no write
-    VkPipelineColorBlendAttachmentState blendAttachments[4] = {};
-    blendAttachments[0].blendEnable = VK_TRUE;
-    blendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
-    blendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
-    blendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                                          VK_COLOR_COMPONENT_G_BIT |
-                                          VK_COLOR_COMPONENT_B_BIT |
-                                          VK_COLOR_COMPONENT_A_BIT;
-    for (int i = 1; i < 4; i++) {
-      blendAttachments[i].blendEnable = VK_FALSE;
-      blendAttachments[i].colorWriteMask = 0; // preserve existing GBuffer channels
-    }
+    // Fix #10: only 1 color attachment now (albedo). Single blend slot.
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.blendEnable = VK_TRUE;
+    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                                      VK_COLOR_COMPONENT_G_BIT |
+                                      VK_COLOR_COMPONENT_B_BIT |
+                                      VK_COLOR_COMPONENT_A_BIT;
 
     VkPipelineColorBlendStateCreateInfo colorBlend{};
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlend.attachmentCount = 4;
-    colorBlend.pAttachments = blendAttachments;
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments = &blendAttachment;
 
     VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynState{};
@@ -5955,7 +5959,7 @@ void GpuScene::createDecalResources() {
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * framesInFlight},
         {VK_DESCRIPTOR_TYPE_SAMPLER, framesInFlight},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, framesInFlight},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, framesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -5982,9 +5986,9 @@ void GpuScene::createDecalResources() {
       samplerInfo.sampler = nearestClampSampler;
 
       VkDescriptorBufferInfo bufInfo{};
-      bufInfo.buffer = _decalUniformBuffers[i];
+      bufInfo.buffer = _decalDataBuffers[i];
       bufInfo.offset = 0;
-      bufInfo.range = sizeof(DecalData);
+      bufInfo.range = sizeof(DecalData) * MAX_DECALS;
 
       VkDescriptorImageInfo texInfo{};
       texInfo.imageView = _decalTextureView;
@@ -6007,7 +6011,7 @@ void GpuScene::createDecalResources() {
       writes[2].dstSet = _decalDescriptorSets[i];
       writes[2].dstBinding = 2;
       writes[2].descriptorCount = 1;
-      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
       writes[2].pBufferInfo = &bufInfo;
       writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[3].dstSet = _decalDescriptorSets[i];
@@ -6055,6 +6059,11 @@ void GpuScene::createDecalResources() {
 }
 
 void GpuScene::loadDecalTexture(const char *path) {
+  // Fix #7, #8: any in-flight frame might still reference the old texture
+  // image and the per-frame descriptor sets that point to it. Stall until
+  // the GPU is fully idle before destroying / rewriting them.
+  vkDeviceWaitIdle(device.getLogicalDevice());
+
   if (_decalTextureView != VK_NULL_HANDLE) {
     vkDestroyImageView(device.getLogicalDevice(), _decalTextureView, nullptr);
     _decalTextureView = VK_NULL_HANDLE;
@@ -6174,6 +6183,26 @@ void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
   if (_decalPipeline == VK_NULL_HANDLE || _decals.empty())
     return;
 
+  // Fix #5: Layout transition only when we actually have decals to draw.
+  // The transition is owned by drawDecals so callers don't pay the cost when
+  // _decals is empty.
+  transitionImageLayout(
+      device.getWindowDepthImage(currentFrame), device.getWindowDepthFormat(),
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+      VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, commandBuffer);
+
+  // Fix #1: Upload the entire decal array ONCE before recording any draws.
+  // The previous per-iteration mapMemory inside the recorded loop overwrote
+  // the same memory, so all draws ended up using the last decal's data.
+  const uint32_t decalCount = std::min<uint32_t>((uint32_t)_decals.size(), MAX_DECALS);
+  {
+    void *data;
+    vkMapMemory(device.getLogicalDevice(), _decalDataBufferMemories[currentFrame],
+                0, sizeof(DecalData) * decalCount, 0, &data);
+    memcpy(data, _decals.data(), sizeof(DecalData) * decalCount);
+    vkUnmapMemory(device.getLogicalDevice(), _decalDataBufferMemories[currentFrame]);
+  }
+
   VkRenderPassBeginInfo rpInfo{};
   rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   rpInfo.renderPass = _decalRenderPass;
@@ -6207,13 +6236,11 @@ void GpuScene::drawDecals(VkCommandBuffer commandBuffer) {
   scissor.extent = extent;
   vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-  for (size_t d = 0; d < _decals.size(); ++d) {
-    void *data;
-    vkMapMemory(device.getLogicalDevice(), _decalUniformBufferMemories[currentFrame],
-                0, sizeof(DecalData), 0, &data);
-    memcpy(data, &_decals[d], sizeof(DecalData));
-    vkUnmapMemory(device.getLogicalDevice(), _decalUniformBufferMemories[currentFrame]);
-
+  // Fix #1: per-decal index via push constant; data was already uploaded above.
+  for (uint32_t d = 0; d < decalCount; ++d) {
+    vkCmdPushConstants(commandBuffer, _decalPipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(uint32_t), &d);
     vkCmdDrawIndexed(commandBuffer, _decalIndexCount, 1, 0, 0, 0);
   }
 
@@ -6234,14 +6261,39 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
   if (py < 0) py = 0;
   if (py >= (int)h) py = (int)h - 1;
 
-  VkImage depthImg = device.getWindowDepthImage(_currentFrameIndex);
-  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+  // Fix #3: this is invoked from a mouse callback between frames. The depth
+  // image's last-seen layout depends on the previous frame's deferred path:
+  // it is left in DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL by drawDecals
+  // (or the equivalent transition in the deferred branch). Using
+  // DEPTH_STENCIL_ATTACHMENT_OPTIMAL here would produce an oldLayout
+  // mismatch validation error.
+  // We restore to the same layout at the end so subsequent frames don't
+  // see a different starting state.
+  const VkImageLayout depthCurrentLayout =
+      VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
-  // Transition depth to TRANSFER_SRC_OPTIMAL
+  // Fix #4: avoid vkQueueWaitIdle (full-queue stall). Use a per-call fence
+  // so we only block on this single submit.
+  VkCommandBufferAllocateInfo cmdAlloc{};
+  cmdAlloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cmdAlloc.commandPool = const_cast<VulkanDevice&>(device).getCommandPool();
+  cmdAlloc.commandBufferCount = 1;
+  VkCommandBuffer cmd;
+  vkAllocateCommandBuffers(device.getLogicalDevice(), &cmdAlloc, &cmd);
+
+  VkCommandBufferBeginInfo begin{};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd, &begin);
+
+  VkImage depthImg = device.getWindowDepthImage(_currentFrameIndex);
+
+  // depth READ_ONLY_STENCIL_ATTACHMENT → TRANSFER_SRC
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.oldLayout = depthCurrentLayout;
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -6251,11 +6303,11 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
     vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
@@ -6277,12 +6329,12 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
                            _depthReadbackBuffer, 1, &region);
   }
 
-  // Transition depth back
+  // TRANSFER_SRC → READ_ONLY_STENCIL_ATTACHMENT (same as the entering layout)
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = depthCurrentLayout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = depthImg;
@@ -6292,15 +6344,33 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
 
-  device.endSingleTimeCommands(cmd);
+  vkEndCommandBuffer(cmd);
+
+  // Submit with per-call fence (Fix #4). vkWaitForFences blocks ONLY this
+  // submit instead of stalling the whole graphics queue (vkQueueWaitIdle).
+  VkFence fence;
+  VkFenceCreateInfo fenceInfo{};
+  fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  vkCreateFence(device.getLogicalDevice(), &fenceInfo, nullptr, &fence);
+
+  VkSubmitInfo submitInfo{};
+  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &cmd;
+  vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, fence);
+
+  vkWaitForFences(device.getLogicalDevice(), 1, &fence, VK_TRUE, UINT64_MAX);
+  vkDestroyFence(device.getLogicalDevice(), fence, nullptr);
+  vkFreeCommandBuffers(device.getLogicalDevice(),
+                       const_cast<VulkanDevice&>(device).getCommandPool(), 1, &cmd);
 
   // Read back depth value
   float depth = 0.0f;
@@ -6309,9 +6379,10 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
   memcpy(&depth, data, sizeof(float));
   vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
 
-  // Reverse-Z: far plane has depth 0, but ScreenToWorldPos expects NDC depth
-  // If no geometry was rendered at this pixel, depth will be 0 (far plane in reverse-Z)
-  // which maps to the far plane. For decal placement, this is acceptable.
+  // Reverse-Z: far plane has depth 0, but ScreenToWorldPos expects NDC depth.
+  // If no geometry was rendered at this pixel, depth will be 0 (far plane in
+  // reverse-Z) which maps to the far plane. For decal placement, this is
+  // acceptable.
   return cam->ScreenToWorldPos(mouseX, mouseY, w, h, depth);
 }
 

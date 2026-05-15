@@ -362,14 +362,15 @@ private:
   VkRenderPass _decalRenderPass = VK_NULL_HANDLE;
   std::vector<VkFramebuffer> _decalFramebuffers;
   std::vector<VkDescriptorSet> _decalDescriptorSets;
-  std::vector<VkBuffer> _decalUniformBuffers;
-  std::vector<VkDeviceMemory> _decalUniformBufferMemories;
+  // Per-frame SSBO holding MAX_DECALS DecalData entries. CPU writes the whole
+  // array once before the render pass; GPU reads via push-constant index.
+  std::vector<VkBuffer> _decalDataBuffers;
+  std::vector<VkDeviceMemory> _decalDataBufferMemories;
   VkBuffer _decalVertexBuffer = VK_NULL_HANDLE;
   VkDeviceMemory _decalVertexBufferMemory = VK_NULL_HANDLE;
   VkBuffer _decalIndexBuffer = VK_NULL_HANDLE;
   VkDeviceMemory _decalIndexBufferMemory = VK_NULL_HANDLE;
   uint32_t _decalIndexCount = 0;
-  uint32_t _activeDecalCount = 0;
   std::vector<DecalData> _decals;
 
   // Decal texture

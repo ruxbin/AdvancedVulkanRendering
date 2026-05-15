@@ -103,6 +103,13 @@ struct AAPLPointLightCullingData
 #define M_PI_F 3.1415926535897932f
 
 
+// Reconstruct world-space position from a screen-space texCoord and depth.
+//
+// Note on the Y-flip convention (Fix #13): the commented-out `ndc.y *= -1`
+// is intentionally not applied here because the project's projectionMatrix
+// already encodes Vulkan's Y-down NDC (negative Y scale in the projection),
+// so its inverse undoes the flip when we multiply. If you ever switch to a
+// projection without the implicit Y-flip, re-enable that line.
 float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBufferFull cameraParams)
 {
     float4 ndc;
