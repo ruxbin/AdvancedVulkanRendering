@@ -110,11 +110,12 @@ struct AAPLPointLightCullingData
 // already encodes Vulkan's Y-down NDC (negative Y scale in the projection),
 // so its inverse undoes the flip when we multiply. If you ever switch to a
 // projection without the implicit Y-flip, re-enable that line.
-float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBufferFull cameraParams)
+float4 worldPositionForTexcoord(float2 texCoord, float depth, CameraParamsBufferFull cameraParams, bool isdecal=false)
 {
     float4 ndc;
     ndc.xy = texCoord.xy * 2 - 1;
-    //ndc.y *= -1;
+    if(isdecal)
+        ndc.y *= -1;
     ndc.z = depth;
     ndc.w = 1;
 

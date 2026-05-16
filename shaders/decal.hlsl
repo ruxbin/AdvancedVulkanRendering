@@ -51,8 +51,9 @@ half4 DecalPS(VSOutput input) : SV_Target0
     float2 texCoord = input.position.xy / frameConstants.physicalSize;
     float depth = depthTex.SampleLevel(nearestSampler, texCoord, 0);
 
-    float4 worldPosition = worldPositionForTexcoord(texCoord, depth, cameraParams);
-    float3 localPos = mul(d.worldToLocal, float4(worldPosition.xyz, 1.0)).xyz;
+    float4 worldPosition = worldPositionForTexcoord(texCoord, depth, cameraParams,true);
+    float4 localPos = mul(d.worldToLocal, float4(worldPosition.xyz, 1.0));
+    localPos /= localPos.w;
 
     if (any(abs(localPos) > 1.0))
         discard;

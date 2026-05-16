@@ -55,3 +55,13 @@ echo compiling drawoccludersps
 
 echo compiling sao
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T cs_6_2 sao.hlsl -fspv-debug=vulkan-with-source -E ScalableAmbientObscurance -Fo sao.cs.spv
+
+echo raytracing
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T lib_6_3 rt_lighting.hlsl -fspv-target-env=vulkan1.2 -fspv-extension=SPV_KHR_ray_tracing -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-extension=SPV_KHR_non_semantic_info -fspv-extension=SPV_EXT_descriptor_indexing -Fo rt_lighting.lib.spv
+
+echo compiling decalvs
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -E DecalVS decal.hlsl -T vs_6_0 -Fo decal.vs.spv
+
+echo compiling decalps
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -E DecalPS decal.hlsl -T ps_6_0 -fspv-debug=vulkan-with-source -Fo decal.ps.spv
+

@@ -93,7 +93,7 @@ int main(int nargs, char **args) {
   float currentYDegree = 0;
   constexpr float rotateSpeed = 0.1f;
   constexpr float moveSpeed = 0.5f;
-  constexpr int avg_windows_size = 10;
+  constexpr int avg_windows_size = 200;
   int current_window_count = 0;
   std::chrono::milliseconds checkpoint_sum1 = std::chrono::milliseconds(0);
   std::chrono::milliseconds checkpoint_sum2 = std::chrono::milliseconds(0);

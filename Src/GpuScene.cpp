@@ -5891,7 +5891,7 @@ void GpuScene::createDecalResources() {
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // render backfaces for decals
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // render backfaces for decals
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.lineWidth = 1.0f;
 
@@ -6487,7 +6487,7 @@ void GpuScene::updateDecalFromMouse(float mouseX, float mouseY, bool placeNew) {
 
   if (placeNew && _decals.size() < MAX_DECALS) {
     vec3 hitPos = getWorldPosFromDepth(mouseX, mouseY);
-    setDecalPreview(hitPos, vec3(0, 1, 0), vec3(1.0f, 0.8f, 0.3f));
+    setDecalPreview(hitPos, vec3(0, 1, 0), vec3(1.0f, 1.f, 1.f));
   } else if (_selectedDecal >= 0 && (size_t)_selectedDecal < _decals.size()) {
     DecalData &d = _decals[_selectedDecal];
     vec3 pos = d.localToWorld.w.xyz();

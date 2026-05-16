@@ -8,6 +8,7 @@ private:
   mat4 _objectToCameraMatrix;
   mat4 _invViewMatrix;
   mat4 _invViewProjectionMatrix;
+  mat4 _invViewProj;
   Camera();
   vec3 _origin;
   vec3 _x; // left & right -- a/d
