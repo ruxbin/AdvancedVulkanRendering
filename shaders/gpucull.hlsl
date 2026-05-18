@@ -57,8 +57,10 @@ bool IsOccludedByHiZ(AAPLBoundingBox3 aabb)
             continue;
         }
         float3 ndc = clip.xyz / clip.w;
+        // Occluder pass uses positive-height viewport, so the rasterizer maps
+        // ndc.y = +1 to the bottom of the depth texture (y_f = H). Sample with
+        // uv.y = ndc.y*0.5 + 0.5 directly — no extra flip.
         float2 uv = ndc.xy * 0.5 + 0.5;
-        uv.y = 1.0 - uv.y; // Vulkan Y flip
 
         minX = min(minX, uv.x);
         maxX = max(maxX, uv.x);

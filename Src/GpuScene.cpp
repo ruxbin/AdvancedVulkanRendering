@@ -6281,6 +6281,83 @@ vec3 GpuScene::getWorldPosFromDepth(float mouseX, float mouseY) {
   if (py < 0) py = 0;
   if (py >= (int)h) py = (int)h - 1;
 
+  // DEBUG: also probe center and 4 quadrant midpoints to see where the depth
+  // buffer actually has non-zero data. This tells us the Y orientation and
+  // whether the depth image is being written at all.
+  {
+    auto probeDepth = [&](int qx, int qy) -> uint32_t {
+      uint32_t sentinel = 0xDEADBEEF;
+      void *seed;
+      vkMapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory, 0, sizeof(uint32_t), 0, &seed);
+      memcpy(seed, &sentinel, sizeof(uint32_t));
+      vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
+
+      VkCommandBufferAllocateInfo a{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+      a.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      a.commandPool = const_cast<VulkanDevice&>(device).getCommandPool();
+      a.commandBufferCount = 1;
+      VkCommandBuffer c;
+      vkAllocateCommandBuffers(device.getLogicalDevice(), &a, &c);
+      VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      b.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      vkBeginCommandBuffer(c, &b);
+
+      VkImage img = device.getWindowDepthImage(_currentFrameIndex);
+      VkImageMemoryBarrier br{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      br.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      br.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      br.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      br.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      br.image = img;
+      br.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      br.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      br.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &br);
+      VkBufferImageCopy r{};
+      r.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      r.imageOffset = {qx, qy, 0};
+      r.imageExtent = {1, 1, 1};
+      vkCmdCopyImageToBuffer(c, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             _depthReadbackBuffer, 1, &r);
+      br.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      br.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      br.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      br.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &br);
+      vkEndCommandBuffer(c);
+
+      VkFence f;
+      VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      vkCreateFence(device.getLogicalDevice(), &fi, nullptr, &f);
+      VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+      si.commandBufferCount = 1;
+      si.pCommandBuffers = &c;
+      vkQueueSubmit(device.getGraphicsQueue(), 1, &si, f);
+      vkWaitForFences(device.getLogicalDevice(), 1, &f, VK_TRUE, UINT64_MAX);
+      vkDestroyFence(device.getLogicalDevice(), f, nullptr);
+      vkFreeCommandBuffers(device.getLogicalDevice(),
+                           const_cast<VulkanDevice&>(device).getCommandPool(), 1, &c);
+
+      uint32_t out = 0;
+      void *d;
+      vkMapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory, 0, sizeof(uint32_t), 0, &d);
+      memcpy(&out, d, sizeof(uint32_t));
+      vkUnmapMemory(device.getLogicalDevice(), _depthReadbackBufferMemory);
+      return out;
+    };
+    int W = (int)w, H = (int)h;
+    spdlog::info("DEPTH PROBE corners + center on imageIndex={}:", _currentFrameIndex);
+    spdlog::info("  TL(50,50)        = 0x{:08x}", probeDepth(50, 50));
+    spdlog::info("  TR({},50)        = 0x{:08x}", W - 50, probeDepth(W - 50, 50));
+    spdlog::info("  CENTER({},{})    = 0x{:08x}", W/2, H/2, probeDepth(W/2, H/2));
+    spdlog::info("  BL(50,{})        = 0x{:08x}", H - 50, probeDepth(50, H - 50));
+    spdlog::info("  BR({},{})        = 0x{:08x}", W - 50, H - 50, probeDepth(W - 50, H - 50));
+  }
+
   // Pre-fill the readback buffer with a sentinel so we can tell whether
   // vkCmdCopyImageToBuffer actually wrote anything (vs. depth being literally 0).
   {
