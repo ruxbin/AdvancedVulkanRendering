@@ -74,7 +74,7 @@ void Camera::updateCameraMatrix() {
   mat4 viewprojmatrix = _objectToCameraMatrix * _projectionMatrix;
   _invViewProjectionMatrix = inverse(viewprojmatrix);
 
-  mat4 invViewProj = inverse(viewproj);
+  _invViewProj = inverse(viewproj);
   vec4 clipCoords[8] = {
       {-1, -1, 0, 1}, {-1, 1, 0, 1}, {1, 1, 0, 1}, {1, -1, 0, 1},  // far
       {-1, -1, 1, 1}, {-1, 1, 1, 1}, {1, 1, 1, 1}, {1, -1, 1, 1}}; // near
@@ -82,7 +82,7 @@ void Camera::updateCameraMatrix() {
   vec4 worldCoordsH[8];
   vec3 worldCoords[8];
   for (int i = 0; i < 8; i++) {
-    worldCoordsH[i] = invViewProj * clipCoords[i];
+    worldCoordsH[i] = _invViewProj * clipCoords[i];
     worldCoords[i] = worldCoordsH[i].xyz_w();
   }
   for (int i = 0; i < 4; i++)
@@ -174,7 +174,7 @@ vec3 Camera::ScreenToWorldPos(float screenX, float screenY, float screenW,
   float ndcY = 1.0f - (2.0f * screenY / screenH);
 
   vec4 ndc(ndcX, ndcY, depthNDC, 1.0f);
-  vec4 worldPos = _invViewProjectionMatrix * ndc;
+  vec4 worldPos = _invViewProj * ndc;
   worldPos = worldPos / worldPos.w;
   return worldPos.xyz();
 }
