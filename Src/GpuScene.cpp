@@ -3366,8 +3366,11 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       uint32_t totalPointLights = _pointLights.size();
       uint32_t totalSpotLights = _spotLights.size();
 
-      // Compute view-projection matrix for Hi-Z AABB projection
-      mat4 viewProj = maincamera->getProjectMatrix() * maincamera->getObjectToCamera();
+      // Compute view-projection matrix for Hi-Z AABB projection.
+      // 注意:本项目 mat4::operator* 的实现里 `A * B` 实际算的是数学上的
+      // `B * A`(参见 Matrix.h 的索引方式以及 Camera.cpp:74)。
+      // 所以这里要写 V*P 形式才能得到数学上的 P*V,跟 HLSL 的列向量 mul 对齐。
+      mat4 viewProj = maincamera->getObjectToCamera() * maincamera->getProjectMatrix();
       mat4 viewProjT = transpose(viewProj);
 
       GPUCullParams params;
