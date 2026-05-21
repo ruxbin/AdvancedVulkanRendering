@@ -101,8 +101,6 @@ bool IsOccludedByHiZ(AAPLBoundingBox3 aabb)
         return false;
 
     // Reverse-Z: occluded if nearest AABB point (maxZ) <= farthest visible occluder (hizDepth).
-    // maxZ is the highest NDC depth of any AABB corner (closest to camera in reverse-Z).
-    // hizDepth is the MIN across the footprint = farthest occluder = most conservative bound.
     return maxZ <= hizDepth;
 }
 

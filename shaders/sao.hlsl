@@ -37,14 +37,19 @@ float3 GetCameraSpacePositionFromDepth(uint2 coordinates, float depth)
     float2 ndc;
     ndc.xy = (float2(coordinates) + 0.5) / float2(pushConstants.screenSize);
     ndc.xy = ndc.xy * 2.0 - 1.0;
-    ndc.y *= -1.0; // Vulkan Y flip
+    // 不需要 Vulkan Y flip:窗口深度由正 viewport 渲染,
+    // 跟 deferredlighting 的 worldPositionForTexcoord 一致(都不翻 Y)。
 
+    // HLSL/SPIR-V 列向量约定:invProj[i][j] = row i, col j。
+    // reverse-Z perspective 的逆矩阵第 3 行是 (0, 0, 1/d, -c/d),
+    // 所以 depth 的系数是 invProj[3][2],不是 invProj[2][3]。
+    // (从 .metal port 时少做了一次行列索引转置)
     float4x4 invProj = cameraParams.invProjectionMatrix;
     float4 cameraSpacePosition = float4(
-        ndc.x * invProj[0][0] + invProj[3][0],
-        ndc.y * invProj[1][1] + invProj[3][1],
+        ndc.x * invProj[0][0] + invProj[0][3],
+        ndc.y * invProj[1][1] + invProj[1][3],
         1.0,
-        depth * invProj[2][3] + invProj[3][3]
+        depth * invProj[3][2] + invProj[3][3]
     );
     cameraSpacePosition.xyz /= cameraSpacePosition.w;
 
@@ -57,12 +62,11 @@ float2 GetCameraSpaceBasePosition(uint2 coordinates)
     float2 ndc;
     ndc.xy = (float2(coordinates) + 0.5) / float2(pushConstants.screenSize);
     ndc.xy = ndc.xy * 2.0 - 1.0;
-    ndc.y *= -1.0;
 
     float4x4 invProj = cameraParams.invProjectionMatrix;
     return float2(
-        ndc.x * invProj[0][0] + invProj[3][0],
-        ndc.y * invProj[1][1] + invProj[3][1]
+        ndc.x * invProj[0][0] + invProj[0][3],
+        ndc.y * invProj[1][1] + invProj[1][3]
     );
 }
 
@@ -70,13 +74,14 @@ float2 GetCameraSpaceBasePosition(uint2 coordinates)
 float3 GetOffsetCameraSpacePosition(float2 baseInCameraSpace, float2 offsetInScreenSpace, float depth)
 {
     float4x4 invProj = cameraParams.invProjectionMatrix;
-    float2 ndcScale = float2(2.0, -2.0) / float2(pushConstants.screenSize);
+    // ndcScale: 像素位移 → NDC 位移。Y 不翻(同上)。
+    float2 ndcScale = float2(2.0, 2.0) / float2(pushConstants.screenSize);
     float2 cameraSpaceScale = ndcScale * float2(invProj[0][0], invProj[1][1]);
 
     float4 cameraSpacePosition = float4(
         baseInCameraSpace + offsetInScreenSpace * cameraSpaceScale,
         1.0,
-        depth * invProj[2][3] + invProj[3][3]
+        depth * invProj[3][2] + invProj[3][3]
     );
     cameraSpacePosition.xyz /= cameraSpacePosition.w;
 
@@ -113,8 +118,11 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
 
     // --- Center pixel ---
     float depth = depthTexture.Load(int3(coordinates, 0));
-    // Reverse-Z: 0 = far plane, skip sky pixels
-    if (depth <= 0.0001)
+    // Reverse-Z: depth == 0 = far plane = sky / not rendered. 严格用 0 判定;
+    // 之前用 `<= 0.0001` 会误把 ~90m 远的合法几何当成 sky 剔除(reverse-Z
+    // 在 n=0.1, f=100 下,depth=0.0001 对应 view.z ≈ 90m),Bistro 街景里
+    // 这片几何很多。
+    if (depth == 0.0)
     {
         aoOutput[coordinates] = 1.0;
         return;
@@ -178,8 +186,8 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
         // Read from depth pyramid (half-res start, so shift by mipLevel+1)
         float depth2 = depthMipTexture.Load(int3(xy >> (mipLevel + 1), mipLevel));
 
-        // Skip far-plane pixels (reverse-Z: 0 = far)
-        if (depth2 <= 0.0001)
+        // Skip far-plane pixels (reverse-Z: 0 = far). 严格 0 判定,理由同 center pixel。
+        if (depth2 == 0.0)
             continue;
 
         float3 cameraPosition2 = GetOffsetCameraSpacePosition(cameraBasePosition, offset, depth2);
