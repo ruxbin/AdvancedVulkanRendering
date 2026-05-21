@@ -17,6 +17,8 @@ private:
   VkImage _shadowSlices;
   std::array<mat4, SHADOW_CASCADE_COUNT> _shadowViewMatrices;
   std::array<mat4, SHADOW_CASCADE_COUNT> _shadowProjectionMatrices;
+  std::array<Frustum, SHADOW_CASCADE_COUNT> _cascadeFrustums;
+  std::array<float, SHADOW_CASCADE_COUNT> _cascadeSphereRadii;
   uint32_t _shadowResolution;
   VkImage _shadowMaps;
   std::array<VkImageView, SHADOW_CASCADE_COUNT> _shadowSliceViews;
@@ -56,8 +58,12 @@ private:
     uint32_t opaqueChunkCount;
     uint32_t alphaMaskedChunkCount;
     uint32_t cascadeMaxChunks;
-    uint32_t cascadeIndex;
-    Frustum cascadeFrustum;
+    uint32_t cascadeCount;
+    // x = min boundingSphere radius below which the chunk is culled for this
+    // cascade. yzw reserved. vec4 padding is required to match HLSL cbuffer
+    // 16-byte array-element alignment.
+    vec4 cascadeCullThreshold[SHADOW_CASCADE_COUNT];
+    Frustum cascadeFrustum[SHADOW_CASCADE_COUNT];
   };
 
 public:

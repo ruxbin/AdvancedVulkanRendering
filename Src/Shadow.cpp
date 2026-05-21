@@ -155,6 +155,36 @@ void Shadow::UpdateShadowMatrices(const GpuScene &gpuScene) {
           orthographic(cascadeExtents.x, cascadeExtents.y, 0.f, 200.f,
                        roundOffset.x, roundOffset.y);
     }
+
+    // Per-cascade world-space frustum for GPU shadow culling.
+    // Sun-view basis matches invLookAt above: _z = normalize(-sunDir),
+    // _x = normalize(up × _z), _y = _z × _x. View-space OBB is
+    // [-r,+r] × [-r,+r] × [0, 200]. Map each corner back to world,
+    // then build 6 Planes whose normals point inward.
+    {
+      const vec3 sunDir = gpuScene.frameConstants.sunDirection;
+      vec3 z_axis = normalize(sunDir * -1.0f);
+      vec3 x_axis = normalize(vec3(0, 1, 0).cross(z_axis));
+      vec3 y_axis = z_axis.cross(x_axis);
+
+      vec3 cornersWS[8];
+      for (int k = 0; k < 8; ++k) {
+        float vx = (k & 1) ? sphereRadius : -sphereRadius;
+        float vy = (k & 2) ? sphereRadius : -sphereRadius;
+        float vz = (k & 4) ? 200.0f : 0.0f;
+        cornersWS[k] = shadowCameraPos + x_axis * vx + y_axis * vy + z_axis * vz;
+      }
+
+      _cascadeFrustums[i] = {
+          {cornersWS[0], cornersWS[2], cornersWS[4]}, // -X plane
+          {cornersWS[1], cornersWS[5], cornersWS[3]}, // +X plane
+          {cornersWS[0], cornersWS[4], cornersWS[1]}, // -Y plane
+          {cornersWS[2], cornersWS[3], cornersWS[6]}, // +Y plane
+          {cornersWS[0], cornersWS[1], cornersWS[2]}, // -Z (sun-near) plane
+          {cornersWS[4], cornersWS[6], cornersWS[5]}, // +Z (sun-far)  plane
+      };
+      _cascadeSphereRadii[i] = sphereRadius;
+    }
   }
 }
 

@@ -3321,30 +3321,38 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   }
   if (!_raytracing) {
     _raytracing = new RayTracing(const_cast<VulkanDevice &>(device), *this);
-    _raytracing->Init();
-    _raytracing->BuildAccelerationStructures();
-    _raytracing->CreateOutputImagesAndDescriptorSet();
-    _raytracing->CreatePipelineAndSBT();
+   // _raytracing->Init();
+    //_raytracing->BuildAccelerationStructures();
+    //_raytracing->CreateOutputImagesAndDescriptorSet();
+    //_raytracing->CreatePipelineAndSBT();
   }
 
-  const Frustum &cascadeFrustum = maincamera->getFrustum();
     {
-            
-    // TODO: compute proper cascade frustum from shadow VP matrix
   uint32_t opaqueCount = applMesh->_opaqueChunkCount;
   uint32_t alphaMaskedCount = applMesh->_alphaMaskedChunkCount;
   uint32_t cascadeMaxChunks = opaqueCount + alphaMaskedCount;
+  uint32_t cascadeCount = SHADOW_CASCADE_COUNT;
     // Upload shadow cull params
     {
       void *data;
       vkMapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemories[currentFrame], 0,
                   sizeof(Shadow::ShadowCullParams), 0, &data);
-      memcpy((char *)data + 0, &opaqueCount, sizeof(uint32_t));
-      memcpy((char *)data + 4, &alphaMaskedCount, sizeof(uint32_t));
-      memcpy((char *)data + 8, &cascadeMaxChunks, sizeof(uint32_t));
-      uint32_t cascadeIdx = SHADOW_CASCADE_COUNT;
-      memcpy((char *)data + 12, &cascadeIdx, sizeof(uint32_t));
-      memcpy((char *)data + 16, &cascadeFrustum, sizeof(Frustum));
+      char *p = (char *)data;
+      memcpy(p + 0,  &opaqueCount,      sizeof(uint32_t));
+      memcpy(p + 4,  &alphaMaskedCount, sizeof(uint32_t));
+      memcpy(p + 8,  &cascadeMaxChunks, sizeof(uint32_t));
+      memcpy(p + 12, &cascadeCount,     sizeof(uint32_t));
+      // Per-cascade min boundingSphere radius — drop chunks whose sphere is
+      // smaller than ~1.5 shadow texels, so far cascades skip tiny props.
+      for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
+        float texelWS = _shadow->_cascadeSphereRadii[i] * 2.0f
+                        / (float)_shadow->_shadowResolution;
+        vec4 threshold(texelWS * 1.5f, 0.f, 0.f, 0.f);
+        memcpy(p + 16 + i * (int)sizeof(vec4), &threshold, sizeof(vec4));
+      }
+      memcpy(p + 16 + SHADOW_CASCADE_COUNT * (int)sizeof(vec4),
+             _shadow->_cascadeFrustums.data(),
+             sizeof(Frustum) * SHADOW_CASCADE_COUNT);
       vkUnmapMemory(device.getLogicalDevice(), _shadow->_shadowCullParamsMemories[currentFrame]);
     }
 
