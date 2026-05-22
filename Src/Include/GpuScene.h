@@ -373,6 +373,37 @@ private:
   void generateSAODepthPyramid(VkCommandBuffer cmd);
   void dispatchSAO(VkCommandBuffer cmd);
 
+  // Resolve pass (TAA + Tone Mapping)
+  mat4 _prevViewProjectionMatrix;
+  bool _taaFirstFrame = true;
+  uint32_t _taaFrameIndex = 0;
+  bool _taaEnabled = false; // ImGui toggle, default OFF
+
+  VkImage _hdrLightingBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _hdrLightingBufferMemory = VK_NULL_HANDLE;
+  VkImageView _hdrLightingBufferView = VK_NULL_HANDLE;
+
+  VkImage _taaHistoryBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _taaHistoryBufferMemory = VK_NULL_HANDLE;
+  VkImageView _taaHistoryBufferView = VK_NULL_HANDLE;
+
+  VkRenderPass _resolvePass = VK_NULL_HANDLE;
+  std::vector<VkFramebuffer> _resolveFrameBuffer;
+  VkDescriptorSetLayout _resolveSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool _resolveDescriptorPool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> _resolveDescriptorSets; // per-frame (depth view is per-frame)
+  VkPipelineLayout _resolvePipelineLayout = VK_NULL_HANDLE;
+  VkPipeline _resolvePipeline = VK_NULL_HANDLE;
+  VkSampler _linearClampSampler = VK_NULL_HANDLE;
+
+  void createHDRLightingBuffer();
+  void createTAAHistoryBuffer();
+  void createResolvePass();
+  void createResolveFrameBuffer(uint32_t count);
+  void createResolveDescriptors();
+  void createResolvePipeline();
+  void createLinearClampSampler();
+
   // Screen-space decals
   VkDescriptorSetLayout _decalSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool _decalDescriptorPool = VK_NULL_HANDLE;

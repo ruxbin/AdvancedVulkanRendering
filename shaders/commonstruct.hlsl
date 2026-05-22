@@ -58,6 +58,10 @@ struct AAPLFrameConstants
     float farPlane;
     uint frameCounter;
     float2 physicalSize;
+    float2 invPhysicalSize;
+    float2 taaJitter;
+    float exposure;
+    uint taaEnabled;
 };
 
 struct CameraParamsBuffer
@@ -80,12 +84,13 @@ struct ShadowMatrix
 struct CameraParamsBufferFull
 {
     ShadowMatrix shadowMatrix[SHADOW_CASCADE_COUNT];
-    
+
     float4x4 projectionMatrix;
     float4x4 viewMatrix;
     float4x4 invViewMatrix;
     float4x4 invViewProjectionMatrix;
     float4x4 invProjectionMatrix;
+    float4x4 prevViewProjectionMatrix;
 };
 
 
