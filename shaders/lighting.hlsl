@@ -91,7 +91,7 @@ inline float getDistanceAttenuation(float3 unormalizedLightVector, float invSqrA
 }
 
 half3 lightingShaderPointSpot(AAPLPixelSurfaceData surfaceData,
-                             
+
                              float depth,
                              float4 worldPosition,
                              AAPLFrameConstants frameData,
@@ -109,13 +109,49 @@ half3 lightingShaderPointSpot(AAPLPixelSurfaceData surfaceData,
         return 0;
     float attenuation = getDistanceAttenuation(lightDirection, 1.0 / posSqrRadius.w);
     half3 light = (half3) (color * M_PI_F) * attenuation * frameData.localLightIntensity;
-    
-    
+
+
     half3 result = evaluateBRDF(surfaceData, viewDir, normalize(lightDirection)) * light;
-    
-    
+
+
 
     return result;
+}
+
+// Spot light shader. Mirrors Apple's applySpotLight (AAPLLightingCommon.h:144-196):
+// distance cutoff -> distance attenuation -> cone cutoff -> smoothstep^2 angle
+// falloff between cos(outer) and cos(inner) -> BRDF * color.
+half3 applySpotLight(AAPLPixelSurfaceData surfaceData,
+                     float4 worldPosition,
+                     AAPLFrameConstants frameData,
+                     CameraParamsBufferFull cameraParams,
+                     AAPLSpotLightCullingData spot,
+                     float shadow)
+{
+    float3 toLight = spot.posAndHeight.xyz - worldPosition.xyz;
+    float  dist    = length(toLight);
+    if (dist > spot.posAndHeight.w) return (half3)0;
+
+    float3 L        = toLight / max(dist, 1e-4f);
+    float  cosTheta = dot(-L, spot.dirAndOuterAngle.xyz);
+    if (cosTheta < spot.dirAndOuterAngle.w) return (half3)0;
+
+    float invSqrRadius = 1.0f / (spot.posAndHeight.w * spot.posAndHeight.w);
+    float distAtt      = getDistanceAttenuation(toLight, invSqrRadius);
+
+    float angleRange = max(spot.cosInnerAngle - spot.dirAndOuterAngle.w, 1e-4f);
+    float t          = saturate((cosTheta - spot.dirAndOuterAngle.w) / angleRange);
+    float angleAtt   = t * t;
+
+    float3 toCamera = float3(cameraParams.invViewMatrix._m03,
+                             cameraParams.invViewMatrix._m13,
+                             cameraParams.invViewMatrix._m23) - worldPosition.xyz;
+    half3  V        = (half3) normalize(toCamera);
+
+    half3 lightCol = (half3)(spot.color.xyz * M_PI_F)
+                   * (distAtt * angleAtt * shadow)
+                   * frameData.localLightIntensity;
+    return evaluateBRDF(surfaceData, V, (half3)L) * lightCol;
 }
 
 

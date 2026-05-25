@@ -58,6 +58,8 @@ public:
       : _dynamicOffset(dynamic_offset), _spotLightData(sld) {}
 
   static std::vector<SpotLightData> spotLightData;
+
+  friend class LightCuller;
 };
 
 #define DEFAULT_LIGHT_CULLING_TILE_SIZE (32)
@@ -66,6 +68,12 @@ public:
 #define MAX_LIGHTS_PER_TILE (64)
 
 #define MAX_LIGHTS_PER_CLUSTER (16)
+
+// Apple parity (AAPLConfig.h:109): max number of spot lights that get an
+// individual depth-array slice. Spots beyond this index are lit without a
+// shadow term.
+#define SPOT_SHADOW_MAX_COUNT (32)
+#define SPOT_SHADOW_RESOLUTION (256)
 
 class LightCuller {
 public:
@@ -80,6 +88,12 @@ public:
   VkBuffer GetPointLightCullingDataBuffer() const {
     return _pointLightCullingDataBuffer;
   }
+  VkBuffer GetSpotLightCullingDataBuffer() const {
+    return _spotLightCullingDataBuffer;
+  }
+  VkBuffer GetSpotLightIndicesBuffer(uint32_t frame) const {
+    return _spotLightIndicesBuffer[frame];
+  }
 
 private:
   VkBuffer _pointLightCullingDataBuffer;
@@ -93,6 +107,12 @@ private:
   VkImage _traditionalCullDebugImage;
   VkImageView _traditionalCullDebugImageView;
 
+  // Spot light culling buffers, parallel to the point light set above.
+  VkBuffer _spotLightCullingDataBuffer = VK_NULL_HANDLE;
+  std::vector<VkBuffer> _spotXZRangeBuffer;
+  std::vector<VkBuffer> _spotLightIndicesBuffer;
+  std::vector<VkBuffer> _spotLightIndicesTransparentBuffer;
+
   VkDescriptorSetLayout coarseCullSetLayout;
   VkDescriptorPool coarseCullDescriptorPool;
   std::vector<VkDescriptorSet> coarseCullDescriptorSet; // per-frame
@@ -102,4 +122,9 @@ private:
   VkPipeline clearDebugViewPipeline;
   VkPipeline traditionalCullPipeline;
   VkPipeline clearIndicesPipeline;
+
+  // Spot light cull pipelines (share coarseCullPipelineLayout).
+  VkPipeline coarseCullSpotPipeline = VK_NULL_HANDLE;
+  VkPipeline traditionalCullSpotPipeline = VK_NULL_HANDLE;
+  VkPipeline clearIndicesSpotPipeline = VK_NULL_HANDLE;
 };

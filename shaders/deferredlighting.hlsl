@@ -23,6 +23,13 @@ cbuffer cam
 [[vk::binding(8,1)]] StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
 [[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
 
+// Spot light bindings (mirror point at 8/9). Shadow texture/sampler/viewProj
+// at 13/14/15 will be filled in alongside the spot shadow pass; until then
+// the cluster loop passes shadow=1.0 as a stub so we can validate cone shape
+// first and add shadow lookup as an isolated step.
+[[vk::binding(11,1)]] StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData;
+[[vk::binding(12,1)]] StructuredBuffer<uint> spotLightIndices;
+
 struct VSOutput
 {
     float4 Position : SV_POSITION;
@@ -118,7 +125,7 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     {
 	//get the cluster index
 	uint xClusterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
- 
+
 	uint clusterindex = uint(input.Position.x/gLightCullingTileSize)+xClusterCount*uint(input.Position.y/gLightCullingTileSize);
 
 	//lighting
@@ -129,6 +136,16 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 		float4 posRadiusSqr = float4(pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].posRadius.xyz,lightradius*lightradius);
 
 		result += lightingShaderPointSpot(surfaceData,depth,worldPosition,frameConstants,cameraParams,posRadiusSqr,pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].color.xyz);
+	}
+
+	// Spot lights: per-tile list parallel to point lights. shadow=1.0 is a
+	// stub; the spot shadow pass (Phase D) replaces this with an array lookup.
+	uint spotCount = spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE];
+	for (uint si = 0; si < spotCount; ++si)
+	{
+		uint spotIdx = spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE + si + 1];
+		AAPLSpotLightCullingData spot = spotLightCullingData[spotIdx];
+		result += applySpotLight(surfaceData, worldPosition, frameConstants, cameraParams, spot, 1.0f);
 	}
     }
     

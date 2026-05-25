@@ -757,6 +757,141 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
                        lightindicesTransparentBufferMemory, 0);
   }
 
+  // ---------------- Spot light culling buffers ----------------
+  // Mirrors the point light buffer block above; layout matches the
+  // AAPLSpotLightCullingData / spotXZRange / spotLightIndices(+Transparent)
+  // bindings in lightculling.hlsl. Always allocate at least one element so the
+  // descriptor remains valid when the scene has zero spots.
+  const uint32_t spotCount = std::max<uint32_t>((uint32_t)gpuScene._spotLights.size(), 1);
+  const size_t spotCullDataStride = sizeof(float) * 4 * 4 + sizeof(float) * 4; // matches HLSL struct (16-byte aligned)
+
+  VkBufferCreateInfo spotCullingDataInfo{};
+  spotCullingDataInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  spotCullingDataInfo.size = spotCullDataStride * spotCount;
+  spotCullingDataInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  spotCullingDataInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (vkCreateBuffer(device.getLogicalDevice(), &spotCullingDataInfo, nullptr,
+                     &_spotLightCullingDataBuffer) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create spot light culling data buffer!");
+  }
+  {
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(),
+                                  _spotLightCullingDataBuffer, &req);
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = device.findMemoryType(
+        req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory mem;
+    if (vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &mem) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate spot light culling data memory!");
+    }
+    vkBindBufferMemory(device.getLogicalDevice(), _spotLightCullingDataBuffer, mem, 0);
+
+    // Upload spot light culling data. Layout per AAPLSpotLightCullingData:
+    //   float4 posRadius, posAndHeight, dirAndOuterAngle, color, plus
+    //   float cosInnerAngle + 12 bytes padding.
+    // outerAngle and innerAngle stored as cosine -> shader skips cos().
+    // dir normalised here so the shader's cone test reads a unit vector.
+    struct GpuSpot {
+      vec4 posRadius;
+      vec4 posAndHeight;
+      vec4 dirAndOuterAngle;
+      vec4 color;
+      float cosInnerAngle;
+      float pad0, pad1, pad2;
+    };
+    static_assert(sizeof(GpuSpot) == 80, "GpuSpot must match HLSL layout");
+
+    GpuSpot *dst = nullptr;
+    vkMapMemory(device.getLogicalDevice(), mem, 0, spotCullingDataInfo.size, 0, (void **)&dst);
+    uint32_t transparentSpotCount = 0;
+    for (size_t i = 0; i < gpuScene._spotLights.size(); ++i) {
+      const SpotLightData *sd = gpuScene._spotLights[i]._spotLightData;
+      vec3 dir = sd->dirAndOuterAngle.xyz();
+      float dirLen = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+      if (dirLen > 1e-6f) dir = vec3(dir.x / dirLen, dir.y / dirLen, dir.z / dirLen);
+
+      float outerAngle = sd->dirAndOuterAngle.w;
+      float innerAngle = sd->colorAndInnerAngle.w;
+      bool isTransparent = (sd->flags & LIGHT_FOR_TRANSPARENT_FLAG) != 0;
+      if (isTransparent) ++transparentSpotCount;
+
+      dst[i].posRadius = sd->boundingSphere;
+      dst[i].posAndHeight = sd->posAndHeight;
+      dst[i].dirAndOuterAngle = vec4(dir, std::cos(outerAngle));
+      dst[i].color = vec4(sd->colorAndInnerAngle.xyz(), isTransparent ? -1.0f : 1.0f);
+      dst[i].cosInnerAngle = std::cos(innerAngle);
+      dst[i].pad0 = dst[i].pad1 = dst[i].pad2 = 0;
+    }
+    if (gpuScene._spotLights.empty()) {
+      // Dummy entry so a 0-spot scene still has a valid buffer to bind.
+      std::memset(dst, 0, sizeof(GpuSpot));
+    }
+    vkUnmapMemory(device.getLogicalDevice(), mem);
+    spdlog::info("transparent spot light count:{} total:{}",
+                 transparentSpotCount, gpuScene._spotLights.size());
+  }
+
+  // spot XZ range (per spot light, per frame)
+  VkBufferCreateInfo spotXZRangeInfo{};
+  spotXZRangeInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  spotXZRangeInfo.size = spotCount * sizeof(uint16_t) * 4;
+  spotXZRangeInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  spotXZRangeInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  _spotXZRangeBuffer.resize(gpuScene.framesInFlight);
+  for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+    if (vkCreateBuffer(device.getLogicalDevice(), &spotXZRangeInfo, nullptr,
+                       &_spotXZRangeBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create spot xzRange buffer!");
+    }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _spotXZRangeBuffer[f], &req);
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = device.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory mem;
+    vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &mem);
+    vkBindBufferMemory(device.getLogicalDevice(), _spotXZRangeBuffer[f], mem, 0);
+  }
+
+  // spot light tile indices buffers (opaque + transparent, per frame)
+  VkBufferCreateInfo spotIndicesInfo{};
+  spotIndicesInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  spotIndicesInfo.size = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+  spotIndicesInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  spotIndicesInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  _spotLightIndicesBuffer.resize(gpuScene.framesInFlight);
+  _spotLightIndicesTransparentBuffer.resize(gpuScene.framesInFlight);
+  for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+    if (vkCreateBuffer(device.getLogicalDevice(), &spotIndicesInfo, nullptr,
+                       &_spotLightIndicesBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create spot light indices buffer!");
+    }
+    if (vkCreateBuffer(device.getLogicalDevice(), &spotIndicesInfo, nullptr,
+                       &_spotLightIndicesTransparentBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create spot light indices transparent buffer!");
+    }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _spotLightIndicesBuffer[f], &req);
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = device.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory memOpaque;
+    vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &memOpaque);
+    vkBindBufferMemory(device.getLogicalDevice(), _spotLightIndicesBuffer[f], memOpaque, 0);
+
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _spotLightIndicesTransparentBuffer[f], &req);
+    ai.allocationSize = req.size;
+    VkDeviceMemory memTransparent;
+    vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &memTransparent);
+    vkBindBufferMemory(device.getLogicalDevice(), _spotLightIndicesTransparentBuffer[f], memTransparent, 0);
+  }
+
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -938,6 +1073,32 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   lightIndicesTransparentBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+  // Spot light bindings 8-11 (parallel to point bindings 1/3/5/7).
+  VkDescriptorSetLayoutBinding spotCullDataBinding = {};
+  spotCullDataBinding.binding = 8;
+  spotCullDataBinding.descriptorCount = 1;
+  spotCullDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotCullDataBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+  VkDescriptorSetLayoutBinding spotXZRangeBinding = {};
+  spotXZRangeBinding.binding = 9;
+  spotXZRangeBinding.descriptorCount = 1;
+  spotXZRangeBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotXZRangeBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+  VkDescriptorSetLayoutBinding spotLightIndicesBinding = {};
+  spotLightIndicesBinding.binding = 10;
+  spotLightIndicesBinding.descriptorCount = 1;
+  spotLightIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotLightIndicesBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+  VkDescriptorSetLayoutBinding spotLightIndicesTransparentBinding = {};
+  spotLightIndicesTransparentBinding.binding = 11;
+  spotLightIndicesTransparentBinding.descriptorCount = 1;
+  spotLightIndicesTransparentBinding.descriptorType =
+      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotLightIndicesTransparentBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {
                                              cullParamsBinding,
                                              pointLightCullingDataBinding,
@@ -946,7 +1107,11 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
                                              debugViewBinding,
                                              lightIndicesBinding,
                                              lightIndicesTransparentBinding,
-                                             traditionalViewBinding};
+                                             traditionalViewBinding,
+                                             spotCullDataBinding,
+                                             spotXZRangeBinding,
+                                             spotLightIndicesBinding,
+                                             spotLightIndicesTransparentBinding};
 
   constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
@@ -966,7 +1131,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   uint32_t poolMultiplier = gpuScene.framesInFlight;
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * poolMultiplier},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * poolMultiplier},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * poolMultiplier},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1 * poolMultiplier},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * poolMultiplier}
   };
@@ -1147,9 +1312,59 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setTraditionalDebug.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
   setTraditionalDebug.pImageInfo = &tradtionalImageInfo;
 
-  std::array<VkWriteDescriptorSet, 8> writes = {
+  // ---- Spot light writes (bindings 8-11) ----
+  VkDescriptorBufferInfo binfoSpotData;
+  binfoSpotData.buffer = _spotLightCullingDataBuffer;
+  binfoSpotData.offset = 0;
+  binfoSpotData.range = spotCullDataStride * spotCount;
+  VkWriteDescriptorSet setWriteSpotData = {};
+  setWriteSpotData.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotData.dstBinding = 8;
+  setWriteSpotData.dstSet = coarseCullDescriptorSet[i];
+  setWriteSpotData.descriptorCount = 1;
+  setWriteSpotData.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotData.pBufferInfo = &binfoSpotData;
+
+  VkDescriptorBufferInfo binfoSpotXZ;
+  binfoSpotXZ.buffer = _spotXZRangeBuffer[i];
+  binfoSpotXZ.offset = 0;
+  binfoSpotXZ.range = spotCount * sizeof(uint16_t) * 4;
+  VkWriteDescriptorSet setWriteSpotXZ = {};
+  setWriteSpotXZ.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotXZ.dstBinding = 9;
+  setWriteSpotXZ.dstSet = coarseCullDescriptorSet[i];
+  setWriteSpotXZ.descriptorCount = 1;
+  setWriteSpotXZ.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotXZ.pBufferInfo = &binfoSpotXZ;
+
+  VkDescriptorBufferInfo binfoSpotIdx;
+  binfoSpotIdx.buffer = _spotLightIndicesBuffer[i];
+  binfoSpotIdx.offset = 0;
+  binfoSpotIdx.range = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+  VkWriteDescriptorSet setWriteSpotIdx = {};
+  setWriteSpotIdx.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotIdx.dstBinding = 10;
+  setWriteSpotIdx.dstSet = coarseCullDescriptorSet[i];
+  setWriteSpotIdx.descriptorCount = 1;
+  setWriteSpotIdx.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotIdx.pBufferInfo = &binfoSpotIdx;
+
+  VkDescriptorBufferInfo binfoSpotIdxT;
+  binfoSpotIdxT.buffer = _spotLightIndicesTransparentBuffer[i];
+  binfoSpotIdxT.offset = 0;
+  binfoSpotIdxT.range = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+  VkWriteDescriptorSet setWriteSpotIdxT = {};
+  setWriteSpotIdxT.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotIdxT.dstBinding = 11;
+  setWriteSpotIdxT.dstSet = coarseCullDescriptorSet[i];
+  setWriteSpotIdxT.descriptorCount = 1;
+  setWriteSpotIdxT.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotIdxT.pBufferInfo = &binfoSpotIdxT;
+
+  std::array<VkWriteDescriptorSet, 12> writes = {
       setWrite1, setWrite2, setWrite4,          setWriteDebug,
-      setWriteDepth, setWrite6, setWrite7, setTraditionalDebug};
+      setWriteDepth, setWrite6, setWrite7, setTraditionalDebug,
+      setWriteSpotData, setWriteSpotXZ, setWriteSpotIdx, setWriteSpotIdxT};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);
@@ -1191,8 +1406,34 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   setWriteIndices_deferredlighting.pBufferInfo = &binfoDeferredLightIndices;
 
-  std::array<VkWriteDescriptorSet, 2> writes_deferredlighting = {
-      setWriteIndices_deferredlighting, setWrite_Deferredlighting};
+  // Spot data + indices for the deferred lighting fullscreen pass.
+  VkDescriptorBufferInfo binfoDeferredSpotData;
+  binfoDeferredSpotData.buffer = _spotLightCullingDataBuffer;
+  binfoDeferredSpotData.offset = 0;
+  binfoDeferredSpotData.range = spotCullDataStride * spotCount;
+  VkWriteDescriptorSet setWriteSpotData_deferred = {};
+  setWriteSpotData_deferred.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotData_deferred.dstBinding = 11;
+  setWriteSpotData_deferred.dstSet = gpuScene.deferredLightingDescriptorSet[f];
+  setWriteSpotData_deferred.descriptorCount = 1;
+  setWriteSpotData_deferred.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotData_deferred.pBufferInfo = &binfoDeferredSpotData;
+
+  VkDescriptorBufferInfo binfoDeferredSpotIdx;
+  binfoDeferredSpotIdx.buffer = _spotLightIndicesBuffer[f];
+  binfoDeferredSpotIdx.offset = 0;
+  binfoDeferredSpotIdx.range = tileXCount * tileYCount * sizeof(uint32_t) * MAX_LIGHTS_PER_TILE;
+  VkWriteDescriptorSet setWriteSpotIdx_deferred = {};
+  setWriteSpotIdx_deferred.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotIdx_deferred.dstBinding = 12;
+  setWriteSpotIdx_deferred.dstSet = gpuScene.deferredLightingDescriptorSet[f];
+  setWriteSpotIdx_deferred.descriptorCount = 1;
+  setWriteSpotIdx_deferred.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotIdx_deferred.pBufferInfo = &binfoDeferredSpotIdx;
+
+  std::array<VkWriteDescriptorSet, 4> writes_deferredlighting = {
+      setWriteIndices_deferredlighting, setWrite_Deferredlighting,
+      setWriteSpotData_deferred, setWriteSpotIdx_deferred};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(),
                          writes_deferredlighting.size(),
@@ -1243,6 +1484,35 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   clearDebugViewStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
   clearDebugViewStageInfo.module = clearDebugViewModule;
   clearDebugViewStageInfo.pName = "ClearDebugView";
+
+  // Spot light kernel modules. Share coarseCullPipelineLayout because the
+  // descriptor set layout already covers bindings 8-11.
+  auto coarseCullSpotCode = readFile(
+      (gpuScene.RootPath() / "shaders/CoarseCullSpot.cs.spv").generic_string());
+  VkShaderModule coarseCullSpotModule = gpuScene.createShaderModule(coarseCullSpotCode);
+  VkPipelineShaderStageCreateInfo coarseCullSpotStage{};
+  coarseCullSpotStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  coarseCullSpotStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  coarseCullSpotStage.module = coarseCullSpotModule;
+  coarseCullSpotStage.pName = "CoarseCullSpot";
+
+  auto traditionalCullSpotCode = readFile(
+      (gpuScene.RootPath() / "shaders/TraditionalCullSpot.cs.spv").generic_string());
+  VkShaderModule traditionalCullSpotModule = gpuScene.createShaderModule(traditionalCullSpotCode);
+  VkPipelineShaderStageCreateInfo traditionalCullSpotStage{};
+  traditionalCullSpotStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  traditionalCullSpotStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  traditionalCullSpotStage.module = traditionalCullSpotModule;
+  traditionalCullSpotStage.pName = "TraditionalCullSpot";
+
+  auto clearIndicesSpotCode = readFile(
+      (gpuScene.RootPath() / "shaders/ClearLightIndicesSpot.cs.spv").generic_string());
+  VkShaderModule clearIndicesSpotModule = gpuScene.createShaderModule(clearIndicesSpotCode);
+  VkPipelineShaderStageCreateInfo clearIndicesSpotStage{};
+  clearIndicesSpotStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  clearIndicesSpotStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  clearIndicesSpotStage.module = clearIndicesSpotModule;
+  clearIndicesSpotStage.pName = "ClearLightIndicesSpot";
 
 
   VkDescriptorSetLayout coarseCullPipelineSetLayoutInfos[] = {gpuScene.globalSetLayout, coarseCullSetLayout};
@@ -1299,6 +1569,22 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
                            &clearIndicesPipelineCreateInfo, nullptr,
                            &clearIndicesPipeline);
+
+  // Spot light pipelines (share coarseCullPipelineLayout).
+  VkComputePipelineCreateInfo spotCoarsePCI{};
+  spotCoarsePCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  spotCoarsePCI.layout = coarseCullPipelineLayout;
+  spotCoarsePCI.stage = coarseCullSpotStage;
+  VkComputePipelineCreateInfo spotTradPCI = spotCoarsePCI;
+  spotTradPCI.stage = traditionalCullSpotStage;
+  VkComputePipelineCreateInfo spotClearPCI = spotCoarsePCI;
+  spotClearPCI.stage = clearIndicesSpotStage;
+  vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                           &spotCoarsePCI, nullptr, &coarseCullSpotPipeline);
+  vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                           &spotTradPCI, nullptr, &traditionalCullSpotPipeline);
+  vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                           &spotClearPCI, nullptr, &clearIndicesSpotPipeline);
 }
 
 void LightCuller::ClusterLightForScreen(VkCommandBuffer &commandBuffer,
@@ -1397,6 +1683,52 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer &commandBuffer,
                 (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
                     DEFAULT_LIGHT_CULLING_TILE_SIZE,
                 1);
+
+  // ---- Spot light culling chain ----
+  // Same pattern as point: clear -> coarse -> traditional, each separated by
+  // a compute->compute SSBO write barrier. Spot kernels share the same
+  // descriptor set / pipeline layout so we just rebind the pipeline.
+  uint32_t spotCount = (uint32_t)gpuScene._spotLights.size();
+  if (spotCount > 0)
+  {
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      clearIndicesSpotPipeline);
+    vkCmdDispatch(commandBuffer,
+                  (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
+                      DEFAULT_LIGHT_CULLING_TILE_SIZE,
+                  (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
+                      DEFAULT_LIGHT_CULLING_TILE_SIZE,
+                  1);
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      coarseCullSpotPipeline);
+    vkCmdDispatch(commandBuffer, (spotCount + 127) / 128, 1, 1);
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    // compute->compute SSBO write->read barrier mirrors the point chain.
+    {
+      VkMemoryBarrier memBarrier{};
+      memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(commandBuffer,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                           1, &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      traditionalCullSpotPipeline);
+    vkCmdDispatch(commandBuffer,
+                  (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
+                      DEFAULT_LIGHT_CULLING_TILE_SIZE,
+                  (screen_heigt + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
+                      DEFAULT_LIGHT_CULLING_TILE_SIZE,
+                  1);
+  }
 }
 
 LightCuller::LightCuller() {}

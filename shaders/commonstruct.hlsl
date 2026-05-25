@@ -105,6 +105,19 @@ struct AAPLPointLightCullingData
 	float4 color;
 };
 
+// Spot light culling/lighting data. cos(outer) and cos(inner) are precomputed on
+// the CPU so the shader never calls cos(). color.w sign reuses the point light
+// convention: >= 0 = opaque-only, < 0 = also affects transparents.
+struct AAPLSpotLightCullingData
+{
+    float4 posRadius;          // xyz = bounding sphere center (world), w = sphere radius
+    float4 posAndHeight;       // xyz = spot position (world), w = height (= linear distance cutoff)
+    float4 dirAndOuterAngle;   // xyz = light direction (world, unit), w = cos(outerAngle)
+    float4 color;              // xyz = RGB intensity, w = sign(transparent): >=0 opaque, <0 transparent
+    float  cosInnerAngle;
+    float  _padSpot0, _padSpot1, _padSpot2;
+};
+
 #define M_PI_F 3.1415926535897932f
 
 

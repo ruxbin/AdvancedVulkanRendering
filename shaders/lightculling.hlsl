@@ -34,6 +34,12 @@ StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world posi
 [[vk::binding(6,1)]] RWTexture2D<float4> tradtionDebug;
 [[vk::binding(7,1)]] RWStructuredBuffer<uint> lightIndicesTransparent;
 
+// Spot light culling bindings (parallel set to point light bindings 1/3/5/7).
+[[vk::binding(8,1)]]  StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData;
+[[vk::binding(9,1)]]  RWStructuredBuffer<uint16_t4> spotXZRange;
+[[vk::binding(10,1)]] RWStructuredBuffer<uint> spotLightIndices;
+[[vk::binding(11,1)]] RWStructuredBuffer<uint> spotLightIndicesTransparent;
+
 
 //calculate each light's xzrange
 [numthreads(128, 1, 1)]
@@ -266,9 +272,207 @@ void ClearDebugView(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID)
 void ClearLightIndices(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
 {
     uint2 tileDims = ceil(float2(frameConstants.physicalSize) / gLightCullingTileSize);
-    
+
     uint outputIndex = (gid.x + gid.y * tileDims.x) * MAX_LIGHTS_PER_TILE;
     for (int i = gtid.x + gtid.y * CLEAR_WIDTH; i < MAX_LIGHTS_PER_TILE; i += CLEAR_WIDTH * CLEAR_HEIGHT)
         lightIndices[i+outputIndex] = 0;
 
+}
+
+// ============================================================================
+// Spot light culling: mirrors the point light path but reads spot data and
+// writes to a parallel set of buffers. Cone-vs-tile-sphere narrow phase is
+// Apple's isLightVisibleFine (AAPLLightCulling.metal:36-50) ported to HLSL
+// and rewritten in view space so we can reuse the existing tile frustum.
+// ============================================================================
+
+// Coarse cull: project spot bounding sphere to screen, write per-spot tile XY range.
+[numthreads(128, 1, 1)]
+void CoarseCullSpot(uint3 DTid : SV_DispatchThreadID)
+{
+    if (DTid.x < totalSpotLights)
+    {
+        uint16_t4 result = 0;
+
+        // Wrap spot's bounding sphere into the point-light helper so we can
+        // reuse FrustumCull(Frustum, AAPLPointLightCullingData).
+        AAPLPointLightCullingData asPoint;
+        asPoint.posRadius = spotLightCullingData[DTid.x].posRadius;
+        asPoint.color = float4(0, 0, 0, 1);
+
+        if (!FrustumCull(frustum, asPoint))
+        {
+            float4 lightPosView = mul(cameraParams.viewMatrix,
+                                     float4(spotLightCullingData[DTid.x].posRadius.xyz, 1));
+            float r = spotLightCullingData[DTid.x].posRadius.w;
+            lightPosView.xyz /= lightPosView.w;
+            float2 tileDims = float2(frameConstants.physicalSize) / gLightCullingTileSize;
+
+            AAPLBox2D projectedBounds = getBoundingBox(lightPosView.xyz, r,
+                                                      frameConstants.nearPlane,
+                                                      cameraParams.projectionMatrix);
+            float2 boxMin = projectedBounds.min();
+            float2 boxMax = projectedBounds.max();
+
+            if (boxMin.x < boxMax.x && boxMin.y < boxMax.y
+                && boxMin.x < 1.0f && boxMin.y < 1.0f
+                && boxMax.x > -1.0f && boxMax.y > -1.0f)
+            {
+                boxMin = saturate(boxMin * 0.5f + 0.5f);
+                boxMax = saturate(boxMax * 0.5f + 0.5f);
+                result.x = (uint16_t)(boxMin.x * tileDims.x);
+                result.y = (uint16_t)(ceil(boxMax.x * tileDims.x) - result.x);
+                result.z = (uint16_t)(boxMin.y * tileDims.y);
+                result.w = (uint16_t)(ceil(boxMax.y * tileDims.y) - result.z);
+            }
+        }
+
+        spotXZRange[DTid.x] = result;
+    }
+}
+
+// Cone vs tile-bounding-sphere narrow phase (view space).
+// Port of Apple's isLightVisibleFine. cosA/sinA come from precomputed cosOuter
+// on the spot data; v is view-space displacement from spot pos to tile centre.
+static bool isSpotVisibleFineView(float3 spotPosView, float3 spotDirView,
+                                  float cosOuter, float height,
+                                  float4 tileBoundingSphereView)
+{
+    float sinA = sqrt(saturate(1.0f - cosOuter * cosOuter));
+    float3 v = tileBoundingSphereView.xyz - spotPosView;
+    float vLenSq = dot(v, v);
+    float v1Len  = dot(v, spotDirView);
+    float dClosest = cosOuter * sqrt(max(0.0f, vLenSq - v1Len * v1Len)) - v1Len * sinA;
+    bool angleCull = dClosest > tileBoundingSphereView.w;
+    bool frontCull = v1Len    >  tileBoundingSphereView.w + height;
+    bool backCull  = v1Len    < -tileBoundingSphereView.w;
+    return !(angleCull || frontCull || backCull);
+}
+
+// Per-tile fine cull (16x16 threadgroup, one tile). Identical control flow to
+// TraditionalCull but for spot lights, and with the cone narrow phase appended.
+groupshared uint nearZSpot;
+groupshared uint farZSpot;
+[numthreads(16, 16, 1)]
+void TraditionalCullSpot(uint3 tid : SV_DispatchThreadID,
+                         uint3 gtid : SV_GroupThreadID,
+                         uint3 gid : SV_GroupID)
+{
+    uint2 basecoord = uint2(gid.x * gLightCullingTileSize + gtid.x * 2,
+                            gid.y * gLightCullingTileSize + gtid.y * 2);
+    basecoord = min(basecoord, uint2(frameConstants.physicalSize) - 1);
+    uint2 basecoord1 = min(basecoord + uint2(1, 0), uint2(frameConstants.physicalSize) - 1);
+    uint2 basecoord2 = min(basecoord + uint2(1, 1), uint2(frameConstants.physicalSize) - 1);
+    uint2 basecoord3 = min(basecoord + uint2(0, 1), uint2(frameConstants.physicalSize) - 1);
+    float d0 = inDepth.Load(uint3(basecoord, 0));
+    float d1 = inDepth.Load(uint3(basecoord1, 0));
+    float d2 = inDepth.Load(uint3(basecoord2, 0));
+    float d3 = inDepth.Load(uint3(basecoord3, 0));
+    float minDepth = min(min(d0, d1), min(d2, d3));
+    float maxDepth = max(max(d0, d1), max(d2, d3));
+    maxDepth = frameConstants.nearPlane * frameConstants.farPlane /
+               (frameConstants.nearPlane - maxDepth * (frameConstants.nearPlane - frameConstants.farPlane));
+    minDepth = frameConstants.nearPlane * frameConstants.farPlane /
+               (frameConstants.nearPlane - minDepth * (frameConstants.nearPlane - frameConstants.farPlane));
+    float clampFar  = frameConstants.farPlane + 1;
+    float clampNear = 0;
+    {
+        uint orgval = 0;
+        InterlockedExchange(nearZSpot, asuint(clampFar), orgval);
+        InterlockedExchange(farZSpot,  asuint(clampNear), orgval);
+    }
+    GroupMemoryBarrier();
+    InterlockedMin(nearZSpot, asuint(maxDepth));
+    InterlockedMax(farZSpot,  asuint(minDepth));
+    GroupMemoryBarrierWithGroupSync();
+    float zNear = asfloat(nearZSpot);
+    float zFar  = asfloat(farZSpot);
+
+    float2 xS = (min(float2(gid.x, gid.x + 1) * gLightCullingTileSize, frameConstants.physicalSize.xx)
+                 / frameConstants.physicalSize.xx) * 2 - 1;
+    float2 yS = (min(float2(gid.y, gid.y + 1) * gLightCullingTileSize, frameConstants.physicalSize.yy)
+                 / frameConstants.physicalSize.yy) * 2 - 1;
+    float2 xNearS = xS * zNear / cameraParams.projectionMatrix._m00;
+    float2 yNearS = yS * zNear / cameraParams.projectionMatrix._m11;
+    float2 xFarS  = xS * zFar  / cameraParams.projectionMatrix._m00;
+    float2 yFarS  = yS * zFar  / cameraParams.projectionMatrix._m11;
+    float2 NearCenter = float2((xNearS.x + xNearS.y) * 0.5, (yNearS.x + yNearS.y) * 0.5);
+    float2 FarCenter  = float2((xFarS.x  + xFarS.y)  * 0.5, (yFarS.x  + yFarS.y)  * 0.5);
+    float zCenter = (zNear + zFar) * 0.5;
+
+    AAPLTileFrustum frustumTile;
+    frustumTile.tileMinZ = zNear;
+    frustumTile.tileMaxZ = zFar;
+    frustumTile.minZFrustumXY = float4(xNearS, yNearS);
+    frustumTile.maxZFrustumXY = float4(xFarS,  yFarS);
+    frustumTile.tileBoundingSphere = float4(float3((NearCenter + FarCenter) * 0.5, zCenter), 0);
+
+    float3 tileCenter = float3(FarCenter * 0.5, zFar * 0.5);
+    float3 tileMaxOffset = float3(0, 0, 0);
+    tileMaxOffset.xy = max(abs(frustumTile.maxZFrustumXY.xz - tileCenter.xy),
+                           abs(frustumTile.maxZFrustumXY.yw - tileCenter.xy));
+    tileMaxOffset.z = zFar * 0.5;
+    frustumTile.tileBoundingSphereTransparent = float4(tileCenter, length(tileMaxOffset));
+
+    uint xCluterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1)
+                       / gLightCullingTileSize;
+    uint outputIndex = (gid.x + gid.y * xCluterCount) * MAX_LIGHTS_PER_TILE;
+
+    for (int i = gtid.x + gtid.y * 16; i < (int)totalSpotLights; i += 16 * 16)
+    {
+        AAPLSpotLightCullingData spot = spotLightCullingData[i];
+        float4 lightPosView = mul(cameraParams.viewMatrix, float4(spot.posRadius.xyz, 1));
+        float r = spot.posRadius.w;
+
+        bool isTransParent = spot.color.w < 0;
+        bool inFrustumMinZ = (lightPosView.z + r) > frustumTile.tileMinZ;
+        bool inFrustumMaxZ = (lightPosView.z - r) < frustumTile.tileMaxZ;
+        bool inFrustumNearZ = lightPosView.z + r > 0;
+
+        uint16_t4 xzRange = spotXZRange[i];
+        if (uint(gid.x - xzRange.x) < xzRange.y &&
+            uint(gid.y - xzRange.z) < xzRange.w &&
+            inFrustumMaxZ)
+        {
+            // Pre-transform spot pos/dir to view space once for the cone test
+            float3 spotPosView = lightPosView.xyz;
+            float3 spotDirView = normalize(mul(cameraParams.viewMatrix,
+                                               float4(spot.dirAndOuterAngle.xyz, 0)).xyz);
+            float  cosOuter    = spot.dirAndOuterAngle.w;
+            float  height      = spot.posAndHeight.w;
+
+            if (inFrustumMinZ &&
+                intersectsFrustumTile(lightPosView.xyz, r, frustumTile, false) &&
+                isSpotVisibleFineView(spotPosView, spotDirView, cosOuter, height,
+                                      frustumTile.tileBoundingSphere))
+            {
+                uint storeindex = 0;
+                InterlockedAdd(spotLightIndices[outputIndex], 1, storeindex);
+                spotLightIndices[storeindex + outputIndex + 1] = i;
+            }
+
+            if (isTransParent && inFrustumNearZ &&
+                intersectsFrustumTile(lightPosView.xyz, r, frustumTile, true) &&
+                isSpotVisibleFineView(spotPosView, spotDirView, cosOuter, height,
+                                      frustumTile.tileBoundingSphereTransparent))
+            {
+                uint storeindex = 0;
+                InterlockedAdd(spotLightIndicesTransparent[outputIndex], 1, storeindex);
+                spotLightIndicesTransparent[storeindex + outputIndex + 1] = i;
+            }
+        }
+    }
+}
+
+// Zero spot tile-index count slots (parallel to ClearLightIndices).
+[numthreads(CLEAR_WIDTH, CLEAR_HEIGHT, 1)]
+void ClearLightIndicesSpot(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
+{
+    uint2 tileDims = ceil(float2(frameConstants.physicalSize) / gLightCullingTileSize);
+    uint outputIndex = (gid.x + gid.y * tileDims.x) * MAX_LIGHTS_PER_TILE;
+    for (int i = gtid.x + gtid.y * CLEAR_WIDTH; i < MAX_LIGHTS_PER_TILE; i += CLEAR_WIDTH * CLEAR_HEIGHT)
+    {
+        spotLightIndices[i + outputIndex] = 0;
+        spotLightIndicesTransparent[i + outputIndex] = 0;
+    }
 }

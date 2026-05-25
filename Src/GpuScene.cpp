@@ -1262,6 +1262,20 @@ void GpuScene::init_deferredlighting_descriptors() {
   aoBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   aoBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  // Spot light bindings for the deferred lighting fullscreen pass
+  // (see deferredlighting.hlsl).
+  VkDescriptorSetLayoutBinding spotLightCullingDataBinding = {};
+  spotLightCullingDataBinding.binding = 11;
+  spotLightCullingDataBinding.descriptorCount = 1;
+  spotLightCullingDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotLightCullingDataBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding spotLightIndicesBindingDef = {};
+  spotLightIndicesBindingDef.binding = 12;
+  spotLightIndicesBindingDef.descriptorCount = 1;
+  spotLightIndicesBindingDef.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotLightIndicesBindingDef.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {albedoBinding,
                                              normalBinding,
                                              emessiveBinding,
@@ -1272,7 +1286,9 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              shadowMapsSamplerBinding,
                                              pointLightCullingDataBinding,
                                              lightIndicesBinding,
-                                             aoBinding};
+                                             aoBinding,
+                                             spotLightCullingDataBinding,
+                                             spotLightIndicesBindingDef};
 
   VkDescriptorSetLayoutCreateInfo setinfo = {};
   setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1293,7 +1309,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 3 * framesInFlight},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * framesInFlight}, // point + spot data/indices + headroom
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
