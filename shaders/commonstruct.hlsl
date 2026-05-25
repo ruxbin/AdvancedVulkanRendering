@@ -195,6 +195,26 @@ bool FrustumCull(Frustum frustum, AAPLBoundingBox3 aabb)
     return false;
 }
 
+// True iff every corner of aabb sits on the inside half-space of every plane.
+// Uses the n-vertex (negative-vertex) trick: for each plane, pick the AABB
+// corner with the SMALLEST signed distance and test it. If that worst corner
+// is inside, all 8 corners are inside.
+bool FrustumContains(Frustum frustum, AAPLBoundingBox3 aabb)
+{
+    [unroll]
+    for (int i = 0; i < 6; i++)
+    {
+        Plane p = frustum.borders[i];
+        float3 nVertex;
+        nVertex.x = (p.normal.x >= 0.0f) ? aabb.min.x : aabb.max.x;
+        nVertex.y = (p.normal.y >= 0.0f) ? aabb.min.y : aabb.max.y;
+        nVertex.z = (p.normal.z >= 0.0f) ? aabb.min.z : aabb.max.z;
+        if (dot(nVertex, p.normal) - p.w < 0.0f)
+            return false;
+    }
+    return true;
+}
+
 bool FrustumCull(Frustum frustum, AAPLPointLightCullingData sphere)
 {
     [unroll]
