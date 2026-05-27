@@ -2,57 +2,66 @@
 
 
 
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo drawcluster.vs.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneDepthOnly -Fo drawcluster.depth.ps.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePS -Fo drawcluster.ps.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePass -Fo drawcluster.base.ps.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneForwardPS -Fo drawcluster.forward.ps.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 deferredlighting.hlsl -fspv-debug=vulkan-with-source -E AAPLSimpleTexVertexOutFSQuadVertexShader -Fo deferredlighting.vs.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 deferredlighting.hlsl -E DeferredLighting -Fo deferredlighting.ps.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredPointLighting.ps.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo deferredPointLighting.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo drawcluster.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneDepthOnly -Fo drawcluster.depth.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePS -Fo drawcluster.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePass -Fo drawcluster.base.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneForwardPS -Fo drawcluster.forward.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 deferredlighting.hlsl -fspv-debug=vulkan-with-source -E AAPLSimpleTexVertexOutFSQuadVertexShader -Fo deferredlighting.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 deferredlighting.hlsl -E DeferredLighting -Fo deferredlighting.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredPointLighting.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo deferredPointLighting.vs.spv
 
 
 
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E CoarseCull -Fo CoarseCull.cs.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E TraditionalCull -Fo TraditionalCull.cs.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E ClearLightIndices -Fo ClearIndices.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E CoarseCull -Fo CoarseCull.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E TraditionalCull -fspv-debug=vulkan-with-source -E TraditionalCull -Fo TraditionalCull.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E ClearLightIndices -fspv-debug=vulkan-with-source -E ClearLightIndices -Fo ClearIndices.cs.spv
+
+
 
 REM GPU-Driven Optimization Shaders
 REM Stage 1: GPU Culling (opaque/alpha-mask/transparent split + Hi-Z)
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T cs_6_2 gpucull.hlsl -E EncodeDrawBuffer -Fo gpucull.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 gpucull.hlsl -E EncodeDrawBuffer -Fo gpucull.cs.spv
 
 REM Stage 1: Base pass alpha-mask variant (reads material from SSBO)
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePassAlphaMask -Fo drawcluster.base.alphamask.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePassAlphaMask -Fo drawcluster.base.alphamask.ps.spv
 
 REM Stage 2: Shadow cascade culling
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T cs_6_2 shadowcull.hlsl -E ShadowCull -Fo shadowcull.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 shadowcull.hlsl -E ShadowCull -Fo shadowcull.cs.spv
 
 REM Stage 2: Shadow depth indirect (reads material from SSBO for alpha)
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneShadowDepthIndirect -Fo drawcluster.shadow.indirect.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneShadowDepthIndirect -Fo drawcluster.shadow.indirect.ps.spv
 
 REM Stage 3: Hi-Z pyramid generation
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T cs_6_2 hiz.hlsl -fspv-debug=vulkan-with-source -E CopyDepthToHiZ -Fo hiz_copy.cs.spv
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T cs_6_2 hiz.hlsl -fspv-debug=vulkan-with-source -E DownsampleHiZ -Fo hiz_downsample.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 hiz.hlsl -fspv-debug=vulkan-with-source -E CopyDepthToHiZ -Fo hiz_copy.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 hiz.hlsl -fspv-debug=vulkan-with-source -E DownsampleHiZ -Fo hiz_downsample.cs.spv
 
 REM Stage 4: Forward pass indirect (reads material from SSBO)
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneForwardPSIndirect -Fo drawcluster.forward.indirect.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneForwardPSIndirect -Fo drawcluster.forward.indirect.ps.spv
 
 
 REM compiling drawOccluderVS
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 drawoccluders.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo occluders.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawoccluders.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVS -Fo occluders.vs.spv
 
 REM compiling drawclustershadowVS
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadow -Fo drawclusterShadow.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadow -Fo drawclusterShadow.vs.spv
 
 REM compiling drawoccludersvs
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -E RenderSceneVS drawoccluders.hlsl -T vs_6_0 -Fo occluders.wireframe.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -E RenderSceneVS drawoccluders.hlsl -T vs_6_0 -Fo occluders.wireframe.vs.spv
 
 REM compiling drawoccludersps
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -E WireframePS drawoccluders.hlsl -T ps_6_0 -Fo occluders.wireframe.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -E WireframePS drawoccluders.hlsl -T ps_6_0 -Fo occluders.wireframe.ps.spv
 
 REM compiling sao
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -E ScalableAmbientObscurance sao.hlsl -T cs_6_2 -Fo sao.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -E ScalableAmbientObscurance sao.hlsl -T cs_6_2 -Fo sao.cs.spv
 
 REM Hardware ray tracing — single library SPV with raygen + miss + closest-hit + any-hit entries
-D:\SourceCode\L46\5.6merge\UnrealEngine5\Engine\Binaries\ThirdParty\ShaderConductor\Win64\dxc.exe -spirv -T lib_6_3 rt_lighting.hlsl -fspv-target-env=vulkan1.2 -fspv-extension=SPV_KHR_ray_tracing -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-extension=SPV_KHR_non_semantic_info -fspv-extension=SPV_EXT_descriptor_indexing -Fo rt_lighting.lib.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T lib_6_3 rt_lighting.hlsl -fspv-target-env=vulkan1.2 -fspv-extension=SPV_KHR_ray_tracing -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-extension=SPV_KHR_non_semantic_info -fspv-extension=SPV_EXT_descriptor_indexing -Fo rt_lighting.lib.spv
+
+REM Screen-space decal
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 decal.hlsl -E DecalVS -Fo decal.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 decal.hlsl -E DecalPS -Fo decal.ps.spv
+
+REM Resolve/PostFX pass (TAA + ACES Tone Mapping)
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 resolve.hlsl -fspv-debug=vulkan-with-source -E ResolvePS -Fo resolve.ps.spv
