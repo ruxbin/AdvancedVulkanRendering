@@ -3327,12 +3327,6 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       jy = halton(jitterIndex, 3) * 2.0f - 1.0f;
       jx /= (float)device.getSwapChainExtent().width;
       jy /= (float)device.getSwapChainExtent().height;
-      // Halve the jitter amplitude to reduce shadow-boundary flicker.
-      // Standard ±0.5 px is perceptible on hard shadow edges; ±0.25 px
-      // preserves sub-pixel sampling while staying below the visibility
-      // threshold for most shadow-map texel sizes.
-      jx *= 0.5f;
-      jy *= 0.5f;
     }
     frameConstants.taaJitter = vec2(jx, jy);
     frameConstants.exposure = 1.0f;
@@ -5560,28 +5554,24 @@ void GpuScene::createSAOResources() {
 
   // --- 4. SAO compute pipeline ---
   {
-    // Descriptor set layout: depth (0), pyramid (1), camera cbuffer (2), AO output (3)
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    // Descriptor set layout: depth pyramid (0), camera cbuffer (1), AO output (2)
+    VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
     vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr, &_saoSetLayout);
 
@@ -5618,7 +5608,7 @@ void GpuScene::createSAOResources() {
 
     // Descriptor pool and set for SAO compute
     VkDescriptorPoolSize poolSizes[] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 * framesInFlight},
     };
@@ -5639,53 +5629,42 @@ void GpuScene::createSAOResources() {
     vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, _saoDescriptorSets.data());
 
     for (uint32_t i = 0; i < framesInFlight; i++) {
-      // Binding 0: depth texture (per-frame)
-      VkDescriptorImageInfo depthInfo{};
-      depthInfo.imageView = device.getWindowDepthOnlyImageView(i);
-      depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-
-      // Binding 1: SAO depth pyramid (per-frame)
+      // Binding 0: SAO depth pyramid (per-frame, R32_SFLOAT)
       VkDescriptorImageInfo pyramidInfo{};
       pyramidInfo.imageView = _saoDepthPyramidView[i];
       pyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-      // Binding 2: camera params uniform buffer (per-frame)
+      // Binding 1: camera params uniform buffer (per-frame)
       VkDescriptorBufferInfo bufferInfo{};
       bufferInfo.buffer = uniformBuffers[i];
       bufferInfo.offset = 0;
       bufferInfo.range = sizeof(FrameData);
 
-      // Binding 3: AO output (per-frame)
+      // Binding 2: AO output (per-frame)
       VkDescriptorImageInfo aoInfo{};
       aoInfo.imageView = _aoTextureView[i];
       aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-      VkWriteDescriptorSet writes[4] = {};
+      VkWriteDescriptorSet writes[3] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[0].dstSet = _saoDescriptorSets[i];
       writes[0].dstBinding = 0;
       writes[0].descriptorCount = 1;
       writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      writes[0].pImageInfo = &depthInfo;
+      writes[0].pImageInfo = &pyramidInfo;
       writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[1].dstSet = _saoDescriptorSets[i];
       writes[1].dstBinding = 1;
       writes[1].descriptorCount = 1;
-      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      writes[1].pImageInfo = &pyramidInfo;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[1].pBufferInfo = &bufferInfo;
       writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[2].dstSet = _saoDescriptorSets[i];
       writes[2].dstBinding = 2;
       writes[2].descriptorCount = 1;
-      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-      writes[2].pBufferInfo = &bufferInfo;
-      writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[3].dstSet = _saoDescriptorSets[i];
-      writes[3].dstBinding = 3;
-      writes[3].descriptorCount = 1;
-      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      writes[3].pImageInfo = &aoInfo;
-      vkUpdateDescriptorSets(device.getLogicalDevice(), 4, writes, 0, nullptr);
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[2].pImageInfo = &aoInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 3, writes, 0, nullptr);
     }
   }
 
