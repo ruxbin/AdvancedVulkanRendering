@@ -35,49 +35,10 @@ struct VSOutput
 
 
 
-float evaluateCascadeShadows(CameraParamsBufferFull cameraParams,
-                                    float4 worldPosition,
-                                    bool useFilter)//TODO: output cascade index for debug
-{
-    float shadow = 0;
-    for (int cascadeIndex = 0; cascadeIndex < SHADOW_CASCADE_COUNT; cascadeIndex++)
-    {
-        float4x4 finalMatrix = mul(cameraParams.shadowMatrix[cascadeIndex].shadowProjectionMatrix, cameraParams.shadowMatrix[cascadeIndex].shadowViewMatrix);
-        float4 lightSpacePos = mul(finalMatrix, worldPosition);
-        lightSpacePos /= lightSpacePos.w;
 
-        if (all(lightSpacePos.xyz < 1.0) && all(lightSpacePos.xyz > float3(-1, -1, 0)))
-        {
-            shadow = 0.0f;
-            float lightSpaceDepth = lightSpacePos.z - 0.0001f;
-            float3 shadowUv = float3(lightSpacePos.xy * float2(0.5, 0.5) + 0.5, cascadeIndex);
-
-            if (!useFilter)
-                return shadowMaps.SampleCmpLevelZero(shadowSampler, shadowUv, lightSpaceDepth);
-
-            // 3x3 PCF with manual UV offsets — SPIR-V does not allow Offset
-            // image operand with OpImageSampleDref, only with Gather.
-            float smW, smH, smLayers, smLevels;
-            shadowMaps.GetDimensions(0, smW, smH, smLayers, smLevels);
-            float2 smTexelSize = float2(1.0f / smW, 1.0f / smH);
-            for (int j = -1; j <= 1; ++j)
-            {
-                for (int i = -1; i <= 1; ++i)
-                {
-                    float3 uv = shadowUv;
-                    uv.xy += float2(i, j) * smTexelSize;
-                    shadow += shadowMaps.SampleCmpLevelZero(shadowSampler, uv, lightSpaceDepth);
-                }
-            }
-            shadow /= 9;
-            break;
-        }
-
-    }
-    return shadow;
-}
-
-
+// Cascade split distances — must match Shadow.cpp:86-88 (world-space metres).
+static const float CASCADE_SPLIT_0 = 3.0f;
+static const float CASCADE_SPLIT_1 = 10.0f;
 
 VSOutput AAPLSimpleTexVertexOutFSQuadVertexShader(
 uint vid : SV_VertexID)
@@ -126,8 +87,8 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     // Reverse-Z depth → eye-space Z:  eyeZ ≈ near / depth.
     float eyeZ = frameConstants.nearPlane / max(depth, 0.0001f);
     int ci = 0;
-    if (eyeZ > 3.0f)  ci = 1;
-    if (eyeZ > 10.0f) ci = 2;
+    if (eyeZ > CASCADE_SPLIT_0) ci = 1;
+    if (eyeZ > CASCADE_SPLIT_1) ci = 2;
 
     // Evaluate only the selected cascade.
     float4x4 sm = mul(cameraParams.shadowMatrix[ci].shadowProjectionMatrix,

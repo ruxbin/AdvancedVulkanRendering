@@ -389,10 +389,6 @@ private:
   VkDeviceMemory _taaHistoryBufferMemory[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
   VkImageView _taaHistoryBufferView[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
-  // Per-frame-in-flight previous view-projection. A single member variable
-  // would be overwritten by concurrent CPU frames; storing one per slot
-  // makes TAA reprojection stable regardless of swapchain depth.
-
   VkRenderPass _resolvePass = VK_NULL_HANDLE;
   std::vector<VkFramebuffer> _resolveFrameBuffer;
   VkDescriptorSetLayout _resolveSetLayout = VK_NULL_HANDLE;

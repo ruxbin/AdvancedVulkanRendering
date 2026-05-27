@@ -15,8 +15,8 @@ D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 pointspotlight.hlsl -fspv-de
 
 
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E CoarseCull -Fo CoarseCull.cs.spv
-D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E TraditionalCull -fspv-debug=vulkan-with-source -E TraditionalCull -Fo TraditionalCull.cs.spv
-D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E ClearLightIndices -fspv-debug=vulkan-with-source -E ClearLightIndices -Fo ClearIndices.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E TraditionalCull -Fo TraditionalCull.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E ClearLightIndices -Fo ClearIndices.cs.spv
 
 
 
