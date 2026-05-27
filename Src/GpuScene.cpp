@@ -2143,6 +2143,25 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   //     float(deviceref.getSwapChainExtent().height), vec3(0,0,1), vec3(0,1,
   //     0));
 
+  // Sun defaults: scene.scene provides direction, not color.
+  // AAPLFrameConstants is zero-initialised by its member ctors; set
+  // sun values once in the constructor so the per-frame memcpy to the
+  // GPU uniform always carries valid sun data.
+  if (sceneFile.contains("sun_direction")) {
+    frameConstants.sunDirection = vec3(
+        sceneFile["sun_direction"][0].template get<float>(),
+        sceneFile["sun_direction"][1].template get<float>(),
+        sceneFile["sun_direction"][2].template get<float>());
+  }
+  // Default warm-white equivalent to ~6500K sky + sun.
+  if (frameConstants.sunColor.x == 0.0f && frameConstants.sunColor.y == 0.0f &&
+      frameConstants.sunColor.z == 0.0f) {
+    frameConstants.sunColor = vec3(1.0f, 0.95f, 0.85f);
+  }
+  if (frameConstants.localLightIntensity == 0.0f) {
+    frameConstants.localLightIntensity = 1.0f;
+  }
+
   {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -2897,8 +2916,11 @@ void GpuScene::CreateForwardLightingPass() {
       VK_ATTACHMENT_STORE_OP_DONT_CARE;
   deferredLightingDepthAttachments.initialLayout =
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  // Resolve pass samples depth as DEPTH_READ_ONLY; let the render pass perform
+  // the implicit attachment->read-only transition here so we don't need a
+  // standalone vkCmdPipelineBarrier between forward and resolve.
   deferredLightingDepthAttachments.finalLayout =
-      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
   VkAttachmentReference deferredLightingAttachmentRefs{};
   deferredLightingAttachmentRefs.attachment = 0;
@@ -3338,8 +3360,11 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     // Apply sub-pixel jitter to the projection used for vertex shading.
     mat4 jitteredProj = cleanProj;
     if (_taaEnabled) {
-      jitteredProj[2][0] += jx;
-      jitteredProj[2][1] += jy;
+      // P[3][2] (m[2].w) scales z into w; multiplying the jitter by it
+      // gives the exact sub-pixel NDC offset regardless of depth.
+      float Zt = cleanProj[2].w;
+      jitteredProj[2][0] += jx * Zt;
+      jitteredProj[2][1] += jy * Zt;
     }
 
     void *data1;
@@ -3450,10 +3475,11 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       uint32_t totalSpotLights = _spotLights.size();
 
       // Compute view-projection matrix for Hi-Z AABB projection.
-      // 注意:本项目 mat4::operator* 的实现里 `A * B` 实际算的是数学上的
-      // `B * A`(参见 Matrix.h 的索引方式以及 Camera.cpp:74)。
-      // 所以这里要写 V*P 形式才能得到数学上的 P*V,跟 HLSL 的列向量 mul 对齐。
-      mat4 viewProj = maincamera->getObjectToCamera() * maincamera->getProjectMatrix();
+      // Must match the jittered VP used by the vertex shader; otherwise
+      // chunks near frustum edges flicker in/out of cull when jitter
+      // shifts the projection between frames.
+      mat4 viewProj =
+          maincamera->getObjectToCamera() * jitteredProj;
       mat4 viewProjT = transpose(viewProj);
 
       GPUCullParams params;
@@ -3751,10 +3777,12 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
   // post process - Resolve pass (TAA + ACES Tone Mapping)
   {
+    uint32_t writeSlot = _taaFrameIndex & 1;
+
     VkRenderPassBeginInfo resolvePassInfo{};
     resolvePassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     resolvePassInfo.renderPass = _resolvePass;
-    resolvePassInfo.framebuffer = _resolveFrameBuffer[imageIndex];
+    resolvePassInfo.framebuffer = _resolveFrameBuffer[imageIndex * 2 + writeSlot];
     resolvePassInfo.renderArea.offset = {0, 0};
     resolvePassInfo.renderArea.extent = device.getSwapChainExtent();
     resolvePassInfo.clearValueCount = 0;
@@ -3763,7 +3791,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _resolvePipeline);
     VkDescriptorSet resolveSets[] = {globalDescriptorSets[currentFrame],
-                                     _resolveDescriptorSets[currentFrame]};
+                                     _resolveDescriptorSets[currentFrame * 2 + writeSlot]};
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             _resolvePipelineLayout, 0, 2, resolveSets, 0, nullptr);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
@@ -4019,17 +4047,19 @@ void GpuScene::cleanupSwapChainResources() {
   }
 
   // 清理 TAA history buffer
-  if (_taaHistoryBufferView != VK_NULL_HANDLE) {
-    vkDestroyImageView(device.getLogicalDevice(), _taaHistoryBufferView, nullptr);
-    _taaHistoryBufferView = VK_NULL_HANDLE;
-  }
-  if (_taaHistoryBuffer != VK_NULL_HANDLE) {
-    vkDestroyImage(device.getLogicalDevice(), _taaHistoryBuffer, nullptr);
-    _taaHistoryBuffer = VK_NULL_HANDLE;
-  }
-  if (_taaHistoryBufferMemory != VK_NULL_HANDLE) {
-    vkFreeMemory(device.getLogicalDevice(), _taaHistoryBufferMemory, nullptr);
-    _taaHistoryBufferMemory = VK_NULL_HANDLE;
+  for (int s = 0; s < 2; ++s) {
+    if (_taaHistoryBufferView[s] != VK_NULL_HANDLE) {
+      vkDestroyImageView(device.getLogicalDevice(), _taaHistoryBufferView[s], nullptr);
+      _taaHistoryBufferView[s] = VK_NULL_HANDLE;
+    }
+    if (_taaHistoryBuffer[s] != VK_NULL_HANDLE) {
+      vkDestroyImage(device.getLogicalDevice(), _taaHistoryBuffer[s], nullptr);
+      _taaHistoryBuffer[s] = VK_NULL_HANDLE;
+    }
+    if (_taaHistoryBufferMemory[s] != VK_NULL_HANDLE) {
+      vkFreeMemory(device.getLogicalDevice(), _taaHistoryBufferMemory[s], nullptr);
+      _taaHistoryBufferMemory[s] = VK_NULL_HANDLE;
+    }
   }
 
   _taaFirstFrame = true;
@@ -4075,32 +4105,37 @@ void GpuScene::recreateSwapChainResources() {
     hdrInfo.imageView = _hdrLightingBufferView;
     hdrInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkDescriptorImageInfo historyInfo{};
-    historyInfo.imageView = _taaHistoryBufferView;
-    historyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Re-point descriptor sets at the (possibly resized) history views.
+    const uint32_t setCount = (uint32_t)_resolveDescriptorSets.size();
+    for (uint32_t idx = 0; idx < setCount; ++idx) {
+      uint32_t f = idx / 2;
+      uint32_t w = idx % 2;
 
-    for (uint32_t f = 0; f < _resolveDescriptorSets.size(); ++f) {
       VkDescriptorImageInfo depthInfo{};
       depthInfo.imageView = device.getWindowDepthOnlyImageView(f);
       depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
+      VkDescriptorImageInfo historyInfoLocal{};
+      historyInfoLocal.imageView = _taaHistoryBufferView[1 - w];
+      historyInfoLocal.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
       VkWriteDescriptorSet writes[3] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[0].dstSet = _resolveDescriptorSets[f];
+      writes[0].dstSet = _resolveDescriptorSets[idx];
       writes[0].dstBinding = 0;
       writes[0].descriptorCount = 1;
       writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
       writes[0].pImageInfo = &hdrInfo;
 
       writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[1].dstSet = _resolveDescriptorSets[f];
+      writes[1].dstSet = _resolveDescriptorSets[idx];
       writes[1].dstBinding = 1;
       writes[1].descriptorCount = 1;
       writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      writes[1].pImageInfo = &historyInfo;
+      writes[1].pImageInfo = &historyInfoLocal;
 
       writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[2].dstSet = _resolveDescriptorSets[f];
+      writes[2].dstSet = _resolveDescriptorSets[idx];
       writes[2].dstBinding = 2;
       writes[2].descriptorCount = 1;
       writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -5535,28 +5570,24 @@ void GpuScene::createSAOResources() {
 
   // --- 4. SAO compute pipeline ---
   {
-    // Descriptor set layout: depth (0), pyramid (1), camera cbuffer (2), AO output (3)
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    // Descriptor set layout: depth pyramid (0), camera cbuffer (1), AO output (2)
+    VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 3;
     layoutInfo.pBindings = bindings;
     vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr, &_saoSetLayout);
 
@@ -5593,7 +5624,7 @@ void GpuScene::createSAOResources() {
 
     // Descriptor pool and set for SAO compute
     VkDescriptorPoolSize poolSizes[] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * framesInFlight},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 * framesInFlight},
     };
@@ -5614,53 +5645,42 @@ void GpuScene::createSAOResources() {
     vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, _saoDescriptorSets.data());
 
     for (uint32_t i = 0; i < framesInFlight; i++) {
-      // Binding 0: depth texture (per-frame)
-      VkDescriptorImageInfo depthInfo{};
-      depthInfo.imageView = device.getWindowDepthOnlyImageView(i);
-      depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-
-      // Binding 1: SAO depth pyramid (per-frame)
+      // Binding 0: SAO depth pyramid (per-frame, R32_SFLOAT)
       VkDescriptorImageInfo pyramidInfo{};
       pyramidInfo.imageView = _saoDepthPyramidView[i];
       pyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-      // Binding 2: camera params uniform buffer (per-frame)
+      // Binding 1: camera params uniform buffer (per-frame)
       VkDescriptorBufferInfo bufferInfo{};
       bufferInfo.buffer = uniformBuffers[i];
       bufferInfo.offset = 0;
       bufferInfo.range = sizeof(FrameData);
 
-      // Binding 3: AO output (per-frame)
+      // Binding 2: AO output (per-frame)
       VkDescriptorImageInfo aoInfo{};
       aoInfo.imageView = _aoTextureView[i];
       aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-      VkWriteDescriptorSet writes[4] = {};
+      VkWriteDescriptorSet writes[3] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[0].dstSet = _saoDescriptorSets[i];
       writes[0].dstBinding = 0;
       writes[0].descriptorCount = 1;
       writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      writes[0].pImageInfo = &depthInfo;
+      writes[0].pImageInfo = &pyramidInfo;
       writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[1].dstSet = _saoDescriptorSets[i];
       writes[1].dstBinding = 1;
       writes[1].descriptorCount = 1;
-      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      writes[1].pImageInfo = &pyramidInfo;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      writes[1].pBufferInfo = &bufferInfo;
       writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[2].dstSet = _saoDescriptorSets[i];
       writes[2].dstBinding = 2;
       writes[2].descriptorCount = 1;
-      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-      writes[2].pBufferInfo = &bufferInfo;
-      writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[3].dstSet = _saoDescriptorSets[i];
-      writes[3].dstBinding = 3;
-      writes[3].descriptorCount = 1;
-      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      writes[3].pImageInfo = &aoInfo;
-      vkUpdateDescriptorSets(device.getLogicalDevice(), 4, writes, 0, nullptr);
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[2].pImageInfo = &aoInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 3, writes, 0, nullptr);
     }
   }
 
@@ -5758,38 +5778,51 @@ void GpuScene::createTAAHistoryBuffer() {
   imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
   imageInfo.flags = 0;
 
-  if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
-                    &_taaHistoryBuffer) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create TAA history buffer!");
-  }
+  // Ping-pong: two history slots.
+  for (int s = 0; s < 2; ++s) {
+    if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+                      &_taaHistoryBuffer[s]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create TAA history buffer!");
+    }
 
-  VkMemoryRequirements memReq;
-  vkGetImageMemoryRequirements(device.getLogicalDevice(), _taaHistoryBuffer, &memReq);
+    VkMemoryRequirements memReq;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), _taaHistoryBuffer[s], &memReq);
 
-  VkMemoryAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  allocInfo.allocationSize = memReq.size;
-  allocInfo.memoryTypeIndex = device.findMemoryType(
-      memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = device.findMemoryType(
+        memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                       &_taaHistoryBufferMemory) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate TAA history buffer memory!");
-  }
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                         &_taaHistoryBufferMemory[s]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate TAA history buffer memory!");
+    }
 
-  vkBindImageMemory(device.getLogicalDevice(), _taaHistoryBuffer,
-                    _taaHistoryBufferMemory, 0);
+    vkBindImageMemory(device.getLogicalDevice(), _taaHistoryBuffer[s],
+                      _taaHistoryBufferMemory[s], 0);
 
-  VkImageViewCreateInfo viewInfo{};
-  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  viewInfo.image = _taaHistoryBuffer;
-  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-  viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = _taaHistoryBuffer[s];
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-  if (vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr,
-                        &_taaHistoryBufferView) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create TAA history buffer view!");
+    if (vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr,
+                          &_taaHistoryBufferView[s]) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create TAA history buffer view!");
+    }
+
+    // Both slots must be in SHADER_READ_ONLY_OPTIMAL on the first frame, since
+    // the resolve descriptor declares that layout for binding 1 and the
+    // validator checks it on bind even if the shader skips the sample (it does
+    // on _taaFirstFrame). The resolve render pass takes them from
+    // SHADER_READ_ONLY -> COLOR_ATTACHMENT for the write subpass and back to
+    // SHADER_READ_ONLY at finalLayout so the steady-state loop is consistent.
+    device.transitionImageLayout(_taaHistoryBuffer[s], VK_FORMAT_R8G8B8A8_SRGB,
+                                 VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 }
 
@@ -5833,6 +5866,10 @@ void GpuScene::createResolvePass() {
   historyAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   historyAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   historyAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  // Ping-pong: createTAAHistoryBuffer transitions both slots to SHADER_READ_ONLY
+  // on init and finalLayout below puts them back there each frame, so initialLayout
+  // can require it. (We don't preserve contents — DONT_CARE — but the read slot
+  // is the other image, which keeps its contents from the previous frame.)
   historyAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   historyAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -5874,23 +5911,25 @@ void GpuScene::createResolvePass() {
 }
 
 void GpuScene::createResolveFrameBuffer(uint32_t count) {
-  _resolveFrameBuffer.resize(count);
+  _resolveFrameBuffer.resize(count * 2);
   for (uint32_t i = 0; i < count; i++) {
-    VkImageView attachments[] = {device.getSwapChainImageView(i),
-                                 _taaHistoryBufferView};
+    for (uint32_t s = 0; s < 2; ++s) {
+      VkImageView attachments[] = {device.getSwapChainImageView(i),
+                                   _taaHistoryBufferView[s]};
 
-    VkFramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = _resolvePass;
-    framebufferInfo.attachmentCount = 2;
-    framebufferInfo.pAttachments = attachments;
-    framebufferInfo.width = device.getSwapChainExtent().width;
-    framebufferInfo.height = device.getSwapChainExtent().height;
-    framebufferInfo.layers = 1;
+      VkFramebufferCreateInfo framebufferInfo{};
+      framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+      framebufferInfo.renderPass = _resolvePass;
+      framebufferInfo.attachmentCount = 2;
+      framebufferInfo.pAttachments = attachments;
+      framebufferInfo.width = device.getSwapChainExtent().width;
+      framebufferInfo.height = device.getSwapChainExtent().height;
+      framebufferInfo.layers = 1;
 
-    if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo,
-                            nullptr, &_resolveFrameBuffer[i]) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create resolve framebuffer!");
+      if (vkCreateFramebuffer(device.getLogicalDevice(), &framebufferInfo,
+                              nullptr, &_resolveFrameBuffer[i * 2 + s]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create resolve framebuffer!");
+      }
     }
   }
 }
@@ -5932,41 +5971,39 @@ void GpuScene::createResolveDescriptors() {
   vkCreateDescriptorSetLayout(device.getLogicalDevice(), &layoutInfo, nullptr,
                               &_resolveSetLayout);
 
-  // Descriptor pool sized for per-frame sets (depth view is per-frame).
+  // Descriptor pool sized for per-frame-in-flight x per-history-slot sets.
   uint32_t frameCount = framesInFlight;
+  uint32_t setCount = frameCount * 2;
   VkDescriptorPoolSize poolSizes[] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * frameCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 2 * frameCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 2 * setCount},
   };
 
   VkDescriptorPoolCreateInfo poolInfo{};
   poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  poolInfo.maxSets = frameCount;
+  poolInfo.maxSets = setCount;
   poolInfo.poolSizeCount = 2;
   poolInfo.pPoolSizes = poolSizes;
 
   vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr,
                          &_resolveDescriptorPool);
 
-  // Allocate one descriptor set per inflight frame.
-  std::vector<VkDescriptorSetLayout> layouts(frameCount, _resolveSetLayout);
+  // Allocate one descriptor set per (inflight frame, history write slot).
+  // Index layout: frame * 2 + writeSlot. historyTex on slot W reads slot 1-W.
+  std::vector<VkDescriptorSetLayout> layouts(setCount, _resolveSetLayout);
   VkDescriptorSetAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocInfo.descriptorPool = _resolveDescriptorPool;
-  allocInfo.descriptorSetCount = frameCount;
+  allocInfo.descriptorSetCount = setCount;
   allocInfo.pSetLayouts = layouts.data();
 
-  _resolveDescriptorSets.resize(frameCount);
+  _resolveDescriptorSets.resize(setCount);
   vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo,
                            _resolveDescriptorSets.data());
 
   VkDescriptorImageInfo hdrInfo{};
   hdrInfo.imageView = _hdrLightingBufferView;
   hdrInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-  VkDescriptorImageInfo historyInfo{};
-  historyInfo.imageView = _taaHistoryBufferView;
-  historyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkDescriptorImageInfo nearestSamplerInfo{};
   nearestSamplerInfo.sampler = nearestClampSampler;
@@ -5979,43 +6016,49 @@ void GpuScene::createResolveDescriptors() {
     depthInfo.imageView = device.getWindowDepthOnlyImageView(f);
     depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
-    VkWriteDescriptorSet writes[5] = {};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = _resolveDescriptorSets[f];
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[0].pImageInfo = &hdrInfo;
+    for (uint32_t w = 0; w < 2; ++w) {
+      VkDescriptorImageInfo historyInfoLocal{};
+      historyInfoLocal.imageView = _taaHistoryBufferView[1 - w]; // read other
+      historyInfoLocal.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = _resolveDescriptorSets[f];
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[1].pImageInfo = &historyInfo;
+      VkWriteDescriptorSet writes[5] = {};
+      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[0].dstSet = _resolveDescriptorSets[f * 2 + w];
+      writes[0].dstBinding = 0;
+      writes[0].descriptorCount = 1;
+      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[0].pImageInfo = &hdrInfo;
 
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = _resolveDescriptorSets[f];
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[2].pImageInfo = &depthInfo;
+      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].dstSet = _resolveDescriptorSets[f * 2 + w];
+      writes[1].dstBinding = 1;
+      writes[1].descriptorCount = 1;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[1].pImageInfo = &historyInfoLocal;
 
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = _resolveDescriptorSets[f];
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[3].pImageInfo = &nearestSamplerInfo;
+      writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[2].dstSet = _resolveDescriptorSets[f * 2 + w];
+      writes[2].dstBinding = 2;
+      writes[2].descriptorCount = 1;
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[2].pImageInfo = &depthInfo;
 
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = _resolveDescriptorSets[f];
-    writes[4].dstBinding = 4;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[4].pImageInfo = &linearSamplerInfo;
+      writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[3].dstSet = _resolveDescriptorSets[f * 2 + w];
+      writes[3].dstBinding = 3;
+      writes[3].descriptorCount = 1;
+      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+      writes[3].pImageInfo = &nearestSamplerInfo;
 
-    vkUpdateDescriptorSets(device.getLogicalDevice(), 5, writes, 0, nullptr);
+      writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[4].dstSet = _resolveDescriptorSets[f * 2 + w];
+      writes[4].dstBinding = 4;
+      writes[4].descriptorCount = 1;
+      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+      writes[4].pImageInfo = &linearSamplerInfo;
+
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 5, writes, 0, nullptr);
+    }
   }
 }
 

@@ -658,6 +658,15 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
             ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
             : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // TODO：VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT？？
     destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+             newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    // Init-time prep for images that will live in SHADER_READ_ONLY between
+    // render passes (e.g. ping-pong history textures). No prior contents to
+    // preserve, so srcAccess=0 / TOP_OF_PIPE is sufficient.
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   } else {
     throw std::invalid_argument("unsupported layout transition!");
   }

@@ -123,7 +123,7 @@ ResolveOutput ResolvePS(VSOutput input)
         float4 prevClip = mul(cameraParams.prevViewProjectionMatrix, float4(worldPos.xyz, 1.0f));
         prevClip.xyz /= prevClip.w;
 
-        float2 prevUV = prevClip.xy * float2(0.5f, -0.5f) + 0.5f;
+        float2 prevUV = prevClip.xy * 0.5f + 0.5f;
 
         // Sample history with Catmull-Rom
         float3 historySample = sampleCatmullRom(prevUV, frameConstants.physicalSize, frameConstants.invPhysicalSize);
@@ -131,7 +131,6 @@ ResolveOutput ResolvePS(VSOutput input)
         // Clamp history to neighborhood bounding box
         historySample = clamp(historySample, minC, maxC);
 
-        // Blend: 95% history, 5% current
         float blendFactor = 0.95f;
 
         // Reject history for off-screen reprojection

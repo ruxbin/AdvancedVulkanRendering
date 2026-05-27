@@ -383,9 +383,11 @@ private:
   VkDeviceMemory _hdrLightingBufferMemory = VK_NULL_HANDLE;
   VkImageView _hdrLightingBufferView = VK_NULL_HANDLE;
 
-  VkImage _taaHistoryBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory _taaHistoryBufferMemory = VK_NULL_HANDLE;
-  VkImageView _taaHistoryBufferView = VK_NULL_HANDLE;
+  // TAA ring-buffer history: framesInFlight+1 images so that even with
+  // all swapchain images in flight, the oldest slot is guaranteed idle.
+  VkImage _taaHistoryBuffer[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+  VkDeviceMemory _taaHistoryBufferMemory[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+  VkImageView _taaHistoryBufferView[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
   VkRenderPass _resolvePass = VK_NULL_HANDLE;
   std::vector<VkFramebuffer> _resolveFrameBuffer;

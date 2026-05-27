@@ -5,13 +5,16 @@
 #include "commonstruct.hlsl"
 
 // --- Bindings ---
-[[vk::binding(0,0)]] Texture2D<float> depthTexture;        // Full-resolution scene depth
-[[vk::binding(1,0)]] Texture2D<float> depthMipTexture;     // Mipped depth pyramid (half-res start)
-[[vk::binding(2,0)]] cbuffer cam {
+// SAO depth pyramid (R32_SFLOAT, full-res mip 0).  Serves both as
+// the source of centre-pixel depth (mip 0 Load) and as the mip chain
+// for coarse-level lookups.
+[[vk::binding(0,0)]] Texture2D<float> depthMipTexture;
+
+[[vk::binding(1,0)]] cbuffer cam {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameData;
 };
-[[vk::binding(3,0)]] 
+[[vk::binding(2,0)]] 
 [[vk::image_format("r8")]] 
 RWTexture2D<float> aoOutput;          // Output AO texture (R8_UNORM)
 
@@ -117,7 +120,9 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
     const float intensity = 1.0;
 
     // --- Center pixel ---
-    float depth = depthTexture.Load(int3(coordinates, 0));
+    // Read from SAO depth pyramid mip 0 (R32_SFLOAT), not the raw depth
+    // texture, so that Load() works on all Vulkan drivers.
+    float depth = depthMipTexture.Load(int3(coordinates, 0));
     // Reverse-Z: depth == 0 = far plane = sky / not rendered. 严格用 0 判定;
     // 之前用 `<= 0.0001` 会误把 ~90m 远的合法几何当成 sky 剔除(reverse-Z
     // 在 n=0.1, f=100 下,depth=0.0001 对应 view.z ≈ 90m),Bistro 街景里
@@ -132,10 +137,10 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
     float2 cameraBasePosition = GetCameraSpaceBasePosition(coordinates);
 
     // --- Reconstruct normal from 4-neighbor cross product ---
-    float depthd = depthTexture.Load(int3(coordinates + uint2(0, 1), 0));
-    float depthr = depthTexture.Load(int3(coordinates + uint2(1, 0), 0));
-    float depthu = depthTexture.Load(int3(coordinates - uint2(0, 1), 0));
-    float depthl = depthTexture.Load(int3(coordinates - uint2(1, 0), 0));
+    float depthd = depthMipTexture.Load(int3(coordinates + uint2(0, 1), 0));
+    float depthr = depthMipTexture.Load(int3(coordinates + uint2(1, 0), 0));
+    float depthu = depthMipTexture.Load(int3(coordinates - uint2(0, 1), 0));
+    float depthl = depthMipTexture.Load(int3(coordinates - uint2(1, 0), 0));
 
     float3 cameraPositiond = GetOffsetCameraSpacePosition(cameraBasePosition, float2(0, 1), depthd);
     float3 cameraPositionr = GetOffsetCameraSpacePosition(cameraBasePosition, float2(1, 0), depthr);
@@ -179,12 +184,13 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
         if (any(xy < int2(0, 0)) || any(xy >= int2(pushConstants.screenSize)))
             continue;
 
-        // Adaptive mip selection: far samples use coarser mips for cache efficiency
+        // Adaptive mip selection: far samples use coarser mips for cache efficiency.
+        // Pyramid mip 0 is full-res (unlike Apple's half-res Metal variant), so
+        // coordinates are shifted by mipLevel (not mipLevel+1).
         int mipLevel = int(log2(max(abs(offset.x), abs(offset.y)))) - 3;
         mipLevel = clamp(mipLevel, 0, 6);
 
-        // Read from depth pyramid (half-res start, so shift by mipLevel+1)
-        float depth2 = depthMipTexture.Load(int3(xy >> (mipLevel + 1), mipLevel));
+        float depth2 = depthMipTexture.Load(int3(xy >> mipLevel, mipLevel));
 
         // Skip far-plane pixels (reverse-Z: 0 = far). 严格 0 判定,理由同 center pixel。
         if (depth2 == 0.0)

@@ -42,42 +42,10 @@ struct VSOutput
 
 
 
-float evaluateCascadeShadows(CameraParamsBufferFull cameraParams,
-                                    float4 worldPosition,
-                                    bool useFilter)//TODO: output cascade index for debug
-{
-    float shadow = 0;
-    for (int cascadeIndex = 0; cascadeIndex < SHADOW_CASCADE_COUNT; cascadeIndex++)
-    {
-        float4x4 finalMatrix = mul(cameraParams.shadowMatrix[cascadeIndex].shadowProjectionMatrix, cameraParams.shadowMatrix[cascadeIndex].shadowViewMatrix);
-        float4 lightSpacePos = mul(finalMatrix, worldPosition);
-        lightSpacePos /= lightSpacePos.w;
 
-        if (all(lightSpacePos.xyz < 1.0) && all(lightSpacePos.xyz > float3(-1, -1, 0)))
-        {
-            shadow = 0.0f;
-            float lightSpaceDepth = lightSpacePos.z - 0.0001f;
-            float3 shadowUv = float3(lightSpacePos.xy * float2(0.5, 0.5) + 0.5, cascadeIndex);
-
-            if (!useFilter)
-                return shadowMaps.SampleCmpLevelZero(shadowSampler, shadowUv, lightSpaceDepth);
-
-            for (int j = -1; j <= 1; ++j)
-            {
-                for (int i = -1; i <= 1; ++i)
-                {
-                    shadow += shadowMaps.SampleCmpLevelZero(shadowSampler, shadowUv, lightSpaceDepth, int2(i, j));
-                }
-            }
-            shadow /= 9;
-            break;
-        }
-
-    }
-    return shadow;
-}
-
-
+// Cascade split distances — must match Shadow.cpp:86-88 (world-space metres).
+static const float CASCADE_SPLIT_0 = 3.0f;
+static const float CASCADE_SPLIT_1 = 10.0f;
 
 VSOutput AAPLSimpleTexVertexOutFSQuadVertexShader(
 uint vid : SV_VertexID)
@@ -115,8 +83,45 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     
     float depth = inDepth.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
     float4 worldPosition = worldPositionForTexcoord(input.TextureUV, depth, cameraParams);
-    
-    float shadow = evaluateCascadeShadows(cameraParams, worldPosition, false);
+
+    // Cascade selection from raw depth (jitter-independent).
+    // The frustum test in evaluateCascadeShadows uses worldPosition which
+    // shifts by ~½ px per frame; near a cascade boundary (3 m / 10 m) that
+    // is enough to flip between cascades and produce dramatically different
+    // shadow-map content on alternating frames.
+    //
+    // Split distances mirror Shadow.cpp:86-88 (3 / far, 10 / far, 50 / far).
+    // Reverse-Z depth → eye-space Z:  eyeZ ≈ near / depth.
+    float eyeZ = frameConstants.nearPlane / max(depth, 0.0001f);
+    int ci = 0;
+    if (eyeZ > CASCADE_SPLIT_0) ci = 1;
+    if (eyeZ > CASCADE_SPLIT_1) ci = 2;
+
+    // Evaluate only the selected cascade.
+    float4x4 sm = mul(cameraParams.shadowMatrix[ci].shadowProjectionMatrix,
+                      cameraParams.shadowMatrix[ci].shadowViewMatrix);
+    float4 lsp = mul(sm, worldPosition);
+    lsp /= lsp.w;
+    float shadow = 1.0f;
+    if (all(lsp.xyz < 1.0) && all(lsp.xyz > float3(-1.0f, -1.0f, 0.0f)))
+    {
+        float lightSpaceDepth = lsp.z - 0.0001f;
+        float3 shadowUv = float3(lsp.xy * 0.5f + 0.5f, (float)ci);
+        shadow = 0.0f;
+        float smW, smH, smLayers, smLevels;
+        shadowMaps.GetDimensions(0, smW, smH, smLayers, smLevels);
+        float2 smTexelSize = float2(1.0f / smW, 1.0f / smH);
+        for (int j = -2; j <= 2; ++j)
+        {
+            for (int i = -2; i <= 2; ++i)
+            {
+                float3 uv = shadowUv;
+                uv.xy += float2(i, j) * smTexelSize;
+                shadow += shadowMaps.SampleCmpLevelZero(shadowSampler, uv, lightSpaceDepth);
+            }
+        }
+        shadow /= 25.0f;
+    }
 
     float ao = aoTexture.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
 

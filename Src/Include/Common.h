@@ -78,12 +78,18 @@ struct FrameConstants {
   float nearPlane;
   float farPlane;
   uint32_t frameCounter;
-  alignas(16) vec2 physicalSize;
+  vec2 physicalSize;
+  float _padFR;               // HLSL float2 boundary: physicalSize ends at 60, next float2
+                              // cannot straddle a 16-byte register boundary → starts at 64
   vec2 invPhysicalSize;
   vec2 taaJitter;
   float exposure;
   uint32_t taaEnabled;
 };
+static_assert(sizeof(FrameConstants) == 96,
+              "FrameConstants size mismatch — must match HLSL cbuffer layout "
+              "(SPIR-V offset: sunDirection=0 sunColor=16 physicalSize=52 "
+              "invPhysicalSize=64 taaJitter=72 exposure=80 taaEnabled=84)");
 
 struct FrameData {
   uniformBufferData camConstants;
