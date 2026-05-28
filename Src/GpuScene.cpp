@@ -3401,9 +3401,11 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     memcpy(data1, &frameConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
 
-    // Store current clean VP for next frame's reprojection.
+    // Store current jittered VP for next frame's reprojection.
     // Code `view * proj` evaluates to math P*V (see mat4 quirk / Camera.cpp:74).
-    _prevViewProjectionMatrix = cleanView * cleanProj;
+    // Use jittered projection so that the history lookup compensates for the
+    // previous frame's sub-pixel offset, giving sharper temporal accumulation.
+    _prevViewProjectionMatrix = cleanView * jitteredProj;
     if (_taaEnabled) {
       _taaFirstFrame = false;
       _taaFrameIndex++;

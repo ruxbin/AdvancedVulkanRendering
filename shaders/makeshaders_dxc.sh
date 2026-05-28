@@ -19,6 +19,11 @@
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E ClearDebugView -Fo ClearDebugView.cs.spv
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E ClearLightIndices -Fo ClearIndices.cs.spv
 
+echo Spot light culling variants
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -E CoarseCullSpot -Fo CoarseCullSpot.cs.spv
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E TraditionalCullSpot -Fo TraditionalCullSpot.cs.spv
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 lightculling.hlsl -fspv-debug=vulkan-with-source -E ClearLightIndicesSpot -Fo ClearLightIndicesSpot.cs.spv
+
 echo GPU-Driven Optimization Shaders
 echo Stage 1: GPU Culling \(opaque/alpha-mask/transparent split + Hi-Z\)
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T cs_6_2 gpucull.hlsl -E EncodeDrawBuffer -Fo gpucull.cs.spv
@@ -64,4 +69,7 @@ echo compiling decalvs
 
 echo compiling decalps
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -E DecalPS decal.hlsl -T ps_6_0 -fspv-debug=vulkan-with-source -Fo decal.ps.spv
+
+echo compiling resolve
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T ps_6_0 resolve.hlsl -fspv-debug=vulkan-with-source -E ResolvePS -Fo resolve.ps.spv
 
