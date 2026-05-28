@@ -581,17 +581,27 @@ void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) const {
   submitInfo.pCommandBuffers = &commandBuffer;
 
   vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-  vkQueueWaitIdle(graphicsQueue);
+  VkResult waitResult = vkQueueWaitIdle(graphicsQueue);
 
-  vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+  if (waitResult == VK_SUCCESS) {
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+  }
 }
 
-void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
-                                         VkImageLayout oldLayout,
-                                         VkImageLayout newLayout,
-                                         uint32_t miplevel) const {
-  VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+void VulkanDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer, VkFence fence) const {
+  vkEndCommandBuffer(commandBuffer);
 
+  VkSubmitInfo submitInfo{};
+  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &commandBuffer;
+
+  vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+}
+
+void VulkanDevice::cmdTransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image,
+                                            VkFormat format, VkImageLayout oldLayout,
+                                            VkImageLayout newLayout, uint32_t miplevel) const {
   VkImageMemoryBarrier barrier{};
   barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
   barrier.oldLayout = oldLayout;
@@ -667,13 +677,34 @@ void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+             newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+    // Texture streaming: prepare old texture for copying shared mips to new image
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
+             newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    // Texture streaming: after copying from old texture, put it back to shader-read
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   } else {
     throw std::invalid_argument("unsupported layout transition!");
   }
 
   vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
                        nullptr, 0, nullptr, 1, &barrier);
+}
 
+void VulkanDevice::transitionImageLayout(VkImage image, VkFormat format,
+                                         VkImageLayout oldLayout,
+                                         VkImageLayout newLayout,
+                                         uint32_t miplevel) const {
+  VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+  cmdTransitionImageLayout(commandBuffer, image, format, oldLayout, newLayout, miplevel);
   endSingleTimeCommands(commandBuffer);
 }
 

@@ -8,11 +8,16 @@
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
 #include "vulkan/vulkan.h"
+#include <condition_variable>
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #include <stdio.h>
 #include <string_view>
+#include <thread>
+#include <tuple>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 
@@ -37,6 +42,21 @@ struct AAPLTextureData {
 #endif
   AAPLTextureData(const AAPLTextureData &) = delete;
   AAPLTextureData(AAPLTextureData &&rhs);
+};
+
+// Texture streaming: mirrors Metal's AAPLTextureManager mip-streaming design
+static constexpr unsigned int PERMANENT_TEXTURE_SIZE = 64;
+static constexpr unsigned int MAX_TEXTURE_SIZE = 4096;
+static constexpr int TEXTURE_RETENTION_FRAMES = 3;
+
+struct TextureStreamingEntry {
+  const AAPLTextureData* desc = nullptr;
+  VkImage image = VK_NULL_HANDLE;
+  VkImageView imageView = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  int currentMip = 0;    // base mip currently resident on GPU (0 = finest)
+  int requiredMip = 0;   // finest mip desired this frame (clamped between topMip and botMip)
+  size_t textureIndex = 0; // index into the bindless textures array
 };
 
 struct AAPLMeshData {
@@ -252,6 +272,7 @@ private:
   VkDeviceMemory occluderIndexMemory;
 
   AAPLMeshChunk *m_Chunks;
+  AAPLSubMesh *m_SubMeshes = nullptr;   // per-mesh bounding spheres for streaming
 
   // VkImageView currentImage;
   VkSampler textureSampler;
@@ -261,7 +282,64 @@ private:
   // VkDeviceMemory textureImageMemory;
 
   std::vector<std::pair<VkImage, VkImageView>> textures;
+  std::vector<VkDeviceMemory> textureMemory;
   std::unordered_map<uint32_t, size_t> textureHashMap;
+
+  // --- Texture streaming (mirrors AAPLTextureManager mip streaming) ---
+  std::vector<TextureStreamingEntry> streamingEntries;
+  std::unordered_map<uint32_t, size_t> streamingEntryMap;
+
+  // Background blit thread
+  std::thread blitThread;
+  std::mutex pendingBlitsMutex;
+  std::condition_variable blitCondition;
+  bool blitThreadRunning = false;
+
+  // Pending blit requests for background thread
+  struct PendingBlit {
+    uint32_t textureHash;
+    size_t entryIndex;
+    int targetMip;
+    // Snapshot of entry state at dispatch time — avoids data race with processStreamingWork
+    int snapshotCurrentMip;
+    VkImage snapshotImage;
+  };
+  std::vector<PendingBlit> pendingBlits;
+
+  // CPU-completed work from background thread (GPU processing on main thread)
+  struct CpuStreamingWork {
+    size_t entryIndex;
+    VkImage newImage;
+    VkDeviceMemory newMemory;
+    VkBuffer stagingBuf;
+    VkDeviceMemory stagingMem;
+    int targetMip;
+    int currentMip;       // old mip before this swap
+    VkImage sourceImage;  // old image handle at dispatch time (for image→image copy)
+    int oldMipCount;      // mip count of sourceImage
+    std::vector<VkBufferImageCopy> bufferCopyRegions;
+    std::vector<VkImageCopy> imageCopyRegions;
+    int newMipCount;
+    VkFormat format;
+    unsigned long long blockSize, bytesPerBlock;
+    int mipStart, mipEnd; // new mips uploaded to staging
+  };
+  std::vector<CpuStreamingWork> cpuCompletedWork;
+  std::mutex cpuWorkMutex;
+
+  // Old texture retention ring buffer (TEXTURE_RETENTION_FRAMES ring)
+  std::vector<std::vector<std::tuple<VkImage, VkImageView, VkDeviceMemory>>> textureToDelete;
+
+  // Dedicated transfer queue for async texture uploads
+  VkQueue streamingTransferQueue = VK_NULL_HANDLE;
+  VkCommandPool streamingTransferCmdPool = VK_NULL_HANDLE;
+
+  // Cached uncompressed CPU-side materials (for streaming texture hash lookups)
+  AAPLMaterial* cpuMaterials = nullptr;
+
+  // Flag: descriptors need re-writing because streaming swaps happened.
+  // One bit per frame slot — set all bits on swap, cleared per-slot after update.
+  uint32_t streamingDescriptorsDirtyMask = 0;
 
   std::vector<AAPLShaderMaterial> materials;
 
@@ -500,6 +578,7 @@ private:
 
 public:
   GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref);
+  ~GpuScene();
   GpuScene() = delete;
   GpuScene(const GpuScene &) = delete;
   void Draw();
@@ -566,6 +645,17 @@ public:
   void DrawChunksBasePass(VkCommandBuffer commandBuffer);
 
   void CreateTextures();
+
+  // Texture streaming (mirrors AAPLTextureManager)
+  void initTextureStreaming();
+  void shutdownTextureStreaming();
+  void UpdateTextureStreaming(int frameIndex);
+  int calculateMinMip(const AAPLTextureData& desc, unsigned int maxSize) const;
+  int calculateRequiredMip(const AAPLTextureData& desc, float screenArea) const;
+  void setRequiredMip(uint32_t textureHash, float screenArea);
+  void dispatchStreamingRequest(size_t entryIndex);
+  void blitThreadFunc();
+  void processStreamingWork(int frameIndex);
 
   void updateSamplerInDescriptors(VkImageView currentImage);
 

@@ -15,7 +15,9 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
@@ -1891,13 +1893,6 @@ void GpuScene::init_GlobaldescriptorSet() {
   }
 }
 
-void GpuScene::CreateTextures() {
-  for (auto &texture : applMesh->_textures) {
-    textureHashMap[texture._pathHash] = textures.size();
-    textures.push_back(createTexture(texture));
-  }
-}
-
 void GpuScene::CreateGBuffers() {
 
   int width = device.getSwapChainExtent().width;
@@ -2094,6 +2089,12 @@ void GpuScene::ConfigureMaterial(const AAPLMaterial &input,
   output.alpha = input.opacity;
 }
 
+GpuScene::~GpuScene() {
+  shutdownTextureStreaming();
+  free(cpuMaterials);
+  free(m_SubMeshes);
+}
+
 GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
     : device(deviceref), modelScale(1.f), _rootPath(root) {
 
@@ -2251,19 +2252,22 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
 
   CreateTextures();
 
+  // Start texture streaming background thread
+  initTextureStreaming();
+
   if (sizeof(AAPLMaterial) != 96) {
     spdlog::error("layout mismatch with apple sizeof(AAPLMaterial) is {}, "
                   "while apple is 96",
                   sizeof(AAPLMaterial));
   }
 
-  AAPLMaterial *decompressedMaterial = (AAPLMaterial *)uncompressData(
+  cpuMaterials = (AAPLMaterial *)uncompressData(
       (unsigned char *)applMesh->_materialData,
       applMesh->compressedMaterialDataLength,
       applMesh->_materialCount * sizeof(AAPLMaterial));
   materials.resize(applMesh->_materialCount);
   for (int i = 0; i < applMesh->_materialCount; i++) {
-    ConfigureMaterial(decompressedMaterial[i], materials[i]);
+    ConfigureMaterial(cpuMaterials[i], materials[i]);
   };
 
   // create material buffer
@@ -2716,7 +2720,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
     }
   }
 
-  AAPLSubMesh *submeshes = (AAPLSubMesh *)uncompressData(
+  m_SubMeshes = (AAPLSubMesh *)uncompressData(
       (unsigned char *)applMesh->_meshData, applMesh->compressedMeshDataLength,
       applMesh->_meshCount * sizeof(AAPLSubMesh));
 
@@ -3317,7 +3321,29 @@ void GpuScene::DrawOccluders(VkCommandBuffer commandBuffer) {
 void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer) {
   // 注意：commandBuffer 参数会遮蔽任何同名的成员变量，
   // 这样函数内部所有对 commandBuffer 的引用都会使用这个参数
-  
+
+  // If streaming swaps happened, update the descriptor set for currentFrame.
+  // Safe here because Draw() has already waited on all fences.
+  if (streamingDescriptorsDirtyMask & (1u << currentFrame)) {
+    std::vector<VkDescriptorImageInfo> imageInfos;
+    imageInfos.reserve(textures.size());
+    for (size_t i = 0; i < textures.size(); ++i) {
+      VkDescriptorImageInfo dii{};
+      dii.imageView = textures[i].second;
+      dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      imageInfos.push_back(dii);
+    }
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = applDescriptorSets[currentFrame];
+    write.dstBinding = 2;
+    write.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = imageInfos.data();
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &write, 0, nullptr);
+    streamingDescriptorsDirtyMask &= ~(1u << currentFrame);
+  }
+
   _shadow->UpdateShadowMatrices(*this);
   {
     frameConstants.nearPlane = maincamera->Near();
@@ -3957,6 +3983,9 @@ void GpuScene::Draw() {
   // 使用当前 sync slot 的 command buffer
   VkCommandBuffer& currentCmdBuffer = commandBuffers[_syncSlot];
   vkResetCommandBuffer(currentCmdBuffer, /*VkCommandBufferResetFlagBits*/ 0);
+
+  // Texture streaming: compute required mips and apply completed swaps
+  UpdateTextureStreaming(_syncSlot);
 
   recordCommandBuffer(imageIndex, currentCmdBuffer);
 
@@ -5000,6 +5029,706 @@ void *GpuScene::loadMipTexture(const AAPLTextureData &texturedata, int mip,
       texturedata._mipLengths[mip], bytesPerImage);
 
   return uncompresseddata;
+}
+
+void GpuScene::CreateTextures() {
+  // --- Phase 1: batch all texture uploads into one command buffer ---
+  // Only permanent (coarsest) mips are loaded at startup.
+  // Higher-resolution mips are streamed in on demand by UpdateTextureStreaming().
+
+  // Step 1: pre-calculate total staging buffer size (permanent mips only)
+  //         and prepare streaming entries.
+  streamingEntries.clear();
+  streamingEntries.reserve(applMesh->_textures.size());
+  streamingEntryMap.clear();
+
+  size_t totalStagingSize = 0;
+  for (auto &texture : applMesh->_textures) {
+    int permanentMip = calculateMinMip(texture, PERMANENT_TEXTURE_SIZE);
+    unsigned long long blockSize, bytesPerBlock;
+    getPixelFormatBlockDesc((MTLPixelFormat)texture._pixelFormat, blockSize,
+                            bytesPerBlock);
+    for (int mip = permanentMip; mip < texture._mipmapLevelCount; ++mip) {
+      unsigned long long blocksWide =
+          calculateMipSizeInBlocks(texture._width, blockSize, mip);
+      unsigned long long blocksHigh =
+          calculateMipSizeInBlocks(texture._height, blockSize, mip);
+      unsigned long long bytesPerRow =
+          MAX(blocksWide >> 0, 1U) * bytesPerBlock;
+      unsigned long long bytesPerImage =
+          MAX(blocksHigh >> 0, 1U) * bytesPerRow;
+      totalStagingSize += bytesPerImage;
+    }
+    // Align to 16 bytes for BC3/BC5 block alignment
+    totalStagingSize = (totalStagingSize + 15) & ~15ull;
+  }
+
+  // Step 2: create one large staging buffer and map it once
+  VkBuffer stagingBuffer;
+  VkDeviceMemory stagingMemory;
+  createBuffer(totalStagingSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               stagingBuffer, stagingMemory);
+
+  void *mappedData = nullptr;
+  vkMapMemory(device.getLogicalDevice(), stagingMemory, 0, totalStagingSize, 0,
+              &mappedData);
+
+  // Step 3: create command buffer and fence
+  VkCommandBuffer cmdBuf = device.beginSingleTimeCommands();
+
+  VkFence uploadFence;
+  VkFenceCreateInfo fenceInfo{};
+  fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  vkCreateFence(device.getLogicalDevice(), &fenceInfo, nullptr, &uploadFence);
+
+  // Step 4: record upload commands for every texture (permanent mips only)
+  size_t stagingOffset = 0;
+  for (auto &texture : applMesh->_textures) {
+    int permanentMip = calculateMinMip(texture, PERMANENT_TEXTURE_SIZE);
+    int loadedMipCount = texture._mipmapLevelCount - permanentMip;
+
+    VkImage textureImage;
+    VkImageView textureView;
+    VkDeviceMemory textureImageMemory;
+
+    VkFormat vkFormat =
+        mapFromApple((MTLPixelFormat)texture._pixelFormat);
+
+    // --- create image with only the permanent+ mips ---
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = static_cast<uint32_t>(texture._width) >> permanentMip;
+    imageInfo.extent.height = static_cast<uint32_t>(texture._height) >> permanentMip;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = loadedMipCount;
+    imageInfo.arrayLayers = 1;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.format = vkFormat;
+    imageInfo.usage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.flags = 0;
+
+    if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr,
+                      &textureImage) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create image!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(device.getLogicalDevice(), textureImage,
+                                 &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = device.findMemoryType(
+        memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
+                         &textureImageMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate image memory!");
+    }
+    vkBindImageMemory(device.getLogicalDevice(), textureImage,
+                      textureImageMemory, 0);
+
+    // --- record UNDEFINED -> TRANSFER_DST barrier (all loaded mips) ---
+    device.cmdTransitionImageLayout(cmdBuf, textureImage, vkFormat,
+                                    VK_IMAGE_LAYOUT_UNDEFINED,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    loadedMipCount);
+
+    // --- upload permanent mips ---
+    // Source mip N goes into VkImage mip level (N - permanentMip)
+    for (int srcMip = permanentMip; srcMip < texture._mipmapLevelCount; ++srcMip) {
+      int dstMip = srcMip - permanentMip;
+      unsigned int rawDataLength = 0;
+      void *pixelDataRaw = loadMipTexture(texture, srcMip, rawDataLength);
+
+      memcpy((char *)mappedData + stagingOffset, pixelDataRaw, rawDataLength);
+      free(pixelDataRaw);
+
+      VkBufferImageCopy region{};
+      region.bufferOffset = stagingOffset;
+      region.bufferRowLength = 0;
+      region.bufferImageHeight = 0;
+      region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      region.imageSubresource.mipLevel = static_cast<uint32_t>(dstMip);
+      region.imageSubresource.baseArrayLayer = 0;
+      region.imageSubresource.layerCount = 1;
+      region.imageOffset = {0, 0, 0};
+      region.imageExtent = {
+          MAX(static_cast<uint32_t>(texture._width) >> srcMip, 1u),
+          MAX(static_cast<uint32_t>(texture._height) >> srcMip, 1u),
+          1};
+
+      vkCmdCopyBufferToImage(cmdBuf, stagingBuffer, textureImage,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+      stagingOffset += rawDataLength;
+    }
+    // Align to 16 bytes — BC1 block size is 8, BC3/BC5 are 16. 16 covers all.
+    stagingOffset = (stagingOffset + 15) & ~15ull;
+
+    // --- record TRANSFER_DST -> SHADER_READ barrier (all loaded mips) ---
+    device.cmdTransitionImageLayout(cmdBuf, textureImage, vkFormat,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    loadedMipCount);
+
+    // --- create image view covering all loaded mips ---
+    VkImageViewCreateInfo imageviewInfo{};
+    imageviewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    imageviewInfo.image = textureImage;
+    imageviewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    imageviewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    imageviewInfo.format = vkFormat;
+    imageviewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageviewInfo.subresourceRange.baseMipLevel = 0;
+    imageviewInfo.subresourceRange.levelCount = loadedMipCount;
+    imageviewInfo.subresourceRange.baseArrayLayer = 0;
+    imageviewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device.getLogicalDevice(), &imageviewInfo, nullptr,
+                          &textureView) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture image view!");
+    }
+
+    size_t texIndex = textures.size();
+    textureHashMap[texture._pathHash] = texIndex;
+    textures.push_back({textureImage, textureView});
+    textureMemory.push_back(textureImageMemory);
+
+    // --- register streaming entry ---
+    TextureStreamingEntry entry;
+    entry.desc = &texture;
+    entry.image = textureImage;
+    entry.imageView = textureView;
+    entry.memory = textureImageMemory;
+    entry.currentMip = permanentMip;
+    entry.requiredMip = permanentMip;
+    entry.textureIndex = texIndex;
+    streamingEntries.push_back(entry);
+    streamingEntryMap[texture._pathHash] = streamingEntries.size() - 1;
+  }
+
+  // Step 5: submit once, wait once
+  device.endSingleTimeCommands(cmdBuf, uploadFence);
+  vkWaitForFences(device.getLogicalDevice(), 1, &uploadFence, VK_TRUE,
+                  UINT64_MAX);
+
+  // Step 6: cleanup
+  vkDestroyFence(device.getLogicalDevice(), uploadFence, nullptr);
+  vkFreeCommandBuffers(device.getLogicalDevice(), device.getCommandPool(), 1,
+                       &cmdBuf);
+  vkUnmapMemory(device.getLogicalDevice(), stagingMemory);
+  vkDestroyBuffer(device.getLogicalDevice(), stagingBuffer, nullptr);
+  vkFreeMemory(device.getLogicalDevice(), stagingMemory, nullptr);
+}
+
+// ============================================================================
+// Texture Streaming — mirrors Metal's AAPLTextureManager mip-streaming design
+// ============================================================================
+
+// Simple sphere-in-frustum test using the existing Frustum class
+static bool sphereInFrustum(const Frustum& frustum, const AAPLSphere& sphere) {
+  // Convert sphere to AABB and use existing AABB culling
+  AAPLBoundingBox3 aabb;
+  aabb.min.x = sphere.data.x - sphere.data.w;
+  aabb.min.y = sphere.data.y - sphere.data.w;
+  aabb.min.z = sphere.data.z - sphere.data.w;
+  aabb.max.x = sphere.data.x + sphere.data.w;
+  aabb.max.y = sphere.data.y + sphere.data.w;
+  aabb.max.z = sphere.data.z + sphere.data.w;
+  return !frustum.FrustumCull(aabb);
+}
+
+int GpuScene::calculateMinMip(const AAPLTextureData& desc, unsigned int maxSize) const {
+  unsigned long long texSize = (desc._width > desc._height) ? desc._width : desc._height;
+  unsigned long long ratio = texSize / maxSize;
+  if (ratio < 1) ratio = 1;
+  int minMip = static_cast<int>(log2(static_cast<float>(ratio)));
+  if (minMip >= static_cast<int>(desc._mipmapLevelCount))
+    minMip = static_cast<int>(desc._mipmapLevelCount) - 1;
+  return minMip;
+}
+
+int GpuScene::calculateRequiredMip(const AAPLTextureData& desc, float screenArea) const {
+  float topMipTexelArea = static_cast<float>(desc._width * desc._height);
+  int topMip = calculateMinMip(desc, MAX_TEXTURE_SIZE);
+  int botMip = calculateMinMip(desc, PERMANENT_TEXTURE_SIZE);
+
+  if (screenArea <= 0.0f) return botMip;
+  int mipLevel = static_cast<int>(0.5f * log2(topMipTexelArea / screenArea));
+  if (mipLevel < topMip) mipLevel = topMip;
+  if (mipLevel > botMip) mipLevel = botMip;
+  return mipLevel;
+}
+
+void GpuScene::setRequiredMip(uint32_t textureHash, float screenArea) {
+  auto it = streamingEntryMap.find(textureHash);
+  if (it == streamingEntryMap.end()) return;
+
+  auto& entry = streamingEntries[it->second];
+  int mip = calculateRequiredMip(*entry.desc, screenArea);
+  // MIN accumulation: closest chunk "wins" (finest mip across all callers)
+  if (mip < entry.requiredMip) entry.requiredMip = mip;
+}
+
+void GpuScene::initTextureStreaming() {
+  textureToDelete.resize(TEXTURE_RETENTION_FRAMES);
+  blitThreadRunning = true;
+  blitThread = std::thread(&GpuScene::blitThreadFunc, this);
+}
+
+void GpuScene::shutdownTextureStreaming() {
+  blitThreadRunning = false;
+  blitCondition.notify_all();
+  if (blitThread.joinable()) blitThread.join();
+
+  // Clean up any unprocessed CPU work
+  for (auto& work : cpuCompletedWork) {
+    if (work.stagingBuf != VK_NULL_HANDLE) {
+      vkDestroyBuffer(device.getLogicalDevice(), work.stagingBuf, nullptr);
+      vkFreeMemory(device.getLogicalDevice(), work.stagingMem, nullptr);
+    }
+    vkDestroyImage(device.getLogicalDevice(), work.newImage, nullptr);
+    vkFreeMemory(device.getLogicalDevice(), work.newMemory, nullptr);
+  }
+  cpuCompletedWork.clear();
+
+  // Clean up retention ring
+  for (auto& frameRetain : textureToDelete) {
+    for (auto& [img, view, mem] : frameRetain) {
+      vkDestroyImageView(device.getLogicalDevice(), view, nullptr);
+      vkDestroyImage(device.getLogicalDevice(), img, nullptr);
+      vkFreeMemory(device.getLogicalDevice(), mem, nullptr);
+    }
+    frameRetain.clear();
+  }
+}
+
+void GpuScene::dispatchStreamingRequest(size_t entryIndex) {
+  auto& entry = streamingEntries[entryIndex];
+  PendingBlit blit;
+  blit.textureHash = entry.desc->_pathHash;
+  blit.entryIndex = entryIndex;
+  blit.targetMip = entry.requiredMip;
+  // Snapshot fields read by the background thread to avoid data race with processStreamingWork
+  blit.snapshotCurrentMip = entry.currentMip;
+  blit.snapshotImage = entry.image;
+
+  {
+    std::lock_guard<std::mutex> lock(pendingBlitsMutex);
+    pendingBlits.push_back(blit);
+  }
+  blitCondition.notify_one();
+}
+
+void GpuScene::blitThreadFunc() {
+  // CPU-only work: create images, decompress mips, fill staging buffers.
+  // GPU command recording and submission happens on the main thread.
+  while (blitThreadRunning) {
+    std::unique_lock<std::mutex> lock(pendingBlitsMutex);
+    blitCondition.wait(lock, [this] {
+      return !pendingBlits.empty() || !blitThreadRunning;
+    });
+
+    if (!blitThreadRunning) break;
+
+    std::vector<PendingBlit> workItems;
+    std::swap(workItems, pendingBlits);
+    lock.unlock();
+
+    for (auto& work : workItems) {
+      auto& entry = streamingEntries[work.entryIndex];
+      const AAPLTextureData& desc = *entry.desc;
+      int targetMip = work.targetMip;
+      int currentMip = work.snapshotCurrentMip;   // use snapshot — avoids data race
+      VkImage sourceImage = work.snapshotImage;   // use snapshot — avoids data race
+      VkFormat vkFormat = mapFromApple((MTLPixelFormat)desc._pixelFormat);
+
+      int newMipCount = desc._mipmapLevelCount - targetMip;
+      bool addingMips = (targetMip < currentMip);
+
+      // --- Create new image ---
+      VkImage newImage;
+      VkImageCreateInfo imageInfo{};
+      imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      imageInfo.imageType = VK_IMAGE_TYPE_2D;
+      imageInfo.extent.width = static_cast<uint32_t>(desc._width) >> targetMip;
+      imageInfo.extent.height = static_cast<uint32_t>(desc._height) >> targetMip;
+      imageInfo.extent.depth = 1;
+      imageInfo.mipLevels = static_cast<uint32_t>(newMipCount);
+      imageInfo.arrayLayers = 1;
+      imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+      imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      imageInfo.format = vkFormat;
+      imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+      imageInfo.flags = 0;
+
+      if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &newImage) != VK_SUCCESS) {
+        continue;
+      }
+
+      VkMemoryRequirements memReq;
+      vkGetImageMemoryRequirements(device.getLogicalDevice(), newImage, &memReq);
+      VkMemoryAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      allocInfo.allocationSize = memReq.size;
+      allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+      VkDeviceMemory newMemory;
+      if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &newMemory) != VK_SUCCESS) {
+        vkDestroyImage(device.getLogicalDevice(), newImage, nullptr);
+        continue;
+      }
+      vkBindImageMemory(device.getLogicalDevice(), newImage, newMemory, 0);
+
+      // --- Calculate staging buffer and mip info ---
+      unsigned long long blockSize, bytesPerBlock;
+      getPixelFormatBlockDesc((MTLPixelFormat)desc._pixelFormat, blockSize, bytesPerBlock);
+
+      int mipStart, mipEnd;
+      if (addingMips) {
+        mipStart = targetMip;
+        mipEnd = currentMip;
+      } else {
+        mipStart = targetMip;
+        mipEnd = targetMip;
+      }
+
+      size_t stagingSize = 0;
+      for (int m = mipStart; m < mipEnd; ++m) {
+        unsigned long long bw = calculateMipSizeInBlocks(desc._width, blockSize, m);
+        unsigned long long bh = calculateMipSizeInBlocks(desc._height, blockSize, m);
+        stagingSize += (bw > 1 ? bw : 1) * bytesPerBlock * (bh > 1 ? bh : 1);
+      }
+
+      VkBuffer stagingBuf = VK_NULL_HANDLE;
+      VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+
+      if (stagingSize > 0) {
+        VkBufferCreateInfo bufInfo{};
+        bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufInfo.size = stagingSize;
+        bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(device.getLogicalDevice(), &bufInfo, nullptr, &stagingBuf);
+
+        VkMemoryRequirements smr;
+        vkGetBufferMemoryRequirements(device.getLogicalDevice(), stagingBuf, &smr);
+        VkMemoryAllocateInfo saInfo{};
+        saInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        saInfo.allocationSize = smr.size;
+        saInfo.memoryTypeIndex = device.findMemoryType(smr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkAllocateMemory(device.getLogicalDevice(), &saInfo, nullptr, &stagingMem);
+        vkBindBufferMemory(device.getLogicalDevice(), stagingBuf, stagingMem, 0);
+
+        void* mappedData = nullptr;
+        vkMapMemory(device.getLogicalDevice(), stagingMem, 0, stagingSize, 0, &mappedData);
+        size_t offset = 0;
+        for (int m = mipStart; m < mipEnd; ++m) {
+          unsigned int rawLen = 0;
+          void* pixels = loadMipTexture(desc, m, rawLen);
+          memcpy((char*)mappedData + offset, pixels, rawLen);
+          free(pixels);
+          offset += rawLen;
+        }
+        vkUnmapMemory(device.getLogicalDevice(), stagingMem);
+      }
+
+      // --- Build copy regions (CPU-side, used later by main thread) ---
+      CpuStreamingWork cpuWork;
+      cpuWork.entryIndex = work.entryIndex;
+      cpuWork.newImage = newImage;
+      cpuWork.newMemory = newMemory;
+      cpuWork.stagingBuf = stagingBuf;
+      cpuWork.stagingMem = stagingMem;
+      cpuWork.targetMip = targetMip;
+      cpuWork.currentMip = currentMip;
+      cpuWork.sourceImage = sourceImage;
+      cpuWork.oldMipCount = desc._mipmapLevelCount - currentMip;
+      cpuWork.newMipCount = newMipCount;
+      cpuWork.format = vkFormat;
+      cpuWork.blockSize = blockSize;
+      cpuWork.bytesPerBlock = bytesPerBlock;
+      cpuWork.mipStart = mipStart;
+      cpuWork.mipEnd = mipEnd;
+
+      // Buffer→Image copy regions for new mips
+      if (stagingSize > 0) {
+        size_t sOffset = 0;
+        for (int m = mipStart; m < mipEnd; ++m) {
+          unsigned long long bw = calculateMipSizeInBlocks(desc._width, blockSize, m);
+          unsigned long long bh = calculateMipSizeInBlocks(desc._height, blockSize, m);
+
+          VkBufferImageCopy region{};
+          region.bufferOffset = sOffset;
+          region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.imageSubresource.mipLevel = static_cast<uint32_t>(m - targetMip);
+          region.imageSubresource.baseArrayLayer = 0;
+          region.imageSubresource.layerCount = 1;
+          region.imageOffset = {0, 0, 0};
+          unsigned int mipW = static_cast<uint32_t>(desc._width) >> m;
+          unsigned int mipH = static_cast<uint32_t>(desc._height) >> m;
+          region.imageExtent = {mipW > 0 ? mipW : 1u, mipH > 0 ? mipH : 1u, 1};
+          cpuWork.bufferCopyRegions.push_back(region);
+          sOffset += (bw > 1 ? bw : 1) * bytesPerBlock * (bh > 1 ? bh : 1);
+        }
+      }
+
+      // Image→Image copy regions for shared mips
+      if (addingMips && sourceImage != VK_NULL_HANDLE) {
+        // Upgrading to finer mips: copy all old mips into the new (larger) image.
+        // Old image mip k → new image mip (k + sharedOffset).
+        int sharedOffset = currentMip - targetMip;
+        for (int m = 0; m < cpuWork.oldMipCount; ++m) {
+          VkImageCopy region{};
+          region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.srcSubresource.mipLevel = static_cast<uint32_t>(m);
+          region.srcSubresource.baseArrayLayer = 0;
+          region.srcSubresource.layerCount = 1;
+          region.srcOffset = {0, 0, 0};
+          region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.dstSubresource.mipLevel = static_cast<uint32_t>(m + sharedOffset);
+          region.dstSubresource.baseArrayLayer = 0;
+          region.dstSubresource.layerCount = 1;
+          region.dstOffset = {0, 0, 0};
+          unsigned int mipW = static_cast<uint32_t>(desc._width) >> (m + currentMip);
+          unsigned int mipH = static_cast<uint32_t>(desc._height) >> (m + currentMip);
+          region.extent = {mipW > 0 ? mipW : 1u, mipH > 0 ? mipH : 1u, 1};
+          cpuWork.imageCopyRegions.push_back(region);
+        }
+      } else if (!addingMips && sourceImage != VK_NULL_HANDLE) {
+        // Evicting to coarser mips: all new mips exist in the old image.
+        // Old image mip (m + dstOffset) → new image mip m.
+        int dstOffset = targetMip - currentMip;
+        for (int m = 0; m < newMipCount; ++m) {
+          VkImageCopy region{};
+          region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.srcSubresource.mipLevel = static_cast<uint32_t>(m + dstOffset);
+          region.srcSubresource.baseArrayLayer = 0;
+          region.srcSubresource.layerCount = 1;
+          region.srcOffset = {0, 0, 0};
+          region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          region.dstSubresource.mipLevel = static_cast<uint32_t>(m);
+          region.dstSubresource.baseArrayLayer = 0;
+          region.dstSubresource.layerCount = 1;
+          region.dstOffset = {0, 0, 0};
+          unsigned int mipW = static_cast<uint32_t>(desc._width) >> (m + targetMip);
+          unsigned int mipH = static_cast<uint32_t>(desc._height) >> (m + targetMip);
+          region.extent = {mipW > 0 ? mipW : 1u, mipH > 0 ? mipH : 1u, 1};
+          cpuWork.imageCopyRegions.push_back(region);
+        }
+      }
+
+      {
+        std::lock_guard<std::mutex> cLock(cpuWorkMutex);
+        cpuCompletedWork.push_back(std::move(cpuWork));
+      }
+    }
+  }
+}
+
+void GpuScene::processStreamingWork(int frameIndex) {
+  std::vector<CpuStreamingWork> workItems;
+  {
+    std::lock_guard<std::mutex> lock(cpuWorkMutex);
+    std::swap(workItems, cpuCompletedWork);
+  }
+
+  if (workItems.empty()) return;
+
+  // Record all GPU commands on the main thread using the main command pool
+  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+
+  for (auto& work : workItems) {
+    auto& entry = streamingEntries[work.entryIndex];
+
+    // Barrier: new image UNDEFINED -> TRANSFER_DST
+    device.cmdTransitionImageLayout(cmd, work.newImage, work.format,
+                                    VK_IMAGE_LAYOUT_UNDEFINED,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    static_cast<uint32_t>(work.newMipCount));
+
+    // Barrier: old image SHADER_READ -> TRANSFER_SRC (both upgrade and eviction paths)
+    bool needsSourceCopy = !work.imageCopyRegions.empty() && work.sourceImage != VK_NULL_HANDLE;
+    if (needsSourceCopy) {
+      device.cmdTransitionImageLayout(cmd, work.sourceImage, work.format,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                      static_cast<uint32_t>(work.oldMipCount));
+    }
+
+    // Copy shared mips from old to new
+    if (needsSourceCopy) {
+      vkCmdCopyImage(cmd, work.sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    work.newImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    static_cast<uint32_t>(work.imageCopyRegions.size()),
+                    work.imageCopyRegions.data());
+    }
+
+    // Upload new mips from staging
+    if (!work.bufferCopyRegions.empty()) {
+      vkCmdCopyBufferToImage(cmd, work.stagingBuf, work.newImage,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             static_cast<uint32_t>(work.bufferCopyRegions.size()),
+                             work.bufferCopyRegions.data());
+    }
+
+    // Barrier: new image TRANSFER_DST -> SHADER_READ
+    device.cmdTransitionImageLayout(cmd, work.newImage, work.format,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    static_cast<uint32_t>(work.newMipCount));
+
+    // Barrier: old image TRANSFER_SRC -> SHADER_READ
+    if (needsSourceCopy) {
+      device.cmdTransitionImageLayout(cmd, work.sourceImage, work.format,
+                                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                      static_cast<uint32_t>(work.oldMipCount));
+    }
+  }
+
+  // Submit and wait (main thread — uses the wait-inside version for safety)
+  device.endSingleTimeCommands(cmd);
+
+  // Create image views and swap textures
+  for (auto& work : workItems) {
+    auto& entry = streamingEntries[work.entryIndex];
+    size_t texIndex = entry.textureIndex;
+
+    VkImageView newView;
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = work.newImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    viewInfo.format = work.format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = static_cast<uint32_t>(work.newMipCount);
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &newView);
+
+    // Retain old texture
+    if (entry.image != VK_NULL_HANDLE) {
+      textureToDelete[frameIndex].push_back({entry.image, entry.imageView, entry.memory});
+    }
+
+    // Swap
+    entry.image = work.newImage;
+    entry.imageView = newView;
+    entry.memory = work.newMemory;
+    entry.currentMip = work.targetMip;
+
+    // Update bindless array
+    textures[texIndex].first = work.newImage;
+    textures[texIndex].second = newView;
+    textureMemory[texIndex] = work.newMemory;
+
+    // Clean up staging
+    if (work.stagingBuf != VK_NULL_HANDLE) {
+      vkDestroyBuffer(device.getLogicalDevice(), work.stagingBuf, nullptr);
+      vkFreeMemory(device.getLogicalDevice(), work.stagingMem, nullptr);
+    }
+  }
+
+  streamingDescriptorsDirtyMask = (framesInFlight >= 32) ? ~0u : ((1u << framesInFlight) - 1u);
+}
+
+void GpuScene::UpdateTextureStreaming(int frameIndex) {
+  // 1. Reset all requiredMip to botMip (coarsest)
+  for (auto& entry : streamingEntries) {
+    entry.requiredMip = calculateMinMip(*entry.desc, PERMANENT_TEXTURE_SIZE);
+  }
+
+  // 2. Per-submesh coarse path (mirrors Metal's AAPLRenderer.mm:2318-2353).
+  //    Uses pre-computed submesh bounding spheres instead of per-chunk spheres —
+  //    meshCount is typically ~60x smaller than chunkCount for Bistro.
+  Camera* cam = maincamera;
+  if (!cam || !m_SubMeshes || !applMesh || !cpuMaterials) return;
+
+  mat4 viewMatrix = cam->getObjectToCamera();
+  mat4 projMatrix = cam->getProjectMatrix();
+  float focalLength = projMatrix[0][0];
+  float focalLengthSquared = focalLength * focalLength;
+  float viewW = static_cast<float>(device.getSwapChainExtent().width);
+  float viewH = static_cast<float>(device.getSwapChainExtent().height);
+  Frustum frustum = cam->getFrustum();
+
+  for (unsigned int i = 0; i < applMesh->_meshCount; ++i) {
+    const AAPLSubMesh& mesh = m_SubMeshes[i];
+    const AAPLSphere& sphere = mesh.boundingSphere;
+
+    // Frustum cull the submesh bounding sphere
+    if (!sphereInFrustum(frustum, sphere)) continue;
+
+    // Metal sphere-to-screen-area projection
+    vec4 viewPos = viewMatrix * vec4(sphere.data.x, sphere.data.y, sphere.data.z, 1.0f);
+    float area;
+
+    if (viewPos.z <= sphere.data.w) {
+      area = viewW * viewH;
+    } else {
+      float radiusSquared = sphere.data.w * sphere.data.w;
+      float z2 = viewPos.z * viewPos.z;
+      float l2 = viewPos.x * viewPos.x + viewPos.y * viewPos.y + viewPos.z * viewPos.z;
+
+      area = -M_PI_F * focalLengthSquared * radiusSquared
+             * sqrt(fabsf((l2 - radiusSquared) / (radiusSquared - z2)))
+             / (radiusSquared - z2);
+      area *= viewW * viewH * 0.25f;
+    }
+
+    uint32_t matIndex = mesh.materialIndex;
+    if (matIndex >= applMesh->_materialCount) continue;
+
+    const AAPLMaterial& cpuMat = cpuMaterials[matIndex];
+
+    if (cpuMat.hasBaseColorTexture)
+      setRequiredMip(cpuMat.baseColorTextureHash, area);
+    if (cpuMat.hasNormalMap)
+      setRequiredMip(cpuMat.normalMapHash, area);
+    if (cpuMat.hasMetallicRoughnessTexture)
+      setRequiredMip(cpuMat.metallicRoughnessHash, area);
+    if (cpuMat.hasEmissiveTexture)
+      setRequiredMip(cpuMat.emissiveTextureHash, area);
+  }
+
+  // 3. Release old textures from 3 frames ago (must be BEFORE processStreamingWork
+  //    so we don't destroy textures we just swapped this frame)
+  for (auto& [img, view, mem] : textureToDelete[frameIndex]) {
+    vkDestroyImageView(device.getLogicalDevice(), view, nullptr);
+    vkDestroyImage(device.getLogicalDevice(), img, nullptr);
+    vkFreeMemory(device.getLogicalDevice(), mem, nullptr);
+  }
+  textureToDelete[frameIndex].clear();
+
+  // 4. Dispatch streaming requests
+  for (size_t i = 0; i < streamingEntries.size(); ++i) {
+    auto& entry = streamingEntries[i];
+    if (entry.currentMip != entry.requiredMip) {
+      dispatchStreamingRequest(i);
+    }
+  }
+
+  // 5. Process completed streaming work (GPU commands on main thread)
+  processStreamingWork(frameIndex);
 }
 
 std::pair<VkImageView, VkDeviceMemory>
