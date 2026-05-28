@@ -461,9 +461,13 @@ private:
 
       VkCommandBuffer beginSingleTimeCommands() const;
       void endSingleTimeCommands(VkCommandBuffer commandBuffer) const;
+      void endSingleTimeCommands(VkCommandBuffer commandBuffer, VkFence fence) const;
 
       void transitionImageLayout(VkImage image, VkFormat format,
           VkImageLayout oldLayout, VkImageLayout newLayout,uint32_t mipcount=1) const;
+
+      void cmdTransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkFormat format,
+          VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipcount = 1) const;
 
       void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height,uint32_t miplevel=0)const {
           VkCommandBuffer commandBuffer = beginSingleTimeCommands();
