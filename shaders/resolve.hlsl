@@ -109,11 +109,27 @@ ResolveOutput ResolvePS(VSOutput input)
         float3 n7 = hdrBuffer.SampleLevel(_NearestClampSampler, input.TextureUV + float2(0, texelSize.y), 0).rgb;
         float3 n8 = hdrBuffer.SampleLevel(_NearestClampSampler, input.TextureUV + float2(texelSize.x, texelSize.y), 0).rgb;
 
-        // Compute neighborhood bounding box in tone-mapped space
-        float3 minC = min(min(min(n0, n1), min(n2, n3)), min(min(center, n5), min(n6, min(n7, n8))));
-        float3 maxC = max(max(max(n0, n1), max(n2, n3)), max(max(center, n5), max(n6, max(n7, n8))));
-        minC = ToneMapACES(minC * frameConstants.exposure);
-        maxC = ToneMapACES(maxC * frameConstants.exposure);
+        // Compute 3x3 neighborhood mean and variance in tone-mapped space.
+        // Variance clamping avoids the tight min/max box that kills history in
+        // uniform shadow regions (where all 9 taps have nearly the same dark
+        // value and any history from a lit frame gets hard-clamped to shadow).
+        float3 taps[9] = {
+            ToneMapACES(n0 * frameConstants.exposure),
+            ToneMapACES(n1 * frameConstants.exposure),
+            ToneMapACES(n2 * frameConstants.exposure),
+            ToneMapACES(n3 * frameConstants.exposure),
+            ToneMapACES(center * frameConstants.exposure),
+            ToneMapACES(n5 * frameConstants.exposure),
+            ToneMapACES(n6 * frameConstants.exposure),
+            ToneMapACES(n7 * frameConstants.exposure),
+            ToneMapACES(n8 * frameConstants.exposure)
+        };
+        float3 m1 = 0.0f, m2 = 0.0f;
+        [unroll] for (int i = 0; i < 9; i++) { m1 += taps[i]; m2 += taps[i] * taps[i]; }
+        m1 /= 9.0f;
+        m2 /= 9.0f;
+        float3 sigma = sqrt(max(m2 - m1 * m1, 0.0f));
+        float k = 1.25f;
 
         // Reconstruct world position from depth
         float depth = depthTex.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
@@ -128,8 +144,8 @@ ResolveOutput ResolvePS(VSOutput input)
         // Sample history with Catmull-Rom
         float3 historySample = sampleCatmullRom(prevUV, frameConstants.physicalSize, frameConstants.invPhysicalSize);
 
-        // Clamp history to neighborhood bounding box
-        historySample = clamp(historySample, minC, maxC);
+        // Clamp history to variance neighbourhood (mean ± k*sigma).
+        historySample = clamp(historySample, m1 - k * sigma, m1 + k * sigma);
 
         float blendFactor = 0.95f;
 
