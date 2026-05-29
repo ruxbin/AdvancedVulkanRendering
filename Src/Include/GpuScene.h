@@ -953,7 +953,7 @@ public:
       vec3(0.4f, 0.6f, 1.0f),    // skyColor
       1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
       0.1f, 1000.f,              // nearPlane, farPlane
-      0.02f                      // scatterScale (base fog density)
+      0.1f                       // scatterScale (base fog density; 0.02=subtle, 0.1=visible interior fog)
   };
 };
 
