@@ -1278,7 +1278,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   spotLightIndicesBindingDef.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   spotLightIndicesBindingDef.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-  // Spot shadow bindings added in Phase D/E.
+  // Spot shadow bindings.
   VkDescriptorSetLayoutBinding spotShadowMapsBinding = {};
   spotShadowMapsBinding.binding = 13;
   spotShadowMapsBinding.descriptorCount = 1;
@@ -1297,6 +1297,19 @@ void GpuScene::init_deferredlighting_descriptors() {
   spotViewProjBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   spotViewProjBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  // Scatter volume bindings (16 = Texture3D accumVolume, 17 = linear sampler).
+  VkDescriptorSetLayoutBinding scatterVolumeBinding = {};
+  scatterVolumeBinding.binding = 16;
+  scatterVolumeBinding.descriptorCount = 1;
+  scatterVolumeBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  scatterVolumeBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding linearSamplerBinding = {};
+  linearSamplerBinding.binding = 17;
+  linearSamplerBinding.descriptorCount = 1;
+  linearSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  linearSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {albedoBinding,
                                              normalBinding,
                                              emessiveBinding,
@@ -1312,7 +1325,9 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              spotLightIndicesBindingDef,
                                              spotShadowMapsBinding,
                                              spotShadowSamplerBinding,
-                                             spotViewProjBinding};
+                                             spotViewProjBinding,
+                                             scatterVolumeBinding,
+                                             linearSamplerBinding};
 
   VkDescriptorSetLayoutCreateInfo setinfo = {};
   setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1331,9 +1346,9 @@ void GpuScene::init_deferredlighting_descriptors() {
   // other code ....
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12 * framesInFlight},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 3 * framesInFlight},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * framesInFlight}, // point + spot data/indices + viewProj
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 14 * framesInFlight}, // 0-4,6,10,13,16
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 4 * framesInFlight},        // 5,7,14,17
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * framesInFlight}, // 8,9,11,12,15 + headroom
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -2780,6 +2795,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createSAOResources();
   createDecalResources();
   createResolveDescriptors();
+  createLinearClampSampler();
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
   createOccluderWireframePipeline();
@@ -2787,6 +2803,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createComputePipeline();
 
   _shadow = new Shadow(device,*this,1024);
+  createScatterVolume(); // must be after _shadow (needs shadow map view/sampler)
   // create point light
   {
     size_t pointlightCount = sceneFile["point_lights"].size();
@@ -3596,6 +3613,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
   {_shadow->RenderShadowMap(commandBuffer, *this, device); }
   {_shadow->RenderSpotShadowMaps(commandBuffer, *this, device); }
+
+  // Scatter volume: runs after shadow maps, before GBuffer (needs shadow map + camera UBO)
+  _scatterVolume.dispatch(commandBuffer, currentFrame);
 
   // Draw occluders first for Hi-Z generation
   DrawOccluders(commandBuffer);
@@ -8262,4 +8282,55 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
 
   ImGui::Render();
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+}
+
+// =============================================================================
+//  Scatter Volume – GpuScene integration
+// =============================================================================
+
+void GpuScene::createScatterVolume() {
+  uint32_t screenW = device.getSwapChainExtent().width;
+  uint32_t screenH = device.getSwapChainExtent().height;
+
+  _scatterVolume.create(
+    device,
+    _rootPath,
+    screenW, screenH,
+    framesInFlight,
+    uniformBuffers,
+    _shadow->_shadowSliceViewFull,    // full 2DArray view of cascade shadow maps
+    _shadow->_shadowMapSampler        // comparison sampler already created by Shadow
+  );
+
+  // Bind the accumulated scatter volume at bindings 16/17 in each per-frame
+  // deferred lighting descriptor set.
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    VkDescriptorImageInfo accumInfo{};
+    accumInfo.imageView   = _scatterVolume.accumVolumeView();
+    accumInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet accumWrite{};
+    accumWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    accumWrite.dstSet          = deferredLightingDescriptorSet[f];
+    accumWrite.dstBinding      = 16;
+    accumWrite.descriptorCount = 1;
+    accumWrite.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    accumWrite.pImageInfo      = &accumInfo;
+
+    VkDescriptorImageInfo samplerInfo{};
+    samplerInfo.sampler = _linearClampSampler;
+
+    VkWriteDescriptorSet samplerWrite{};
+    samplerWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    samplerWrite.dstSet          = deferredLightingDescriptorSet[f];
+    samplerWrite.dstBinding      = 17;
+    samplerWrite.descriptorCount = 1;
+    samplerWrite.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerWrite.pImageInfo      = &samplerInfo;
+
+    VkWriteDescriptorSet writes[] = {accumWrite, samplerWrite};
+    vkUpdateDescriptorSets(device.getLogicalDevice(), 2, writes, 0, nullptr);
+  }
+
+  spdlog::info("ScatteringVolume: created and bound to deferred lighting");
 }

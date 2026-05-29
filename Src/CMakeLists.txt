@@ -29,6 +29,7 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Mesh.cpp
     ${CMAKE_CURRENT_LIST_DIR}/VulkanSetup.cpp
     ${CMAKE_CURRENT_LIST_DIR}/GpuScene.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/ScatteringVolume.cpp
     ${CMAKE_CURRENT_LIST_DIR}/ObjLoader.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Shadow.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Light.cpp

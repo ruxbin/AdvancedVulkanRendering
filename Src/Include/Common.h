@@ -72,11 +72,13 @@ struct uniformBufferData {
 struct FrameConstants {
   alignas(16) vec3 sunDirection;
   alignas(16) vec3 sunColor;
+  alignas(16) vec3 skyColor;    // ambient sky colour used by scatter volume
   float wetness;
   float emissiveScale;
   float localLightIntensity;
   float nearPlane;
   float farPlane;
+  float scatterScale;           // global fog density (scatter volume)
   uint32_t frameCounter;
   vec2 physicalSize;
   float _padFR;               // HLSL float2 boundary: physicalSize ends at 60, next float2
@@ -86,10 +88,9 @@ struct FrameConstants {
   float exposure;
   uint32_t taaEnabled;
 };
-static_assert(sizeof(FrameConstants) == 96,
-              "FrameConstants size mismatch — must match HLSL cbuffer layout "
-              "(SPIR-V offset: sunDirection=0 sunColor=16 physicalSize=52 "
-              "invPhysicalSize=64 taaJitter=72 exposure=80 taaEnabled=84)");
+static_assert(sizeof(FrameConstants) == 112,
+              "FrameConstants size mismatch — added skyColor(+16) and scatterScale(+4) "
+              "relative to the original 96-byte layout. Must match AAPLFrameConstants in commonstruct.hlsl");
 
 struct FrameData {
   uniformBufferData camConstants;

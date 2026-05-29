@@ -23,19 +23,20 @@ cbuffer cam
 [[vk::binding(8,1)]] StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
 [[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
 
-// Spot light bindings (mirror point at 8/9). Shadow texture/sampler/viewProj
-// at 13/14/15 will be filled in alongside the spot shadow pass; until then
-// the cluster loop passes shadow=1.0 as a stub so we can validate cone shape
-// first and add shadow lookup as an isolated step.
+// Spot light bindings.
 [[vk::binding(11,1)]] StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData;
 [[vk::binding(12,1)]] StructuredBuffer<uint> spotLightIndices;
 
-// Spot shadow resources (Phase D).
+// Spot shadow resources.
 #define SPOT_SHADOW_MAX_COUNT 32
 #define SPOT_SHADOW_DEPTH_BIAS 0.001f
 [[vk::binding(13,1)]] Texture2DArray<float> spotShadowMaps;
 [[vk::binding(14,1)]] SamplerComparisonState spotShadowSampler;
 [[vk::binding(15,1)]] StructuredBuffer<float4x4> spotViewProjMatrices;
+
+// Scatter volume (froxel volumetrics, bound after spot shadow slots).
+[[vk::binding(16,1)]] Texture3D<float4> scatterAccumVolume;
+[[vk::binding(17,1)]] SamplerState linearClampSampler;
 
 struct VSOutput
 {
@@ -133,6 +134,19 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     float ao = aoTexture.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
 
     half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow * ao;
+
+    // --- Scatter volume application (froxel volumetrics) ---
+    {
+        const float SCATTERING_RANGE = 100.0;
+        float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
+        float4 viewPos = mul(cameraParams.invProjectionMatrix, ndcPos);
+        float  viewZ   = -viewPos.z / viewPos.w;
+        float sliceF = log2(clamp(viewZ, 0.001, SCATTERING_RANGE) / SCATTERING_RANGE * 7.0 + 1.0) / 3.0;
+        float3 uvw = float3(input.TextureUV.x, input.TextureUV.y, sliceF);
+        float4 scatter = scatterAccumVolume.SampleLevel(linearClampSampler, uvw, 0);
+        result = result * (half) scatter.a + (half3) scatter.rgb;
+    }
+
     if(useClusterLighting)
     {
 	//get the cluster index

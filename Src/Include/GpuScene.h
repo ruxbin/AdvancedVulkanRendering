@@ -4,6 +4,7 @@
 #include "AssetLoader.h"
 #include "Light.h"
 #include "Matrix.h"
+#include "ScatteringVolume.h"
 #include "VulkanSetup.h"
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
@@ -488,6 +489,10 @@ private:
   void createResolvePipeline();
   void createLinearClampSampler();
 
+  // Scatter volume (froxel-based volumetric scattering, ported from Metal)
+  ScatteringVolume _scatterVolume;
+  void createScatterVolume();
+
   // Screen-space decals
   VkDescriptorSetLayout _decalSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool _decalDescriptorPool = VK_NULL_HANDLE;
@@ -943,8 +948,13 @@ public:
   friend class LightCuller;
   friend class RayTracing;
   FrameConstants frameConstants{
-      vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),
-      vec3(1, 1, 1), 1.f, 10.f, 1.f};
+      vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),  // sunDirection
+      vec3(1.0f, 0.95f, 0.8f),   // sunColor
+      vec3(0.4f, 0.6f, 1.0f),    // skyColor
+      1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
+      0.1f, 1000.f,              // nearPlane, farPlane
+      0.02f                      // scatterScale (base fog density)
+  };
 };
 
 template <> struct fmt::formatter<vec4> : fmt::formatter<std::string> {
