@@ -3415,8 +3415,12 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     memcpy(data1, transpose(cleanInvView).value_ptr(),
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
-    // Use clean (un-jittered) inverse VP for world position reconstruction
-    memcpy(data1, transpose(cleanInvViewProj).value_ptr(),
+    // Use jittered inverse VP so world position reconstruction is consistent
+    // with the depth buffer (which was rendered with jitteredProj). Using the
+    // clean invVP with jittered depth gives a per-frame-varying world position
+    // for angled surfaces, which propagates to the shadow UV and causes flicker.
+    mat4 jitteredInvViewProj = inverse(cleanView * jitteredProj);
+    memcpy(data1, transpose(jitteredInvViewProj).value_ptr(),
            (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
     memcpy(data1, transpose(cleanInvProj).value_ptr(), (size_t)sizeof(mat4));
