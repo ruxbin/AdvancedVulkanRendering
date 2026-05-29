@@ -26,7 +26,7 @@
 // ============================================================
 //  ScatterVolume bindings  (set 0)
 // ============================================================
-[[vk::binding( 0,0)]] RWTexture3D<float4>                    scatterOut;
+[[vk::binding( 0,0)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> scatterOut;
 [[vk::binding( 1,0)]] cbuffer ScatterUBO {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants     frameConstants;
@@ -49,7 +49,7 @@
 //  AccumulateScattering bindings  (set 0, separate compilation)
 // ============================================================
 [[vk::binding(0,0)]] Texture3D<float4>   scatterIn;
-[[vk::binding(1,0)]] RWTexture3D<float4> accumOut;
+[[vk::binding(1,0)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> accumOut;
 
 // ============================================================
 //  Shared push constants
@@ -89,16 +89,16 @@ float viewZToScatterDepth(float viewZ) {
     return log2(clamp(viewZ / SCATTERING_RANGE * 7.0f + 1.0f, 1.0f, 8.0f)) / 3.0f;
 }
 
-// Schlick phase function (g = forward-scattering anisotropy)
+// Schlick phase function — Metal uses k = g directly (no H-G remapping)
 float schlickPhase(float cosTheta, float g) {
-    float k     = 1.55f * g - 0.55f * g * g * g;
-    float denom = 1.0f - k * cosTheta;
-    return (1.0f - k * k) / (4.0f * M_PI_F * denom * denom);
+    float denom = 1.0f + g * cosTheta;
+    return (1.0f - g * g) / (4.0f * M_PI_F * denom * denom);
 }
 
-// Exponential height fog density
+// Exponential height fog: Metal manual saturate(exp(-f * max(0, y + o))).
+// Fog is densest below -offset, fades exponentially with altitude.
 float heightFogDensity(float worldY, float offset, float falloff) {
-    return exp(-max(worldY - offset, 0.0f) * falloff);
+    return saturate(exp(-falloff * max(0.0f, worldY + offset)));
 }
 
 // Reconstruct world-space position of a froxel at the given view-space depth
@@ -127,26 +127,32 @@ float evalShadow(float4 worldPos) {
     return 1.0f;
 }
 
-// 3D Perlin noise modulation for fog density variation (Phase E)
-float applyGlobalNoise(float3 worldPos, float baseDensity) {
-    float3 noiseUVW = (worldPos + frameConstants.globalNoiseOffset) / 16.0f;
-    float n = perlinNoiseTex.SampleLevel(linearSampler, noiseUVW, 0);
-    // Remap: smoothstep centering + squaring (matches Metal applyGlobalNoise)
-    n = smoothstep(0.3f, 0.7f, n) * n;
-    // Fade noise out beyond 20-30m to keep distant fog smooth
-    float3 camPos = float3(cameraParams.invViewMatrix._m03,
-                           cameraParams.invViewMatrix._m13,
-                           cameraParams.invViewMatrix._m23);
-    float dist = length(worldPos - camPos);
-    float noiseFade = 1.0f - saturate((dist - 20.0f) / 10.0f);
-    // 2x multiplier to maintain average density (matching Metal)
-    return baseDensity * (1.0f + n * noiseFade * 2.0f);
+// 3D Perlin noise modulation — EXACT Metal match (AAPLScatterVolume.metal:26-60)
+float applyGlobalNoise(float density, float3 worldPos, float depth) {
+    float3 noisePos = worldPos + frameConstants.globalNoiseOffset;
+    const float baseScale   = 1.0f / 16.0f;
+    const float detailScale = 1.0f / 2.0f;
+
+    float n = perlinNoiseTex.SampleLevel(linearSampler, noisePos * baseScale, 0);
+    // Detail noise (blends two scales equally)
+    n += perlinNoiseTex.SampleLevel(linearSampler, noisePos * detailScale, 0);
+    n *= 0.5f;
+
+    n = smoothstep(0.3f, 0.7f, n);
+    n *= n;
+
+    const float noiseFadeStart  = 20.0f;
+    const float noiseFadeLength = 10.0f;
+    const float noiseMult       = 2.0f;
+
+    density *= lerp(n * noiseMult, 1.0f,
+                    saturate(max(0.0f, depth - noiseFadeStart) / noiseFadeLength));
+    return density;
 }
 
-// Phase C: point light inscattering contribution
+// Phase C: point light inscattering contribution (Metal: returns scattering color, no scatterCoeff)
 float3 calculateLocalLightScattering(float3 worldPos, float3 camPos,
-                                     float4 posAndRadius, float3 color,
-                                     float scatterCoeff, float phase) {
+                                     float4 posAndRadius, float3 color) {
     float3 toLight = posAndRadius.xyz - worldPos;
     float sqrDist = dot(toLight, toLight);
     if (sqrDist > posAndRadius.w) return 0.0f;
@@ -156,21 +162,19 @@ float3 calculateLocalLightScattering(float3 worldPos, float3 camPos,
     float cosT = dot(V, L);
     float lightPhase = schlickPhase(cosT, 0.3f);
 
-    // Inverse-square attenuation with smooth cutoff
     float atten = 1.0f / max(sqrDist, 0.01f * 0.01f);
     float factor = sqrDist * (1.0f / posAndRadius.w);
     float smoothAtt = factor * factor; smoothAtt = 1.0f - smoothAtt * smoothAtt;
     smoothAtt = smoothAtt * smoothAtt;
     atten *= smoothAtt;
 
-    return color * M_PI_F * frameConstants.localLightIntensity * atten * lightPhase * scatterCoeff;
+    return color * M_PI_F * frameConstants.localLightIntensity * atten * lightPhase;
 }
 
 // Phase D: spot light inscattering (with optional shadow)
 float3 calculateLocalSpotLightScattering(float3 worldPos, float3 camPos,
                                          AAPLSpotLightCullingData spot,
-                                         uint lightIdx,
-                                         float scatterCoeff) {
+                                         uint lightIdx) {
     float3 toLight = spot.posAndHeight.xyz - worldPos;
     float dist = length(toLight);
     if (dist > spot.posAndHeight.w) return 0.0f;
@@ -207,7 +211,7 @@ float3 calculateLocalSpotLightScattering(float3 worldPos, float3 camPos,
 
     // Frostbite convention: spot intensity = 4x point intensity
     return spot.color.xyz * M_PI_F * 4.0f * frameConstants.localLightIntensity
-           * atten * angleAtt * shadow * lightPhase * scatterCoeff;
+           * atten * angleAtt * shadow * lightPhase;
 }
 
 // ============================================================
@@ -227,30 +231,27 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
 
     float3 worldPos = froxelToWorldPos(DTid, viewZ);
 
-    // ---- Phase E: fog density with Perlin noise modulation ----
-    float baseDensity  = frameConstants.scatterScale;
-    baseDensity += 0.008f * heightFogDensity(worldPos.y, 2.0f, 0.35f);
-    float density = applyGlobalNoise(worldPos, baseDensity);
+    // ---- coefficients: EXACT Metal match (AAPLScatterVolume.metal:190-198) ----
+    // absorptionCoeff is a hard-coded constant, never modified.
+    float absorptionCoeff = 0.01f;
+    // scatteringCoeff starts at base + height fog, then noise, then scatterScale.
+    float scatteringCoeff = 0.01f + heightFogDensity(worldPos.y, 10.0f, 0.5f) * 0.01f;
+    scatteringCoeff = applyGlobalNoise(scatteringCoeff, worldPos, viewZ);
+    scatteringCoeff *= frameConstants.scatterScale;
+    float extinction = absorptionCoeff + scatteringCoeff;
 
-    float scatterCoeff    = density * 0.5f;
-    float absorptionCoeff = density * 0.5f;
-    float extinction      = scatterCoeff + absorptionCoeff;
+    // ---- Directional scattering color: EXACT Metal match (lines 200-205) ----
+    float3 camPos  = float3(cameraParams.invViewMatrix._m03,
+                            cameraParams.invViewMatrix._m13,
+                            cameraParams.invViewMatrix._m23);
+    float3 viewDir = normalize(camPos - worldPos);
+    float  cosSun  = -dot(normalize(frameConstants.sunDirection), viewDir);
+    float  shadow  = evalShadow(float4(worldPos, 1.0f));
 
-    // ---- Directional sun light ----
-    float3 camPos   = float3(cameraParams.invViewMatrix._m03,
-                             cameraParams.invViewMatrix._m13,
-                             cameraParams.invViewMatrix._m23);
-    float3 viewDir  = normalize(camPos - worldPos);
-    float  cosTheta = dot(viewDir, normalize(frameConstants.sunDirection));
-    float  phase    = schlickPhase(cosTheta, 0.3f);
-    float  shadow   = evalShadow(float4(worldPos, 1.0f));
+    float3 scattering = frameConstants.skyColor; // ambient
+    scattering += frameConstants.sunColor * M_PI_F * shadow * schlickPhase(cosSun, 0.3f);
 
-    float3 totalScatter = frameConstants.sunColor * shadow * phase * scatterCoeff;
-
-    // ---- Ambient sky ----
-    totalScatter += frameConstants.skyColor * scatterCoeff * 0.08f;
-
-    // ---- Phase C: local point lights ----
+    // ---- Phase C: local point lights (adding to scattering) ----
     {
         uint tileCountX = (uint(pc.screenWidth)  + SCATTER_LIGHT_TILE_SIZE - 1) / SCATTER_LIGHT_TILE_SIZE;
         uint tileX      = DTid.x * SCATTERING_TILE_SIZE / SCATTER_LIGHT_TILE_SIZE;
@@ -263,12 +264,12 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
             AAPLPointLightCullingData pl = pointLightData[idx];
             float radius2 = pl.posRadius.w * pl.posRadius.w;
             float4 posR   = float4(pl.posRadius.xyz, radius2);
-            totalScatter += calculateLocalLightScattering(worldPos, camPos,
-                                posR, pl.color.xyz, scatterCoeff, phase);
+            scattering += calculateLocalLightScattering(worldPos, camPos,
+                                posR, pl.color.xyz);
         }
     }
 
-    // ---- Phase D: local spot lights ----
+    // ---- Phase D: local spot lights (adding to scattering) ----
     {
         uint tileCountX = (uint(pc.screenWidth)  + SCATTER_LIGHT_TILE_SIZE - 1) / SCATTER_LIGHT_TILE_SIZE;
         uint tileX      = DTid.x * SCATTERING_TILE_SIZE / SCATTER_LIGHT_TILE_SIZE;
@@ -279,18 +280,15 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
         for (uint si = 0; si < count; ++si) {
             uint spotIdx = spotLightIndices[base + si + 1];
             AAPLSpotLightCullingData spot = spotLightData[spotIdx];
-            totalScatter += calculateLocalSpotLightScattering(worldPos, camPos,
-                                spot, spotIdx, scatterCoeff);
+            scattering += calculateLocalSpotLightScattering(worldPos, camPos,
+                                spot, spotIdx);
         }
     }
 
-    float4 current = float4(totalScatter, extinction);
+    float4 current = float4(scattering * scatteringCoeff, extinction);
 
     // ---- Phase A: temporal reprojection ----
     if (pc.resetHistory == 0u) {
-        // Reproject world position into previous-frame's volume.
-        // cameraParams.prevViewProjectionMatrix stores (CPU: view*proj) which maps
-        // world → clip space of the previous frame. prevClipH.w = prev view-space Z.
         float4 prevClipH = mul(cameraParams.prevViewProjectionMatrix, float4(worldPos, 1.0f));
         float  prevViewZ = prevClipH.w;
         float4 prevClip  = prevClipH / prevViewZ;

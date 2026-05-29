@@ -191,7 +191,7 @@ void ScatteringVolume::createTextures(const VulkanDevice& device) {
     _accumTex  = createImage3D(device, _volumeW, _volumeH, SCATTER_VOLUME_DEPTH, fmt, storageAndSample, _accumMem);
     _accumView = createView3D(device, _accumTex, fmt);
 
-    spdlog::info("ScatteringVolume: {}×{}×{} RGBA16F (scatter + history + accum)", _volumeW, _volumeH, SCATTER_VOLUME_DEPTH);
+    spdlog::info("ScatteringVolume: {}x{}x{} RGBA16F (scatter + history + accum)", _volumeW, _volumeH, SCATTER_VOLUME_DEPTH);
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +290,7 @@ void ScatteringVolume::uploadPerlinNoise(const VulkanDevice& device) {
     _perlinView = createView3D(device, _perlinTex, VK_FORMAT_R8_UNORM);
     uploadToImage(device, _perlinTex, SZ, SZ, SZ, VK_FORMAT_R8_UNORM,
                   pixels.data(), pixels.size(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    spdlog::info("ScatteringVolume: 32³ Perlin noise uploaded");
+    spdlog::info("ScatteringVolume: 32x32x32 Perlin noise uploaded");
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +391,7 @@ void ScatteringVolume::createScatterDescriptors(
 
     VkDescriptorImageInfo shadowInfo{};
     shadowInfo.imageView = shadowMapView;
-    shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    shadowInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo samplerInfo{}; samplerInfo.sampler = shadowSampler;
 

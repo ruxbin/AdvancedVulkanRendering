@@ -2803,15 +2803,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createComputePipeline();
 
   _shadow = new Shadow(device,*this,1024);
-
-  // Initialize LightCuller now so ScatteringVolume can access its light buffers.
-  if (!_lightCuller) {
-    _lightCuller = new LightCuller();
-    _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width,
-                          device.getSwapChainExtent().height);
-  }
-
-  createScatterVolume(); // must be after _shadow and _lightCuller
+  // createScatterVolume() is called after scene loading (needs LightCuller + light counts)
   // create point light
   {
     size_t pointlightCount = sceneFile["point_lights"].size();
@@ -2950,6 +2942,15 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
       }
     }
   }
+
+  // Initialize LightCuller and ScatterVolume after scene loading so that
+  // point/spot light buffers are sized correctly (needs non-zero light counts).
+  if (!_lightCuller) {
+    _lightCuller = new LightCuller();
+    _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width,
+                          device.getSwapChainExtent().height);
+  }
+  createScatterVolume();
 }
 
 void GpuScene::CreateForwardLightingPass() {

@@ -81,8 +81,9 @@ struct FrameConstants {
   float scatterScale;           // global fog density (scatter volume)
   uint32_t frameCounter;
   vec2 physicalSize;
-  float _padFR;               // HLSL float2 boundary: physicalSize ends at 60, next float2
-                              // cannot straddle a 16-byte register boundary → starts at 64
+  // NOTE: no padding here — HLSL cbuffer packs vec3+float into the same 16-byte register
+  // so 'wetness' is at offset 44 (same in C++ and HLSL). invPhysicalSize follows immediately
+  // after physicalSize at offset 80, matching HLSL's Offset(80).
   vec2 invPhysicalSize;
   vec2 taaJitter;
   float exposure;
@@ -92,8 +93,14 @@ struct FrameConstants {
   float noiseSpeed; // retained for padding; set to 0
 };
 static_assert(sizeof(FrameConstants) == 128,
-              "FrameConstants size mismatch — globalNoiseOffset(+16) added after taaEnabled. "
-              "Must match AAPLFrameConstants in commonstruct.hlsl");
+              "FrameConstants size mismatch. Must match AAPLFrameConstants in commonstruct.hlsl. "
+              "Layout: skyColor packs wetness into same register (offset 44), no _padFR before invPhysicalSize.");
+// Field-offset checks against the HLSL SPIR-V layout (wetness=44, exposure=96, taaEnabled=100).
+static_assert(offsetof(FrameConstants, wetness)          == 44,  "wetness offset mismatch vs HLSL Offset(44)");
+static_assert(offsetof(FrameConstants, scatterScale)     == 64,  "scatterScale offset mismatch vs HLSL Offset(64)");
+static_assert(offsetof(FrameConstants, exposure)         == 96,  "exposure offset mismatch vs HLSL Offset(96)");
+static_assert(offsetof(FrameConstants, taaEnabled)       == 100, "taaEnabled offset mismatch vs HLSL Offset(100)");
+static_assert(offsetof(FrameConstants, globalNoiseOffset)== 112, "globalNoiseOffset offset mismatch vs HLSL Offset(112)");
 
 struct FrameData {
   uniformBufferData camConstants;
