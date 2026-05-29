@@ -5324,6 +5324,12 @@ void GpuScene::dispatchStreamingRequest(size_t entryIndex) {
   blit.snapshotCurrentMip = entry.currentMip;
   blit.snapshotImage = entry.image;
 
+  // Mark in-flight BEFORE pushing to pendingBlits so UpdateTextureStreaming won't
+  // dispatch a duplicate next frame.  Cleared by processStreamingWork after the GPU
+  // copy completes, guaranteeing entry.image is live for the entire lifetime of the
+  // work item (since only processStreamingWork retires entry.image into textureToDelete).
+  entry.inFlight = true;
+
   {
     std::lock_guard<std::mutex> lock(pendingBlitsMutex);
     pendingBlits.push_back(blit);
@@ -5635,6 +5641,7 @@ void GpuScene::processStreamingWork(int frameIndex) {
     entry.imageView = newView;
     entry.memory = work.newMemory;
     entry.currentMip = work.targetMip;
+    entry.inFlight = false;  // work item consumed; next frame may dispatch again
 
     // Update bindless array
     textures[texIndex].first = work.newImage;
@@ -5710,25 +5717,34 @@ void GpuScene::UpdateTextureStreaming(int frameIndex) {
       setRequiredMip(cpuMat.emissiveTextureHash, area);
   }
 
-  // 3. Release old textures from 3 frames ago (must be BEFORE processStreamingWork
-  //    so we don't destroy textures we just swapped this frame)
-  for (auto& [img, view, mem] : textureToDelete[frameIndex]) {
-    vkDestroyImageView(device.getLogicalDevice(), view, nullptr);
-    vkDestroyImage(device.getLogicalDevice(), img, nullptr);
-    vkFreeMemory(device.getLogicalDevice(), mem, nullptr);
-  }
-  textureToDelete[frameIndex].clear();
+  // Snapshot the images scheduled for retirement this frame and clear the slot
+  // BEFORE dispatching or calling processStreamingWork.  processStreamingWork
+  // may reference these same images as sourceImage (if the background thread was
+  // slow), so they must stay alive until after endSingleTimeCommands returns.
+  // processStreamingWork also adds newly-retired images to textureToDelete[frameIndex],
+  // so clearing the slot first ensures those are NOT freed this frame.
+  std::vector<std::tuple<VkImage, VkImageView, VkDeviceMemory>> toFreeThisFrame;
+  std::swap(toFreeThisFrame, textureToDelete[frameIndex]);
 
-  // 4. Dispatch streaming requests
+  // 4. Dispatch streaming requests (skip entries that already have a work item in flight)
   for (size_t i = 0; i < streamingEntries.size(); ++i) {
     auto& entry = streamingEntries[i];
-    if (entry.currentMip != entry.requiredMip) {
+    if (entry.currentMip != entry.requiredMip && !entry.inFlight) {
       dispatchStreamingRequest(i);
     }
   }
 
-  // 5. Process completed streaming work (GPU commands on main thread)
+  // 5. Process completed streaming work (GPU commands on main thread).
+  //    May use images from toFreeThisFrame as copy sources — they are still valid.
   processStreamingWork(frameIndex);
+
+  // 3. Release old textures now that the GPU is done with them
+  //    (endSingleTimeCommands inside processStreamingWork called vkQueueWaitIdle).
+  for (auto& [img, view, mem] : toFreeThisFrame) {
+    vkDestroyImageView(device.getLogicalDevice(), view, nullptr);
+    vkDestroyImage(device.getLogicalDevice(), img, nullptr);
+    vkFreeMemory(device.getLogicalDevice(), mem, nullptr);
+  }
 }
 
 std::pair<VkImageView, VkDeviceMemory>

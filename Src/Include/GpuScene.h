@@ -57,6 +57,10 @@ struct TextureStreamingEntry {
   int currentMip = 0;    // base mip currently resident on GPU (0 = finest)
   int requiredMip = 0;   // finest mip desired this frame (clamped between topMip and botMip)
   size_t textureIndex = 0; // index into the bindless textures array
+  // True while a work item for this entry is in pendingBlits or cpuCompletedWork.
+  // Prevents duplicate dispatches: image can only be freed by processStreamingWork
+  // (which sets inFlight=false), so sourceImage is guaranteed live until used.
+  bool inFlight = false;
 };
 
 struct AAPLMeshData {
