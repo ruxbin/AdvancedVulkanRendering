@@ -1,5 +1,6 @@
 #include "Shadow.h"
 #include "Common.h"
+#include "Light.h"
 
 void Shadow::CreateShadowSlices(const VulkanDevice &device) {
   VkImageCreateInfo imageInfo{};
@@ -567,6 +568,8 @@ void Shadow::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
   vkDestroyShaderModule(device.getLogicalDevice(),
                         drawclusterPSShaderModuleDepthOnly, nullptr);
     vulkanResourceCreated = true;
+
+  CreateSpotShadowResources(device, gpuScene);
 }
 
 
@@ -840,4 +843,322 @@ void Shadow::InitGPUShadowResources(const VulkanDevice &device,
 
   _gpuShadowInitialized = true;
   spdlog::info("GPU-driven shadow resources initialized: {} total slots", totalSlots);
+}
+
+void Shadow::CreateSpotShadowResources(const VulkanDevice &device,
+                                        const GpuScene &gpuScene) {
+  // --- 1. Texture array: 256×256 × SPOT_SHADOW_MAX_COUNT ---
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.extent = {SPOT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION, 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = SPOT_SHADOW_MAX_COUNT;
+  imageInfo.format = SHADOW_FORMAT;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_spotShadowMaps) != VK_SUCCESS)
+    throw std::runtime_error("failed to create spot shadow map image");
+
+  VkMemoryRequirements memReq;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _spotShadowMaps, &memReq);
+  VkMemoryAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocInfo.allocationSize = memReq.size;
+  allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_spotShadowMapsMemory) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate spot shadow map memory");
+  vkBindImageMemory(device.getLogicalDevice(), _spotShadowMaps, _spotShadowMapsMemory, 0);
+
+  // --- 2. Per-slice views (for framebuffers, one per spot light) ---
+  for (int i = 0; i < SPOT_SHADOW_MAX_COUNT; ++i) {
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = _spotShadowMaps;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = SHADOW_FORMAT;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = i;
+    viewInfo.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_spotShadowSliceViews[i]) != VK_SUCCESS)
+      throw std::runtime_error("failed to create spot shadow slice view");
+  }
+
+  // --- 3. Full array view (bound as Texture2DArray in deferred lighting) ---
+  VkImageViewCreateInfo arrayViewInfo{};
+  arrayViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  arrayViewInfo.image = _spotShadowMaps;
+  arrayViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+  arrayViewInfo.format = SHADOW_FORMAT;
+  arrayViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+  arrayViewInfo.subresourceRange.baseMipLevel = 0;
+  arrayViewInfo.subresourceRange.levelCount = 1;
+  arrayViewInfo.subresourceRange.baseArrayLayer = 0;
+  arrayViewInfo.subresourceRange.layerCount = SPOT_SHADOW_MAX_COUNT;
+  if (vkCreateImageView(device.getLogicalDevice(), &arrayViewInfo, nullptr, &_spotShadowArrayView) != VK_SUCCESS)
+    throw std::runtime_error("failed to create spot shadow array view");
+
+  // --- 4. Framebuffers (one per slice, reusing the CSM _shadowPass) ---
+  for (int i = 0; i < SPOT_SHADOW_MAX_COUNT; ++i) {
+    VkFramebufferCreateInfo fbInfo{};
+    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbInfo.renderPass = _shadowPass;
+    fbInfo.attachmentCount = 1;
+    fbInfo.pAttachments = &_spotShadowSliceViews[i];
+    fbInfo.width = SPOT_SHADOW_RESOLUTION;
+    fbInfo.height = SPOT_SHADOW_RESOLUTION;
+    fbInfo.layers = 1;
+    if (vkCreateFramebuffer(device.getLogicalDevice(), &fbInfo, nullptr, &_spotShadowFrameBuffers[i]) != VK_SUCCESS)
+      throw std::runtime_error("failed to create spot shadow framebuffer");
+  }
+
+  // --- 5. Pipeline layout: globalSetLayout + applSetLayout, push constant = mat4 ---
+  VkDescriptorSetLayout setLayouts[] = {gpuScene.globalSetLayout, gpuScene.applSetLayout};
+  VkPushConstantRange pcRange = {
+      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+      .offset = 0,
+      .size = sizeof(mat4)};
+  VkPipelineLayoutCreateInfo layoutInfo{};
+  layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutInfo.setLayoutCount = 2;
+  layoutInfo.pSetLayouts = setLayouts;
+  layoutInfo.pushConstantRangeCount = 1;
+  layoutInfo.pPushConstantRanges = &pcRange;
+  if (vkCreatePipelineLayout(device.getLogicalDevice(), &layoutInfo, nullptr, &_spotShadowPipelineLayout) != VK_SUCCESS)
+    throw std::runtime_error("failed to create spot shadow pipeline layout");
+
+  // --- 6. Load shaders ---
+  auto vsCode = readFile((gpuScene.RootPath() / "shaders/drawclusterShadowSpot.vs.spv").generic_string());
+  auto psCode = readFile((gpuScene.RootPath() / "shaders/drawcluster.shadow.indirect.ps.spv").generic_string());
+  VkShaderModule vsModule = gpuScene.createShaderModule(vsCode);
+  VkShaderModule psModule = gpuScene.createShaderModule(psCode);
+
+  VkSpecializationMapEntry specEntry = {0, 0, sizeof(VkBool32)};
+  VkBool32 alphaMaskTrue = VK_TRUE;
+  VkSpecializationInfo specInfo = {1, &specEntry, sizeof(VkBool32), &alphaMaskTrue};
+
+  VkPipelineShaderStageCreateInfo vsStage{};
+  vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+  vsStage.module = vsModule;
+  vsStage.pName = "RenderSceneVSShadowSpot";
+
+  VkPipelineShaderStageCreateInfo psStage{};
+  psStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  psStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  psStage.module = psModule;
+  psStage.pName = "RenderSceneShadowDepthIndirect";
+  psStage.pSpecializationInfo = &specInfo;
+
+  VkPipelineShaderStageCreateInfo stagesOpaque[] = {vsStage};
+  VkPipelineShaderStageCreateInfo stagesAlpha[] = {vsStage, psStage};
+
+  // --- 7. Vertex input state (identical to CSM) ---
+  constexpr VkVertexInputBindingDescription bindPos  = {0, sizeof(float)*3, VK_VERTEX_INPUT_RATE_VERTEX};
+  constexpr VkVertexInputBindingDescription bindNorm = {1, sizeof(float)*3, VK_VERTEX_INPUT_RATE_VERTEX};
+  constexpr VkVertexInputBindingDescription bindTan  = {2, sizeof(float)*3, VK_VERTEX_INPUT_RATE_VERTEX};
+  constexpr VkVertexInputBindingDescription bindUV   = {3, sizeof(float)*2, VK_VERTEX_INPUT_RATE_VERTEX};
+  constexpr VkVertexInputAttributeDescription attrs[] = {
+      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+      {1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0},
+      {2, 2, VK_FORMAT_R32G32B32_SFLOAT, 0},
+      {3, 3, VK_FORMAT_R32G32_SFLOAT, 0}};
+  constexpr std::array<VkVertexInputBindingDescription, 4> bindings = {bindPos, bindNorm, bindTan, bindUV};
+
+  VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+  vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInputInfo.vertexBindingDescriptionCount = 4;
+  vertexInputInfo.pVertexBindingDescriptions = bindings.data();
+  vertexInputInfo.vertexAttributeDescriptionCount = 4;
+  vertexInputInfo.pVertexAttributeDescriptions = attrs;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+  VkViewport vp{0, 0, (float)SPOT_SHADOW_RESOLUTION, (float)SPOT_SHADOW_RESOLUTION, 0.0f, 1.0f};
+  VkRect2D sc{{0, 0}, {SPOT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION}};
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.pViewports = &vp;
+  viewportState.scissorCount = 1;
+  viewportState.pScissors = &sc;
+
+  VkPipelineRasterizationStateCreateInfo rasterizer{};
+  rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+  rasterizer.lineWidth = 1.0f;
+  rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+  rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  rasterizer.depthBiasEnable = VK_TRUE;
+  rasterizer.depthBiasConstantFactor = 1.25f;
+  rasterizer.depthBiasSlopeFactor = 1.75f;
+
+  VkPipelineMultisampleStateCreateInfo multisampling{};
+  multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  VkPipelineColorBlendStateCreateInfo colorBlend{};
+  colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlend.attachmentCount = 0;
+
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthWriteEnable = VK_TRUE;
+  depthStencil.depthTestEnable = VK_TRUE;
+  depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
+  VkGraphicsPipelineCreateInfo pipeInfo{};
+  pipeInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipeInfo.pVertexInputState = &vertexInputInfo;
+  pipeInfo.pInputAssemblyState = &inputAssembly;
+  pipeInfo.pViewportState = &viewportState;
+  pipeInfo.pRasterizationState = &rasterizer;
+  pipeInfo.pMultisampleState = &multisampling;
+  pipeInfo.pColorBlendState = &colorBlend;
+  pipeInfo.pDepthStencilState = &depthStencil;
+  pipeInfo.layout = _spotShadowPipelineLayout;
+  pipeInfo.renderPass = _shadowPass;
+  pipeInfo.subpass = 0;
+
+  // Opaque: VS only
+  pipeInfo.stageCount = 1;
+  pipeInfo.pStages = stagesOpaque;
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &_spotShadowOpaquePipeline) != VK_SUCCESS)
+    throw std::runtime_error("failed to create spot shadow opaque pipeline");
+
+  // Alpha-masked: VS + PS
+  pipeInfo.stageCount = 2;
+  pipeInfo.pStages = stagesAlpha;
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &_spotShadowAlphaMaskPipeline) != VK_SUCCESS)
+    throw std::runtime_error("failed to create spot shadow alpha-mask pipeline");
+
+  vkDestroyShaderModule(device.getLogicalDevice(), vsModule, nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), psModule, nullptr);
+
+  // --- 8. Write descriptor bindings 13 (spot shadow texture) and 14 (comparison sampler) ---
+  for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.imageView = _spotShadowArrayView;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet wTex{};
+    wTex.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wTex.dstSet = gpuScene.deferredLightingDescriptorSet[f];
+    wTex.dstBinding = 13;
+    wTex.descriptorCount = 1;
+    wTex.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    wTex.pImageInfo = &imgInfo;
+
+    VkDescriptorImageInfo sampInfo{};
+    sampInfo.sampler = _shadowMapSampler;
+
+    VkWriteDescriptorSet wSamp{};
+    wSamp.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wSamp.dstSet = gpuScene.deferredLightingDescriptorSet[f];
+    wSamp.dstBinding = 14;
+    wSamp.descriptorCount = 1;
+    wSamp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    wSamp.pImageInfo = &sampInfo;
+
+    std::array<VkWriteDescriptorSet, 2> writes = {wTex, wSamp};
+    vkUpdateDescriptorSets(device.getLogicalDevice(), (uint32_t)writes.size(), writes.data(), 0, nullptr);
+  }
+}
+
+void Shadow::RenderSpotShadowMaps(VkCommandBuffer &commandBuffer,
+                                   const GpuScene &gpuScene,
+                                   const VulkanDevice &device) {
+  if (!vulkanResourceCreated)
+    InitRHI(device, gpuScene);
+  if (_spotShadowsRendered)
+    return;
+
+  const auto &spotData = SpotLight::spotLightData;
+  if (spotData.empty()) {
+    _spotShadowsRendered = true;
+    return;
+  }
+
+  const uint32_t spotCount = std::min((uint32_t)spotData.size(), (uint32_t)SPOT_SHADOW_MAX_COUNT);
+  const uint32_t opaqueCount = (uint32_t)gpuScene.applMesh->_opaqueChunkCount;
+  const uint32_t alphaMaskedCount = (uint32_t)gpuScene.applMesh->_alphaMaskedChunkCount;
+  const AAPLMeshChunk *chunks = gpuScene.m_Chunks;
+
+  VkBuffer vertexBuffers[] = {gpuScene.applVertexBuffer, gpuScene.applNormalBuffer,
+                               gpuScene.applTangentBuffer, gpuScene.applUVBuffer};
+  VkDeviceSize vbOffsets[] = {0, 0, 0, 0};
+  vkCmdBindVertexBuffers(commandBuffer, 0, 4, vertexBuffers, vbOffsets);
+  vkCmdBindIndexBuffer(commandBuffer, gpuScene.applIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+  uint32_t cf = gpuScene.currentFrame;
+  VkDescriptorSet descSets[] = {gpuScene.globalDescriptorSets[cf], gpuScene.applDescriptorSets[cf]};
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           _spotShadowPipelineLayout, 0, 2, descSets, 0, nullptr);
+
+  for (uint32_t lightIdx = 0; lightIdx < spotCount; ++lightIdx) {
+    VkClearValue clearVal{};
+    clearVal.depthStencil = {1.0f, 0};
+
+    VkRenderPassBeginInfo passInfo{};
+    passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    passInfo.renderPass = _shadowPass;
+    passInfo.framebuffer = _spotShadowFrameBuffers[lightIdx];
+    passInfo.renderArea = {{0, 0}, {SPOT_SHADOW_RESOLUTION, SPOT_SHADOW_RESOLUTION}};
+    passInfo.clearValueCount = 1;
+    passInfo.pClearValues = &clearVal;
+    vkCmdBeginRenderPass(commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    mat4 vp = spotData[lightIdx].viewProjMatrix;
+    vkCmdPushConstants(commandBuffer, _spotShadowPipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(mat4), vp.value_ptr());
+
+    // Opaque geometry
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _spotShadowOpaquePipeline);
+    for (uint32_t c = 0; c < opaqueCount; ++c)
+      vkCmdDrawIndexed(commandBuffer, chunks[c].indexCount, 1, chunks[c].indexBegin, 0, c);
+
+    // Alpha-masked geometry
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _spotShadowAlphaMaskPipeline);
+    for (uint32_t c = 0; c < alphaMaskedCount; ++c) {
+      uint32_t ci = opaqueCount + c;
+      vkCmdDrawIndexed(commandBuffer, chunks[ci].indexCount, 1, chunks[ci].indexBegin, 0, ci);
+    }
+
+    vkCmdEndRenderPass(commandBuffer);
+  }
+
+  // Transition any unused slices (spotCount..SPOT_SHADOW_MAX_COUNT-1) from
+  // UNDEFINED to SHADER_READ_ONLY_OPTIMAL so the descriptor is consistent.
+  // Rendered slices were already transitioned by the render pass finalLayout.
+  if (spotCount < SPOT_SHADOW_MAX_COUNT) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = _spotShadowMaps;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = spotCount;
+    barrier.subresourceRange.layerCount = SPOT_SHADOW_MAX_COUNT - spotCount;
+    vkCmdPipelineBarrier(commandBuffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+  }
+
+  _spotShadowsRendered = true;
+  spdlog::info("Spot shadow maps rendered for {} lights", spotCount);
 }

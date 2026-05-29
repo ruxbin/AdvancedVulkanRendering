@@ -53,6 +53,9 @@ D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawoccluders.hlsl -fspv-deb
 REM compiling drawclustershadowVS
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadow -Fo drawclusterShadow.vs.spv
 
+REM compiling spot shadow VS (reads viewProj from push constant, no camera UBO)
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawclusterShadowSpot.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadowSpot -Fo drawclusterShadowSpot.vs.spv
+
 REM compiling drawoccludersvs
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -E RenderSceneVS drawoccluders.hlsl -T vs_6_0 -Fo occluders.wireframe.vs.spv
 
