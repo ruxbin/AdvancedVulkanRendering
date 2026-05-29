@@ -2803,7 +2803,15 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createComputePipeline();
 
   _shadow = new Shadow(device,*this,1024);
-  createScatterVolume(); // must be after _shadow (needs shadow map view/sampler)
+
+  // Initialize LightCuller now so ScatteringVolume can access its light buffers.
+  if (!_lightCuller) {
+    _lightCuller = new LightCuller();
+    _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width,
+                          device.getSwapChainExtent().height);
+  }
+
+  createScatterVolume(); // must be after _shadow and _lightCuller
   // create point light
   {
     size_t pointlightCount = sceneFile["point_lights"].size();
@@ -3400,6 +3408,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     frameConstants.farPlane = maincamera->Far();
     static uint32_t sFrameCounter = 0;
     frameConstants.frameCounter = sFrameCounter++;
+    // Accumulate wind offset for Perlin-noise fog animation (~0.5 m/s horizontal wind)
+    float t = float(frameConstants.frameCounter) * 0.016f;
+    frameConstants.globalNoiseOffset = vec3(t * 0.5f, 0.0f, t * 0.3f);
     frameConstants.physicalSize = vec2(device.getSwapChainExtent().width,
                                        device.getSwapChainExtent().height);
     frameConstants.invPhysicalSize = vec2(1.0f / frameConstants.physicalSize.x,
@@ -8292,14 +8303,23 @@ void GpuScene::createScatterVolume() {
   uint32_t screenW = device.getSwapChainExtent().width;
   uint32_t screenH = device.getSwapChainExtent().height;
 
+  // Build per-frame light index buffer lists for scatter shader
+  ScatterLightResources lightRes{};
+  lightRes.pointLightDataBuffer = _lightCuller->GetPointLightCullingDataBuffer();
+  lightRes.spotLightDataBuffer  = _lightCuller->GetSpotLightCullingDataBuffer();
+  lightRes.spotViewProjBuffer   = _lightCuller->GetSpotViewProjBuffer();
+  lightRes.spotShadowMapView    = _shadow->GetSpotShadowArrayView();
+  lightRes.spotShadowSampler    = _shadow->GetSpotShadowSampler();
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    lightRes.pointLightIndexBuffers.push_back(_lightCuller->GetPointLightIndicesBuffer(f));
+    lightRes.spotLightIndexBuffers.push_back(_lightCuller->GetSpotLightIndicesBuffer(f));
+  }
+
   _scatterVolume.create(
-    device,
-    _rootPath,
-    screenW, screenH,
-    framesInFlight,
+    device, _rootPath, screenW, screenH, framesInFlight,
     uniformBuffers,
-    _shadow->_shadowSliceViewFull,    // full 2DArray view of cascade shadow maps
-    _shadow->_shadowMapSampler        // comparison sampler already created by Shadow
+    _shadow->_shadowSliceViewFull, _shadow->_shadowMapSampler,
+    lightRes
   );
 
   // Bind the accumulated scatter volume at bindings 16/17 in each per-frame

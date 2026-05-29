@@ -56,6 +56,10 @@ D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawcluster.hlsl -fspv-debug
 REM compiling spot shadow VS (reads viewProj from push constant, no camera UBO)
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 drawclusterShadowSpot.hlsl -fspv-debug=vulkan-with-source -E RenderSceneVSShadowSpot -Fo drawclusterShadowSpot.vs.spv
 
+REM compiling scatter volume kernels (two entry points from one source file)
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 scattervolume.hlsl -E ScatterVolume       -Fo scattervolume.cs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -enable-16bit-types -spirv -T cs_6_2 scattervolume.hlsl -E AccumulateScattering -Fo accumscatter.cs.spv
+
 REM compiling drawoccludersvs
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -E RenderSceneVS drawoccluders.hlsl -T vs_6_0 -Fo occluders.wireframe.vs.spv
 

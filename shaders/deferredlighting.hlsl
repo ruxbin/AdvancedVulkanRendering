@@ -135,6 +135,19 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 
     half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow * ao;
 
+    // Phase F: for sky pixels (no geometry, depth == 0 in reverse-Z far plane)
+    // use the skyColor as the base surface colour so the scatter volume composites
+    // correctly against the background horizon.
+    if (depth < 0.0001f) {
+        float3 camPos2 = float3(cameraParams.invViewMatrix._m03,
+                                cameraParams.invViewMatrix._m13,
+                                cameraParams.invViewMatrix._m23);
+        float3 viewDirWS = normalize(worldPosition.xyz - camPos2);
+        float upBlend = saturate(viewDirWS.y * 0.5f + 0.5f);
+        result = (half3)lerp((float3)frameConstants.skyColor * 0.5f,
+                             (float3)frameConstants.skyColor, upBlend);
+    }
+
     // --- Scatter volume application (froxel volumetrics) ---
     {
         const float SCATTERING_RANGE = 100.0;

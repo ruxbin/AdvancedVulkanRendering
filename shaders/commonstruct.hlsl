@@ -64,6 +64,9 @@ struct AAPLFrameConstants
     float2 taaJitter;
     float exposure;
     uint taaEnabled;
+    // Wind-animated noise offset for volumetric scatter detail.
+    float3 globalNoiseOffset;
+    float  noiseSpeed;
 };
 
 struct CameraParamsBuffer

@@ -88,6 +88,9 @@ public:
   VkBuffer GetPointLightCullingDataBuffer() const {
     return _pointLightCullingDataBuffer;
   }
+  VkBuffer GetPointLightIndicesBuffer(uint32_t frame) const {
+    return _lightIndicesBuffer[frame];
+  }
   VkBuffer GetSpotLightCullingDataBuffer() const {
     return _spotLightCullingDataBuffer;
   }

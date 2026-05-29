@@ -87,10 +87,13 @@ struct FrameConstants {
   vec2 taaJitter;
   float exposure;
   uint32_t taaEnabled;
+  // Wind-animated noise offset for scatter volume fog detail.
+  alignas(16) vec3 globalNoiseOffset;
+  float noiseSpeed; // retained for padding; set to 0
 };
-static_assert(sizeof(FrameConstants) == 112,
-              "FrameConstants size mismatch — added skyColor(+16) and scatterScale(+4) "
-              "relative to the original 96-byte layout. Must match AAPLFrameConstants in commonstruct.hlsl");
+static_assert(sizeof(FrameConstants) == 128,
+              "FrameConstants size mismatch — globalNoiseOffset(+16) added after taaEnabled. "
+              "Must match AAPLFrameConstants in commonstruct.hlsl");
 
 struct FrameData {
   uniformBufferData camConstants;
