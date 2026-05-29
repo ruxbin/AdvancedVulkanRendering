@@ -1371,6 +1371,36 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
 } // end per-frame loop
 
   // deferred lighting descriptor set (per-frame)
+
+  // Allocate spot view-proj matrix buffer (static, one entry per spot light).
+  // Filled once here from SpotLight::spotLightData which is populated during
+  // scene loading (before LightCuller::InitRHI is first called).
+  {
+    constexpr VkDeviceSize vpSize = SPOT_SHADOW_MAX_COUNT * sizeof(mat4);
+    VkBufferCreateInfo vpInfo{};
+    vpInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    vpInfo.size = vpSize;
+    vpInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    vpInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device.getLogicalDevice(), &vpInfo, nullptr, &_spotViewProjBuffer);
+    VkMemoryRequirements vpReqs;
+    vkGetBufferMemoryRequirements(device.getLogicalDevice(), _spotViewProjBuffer, &vpReqs);
+    VkMemoryAllocateInfo vpAlloc{};
+    vpAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    vpAlloc.allocationSize = vpReqs.size;
+    vpAlloc.memoryTypeIndex = device.findMemoryType(vpReqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    vkAllocateMemory(device.getLogicalDevice(), &vpAlloc, nullptr, &_spotViewProjMemory);
+    vkBindBufferMemory(device.getLogicalDevice(), _spotViewProjBuffer, _spotViewProjMemory, 0);
+    void *vpData;
+    vkMapMemory(device.getLogicalDevice(), _spotViewProjMemory, 0, vpSize, 0, &vpData);
+    memset(vpData, 0, vpSize);
+    uint32_t toUpload = std::min((uint32_t)SpotLight::spotLightData.size(), (uint32_t)SPOT_SHADOW_MAX_COUNT);
+    for (uint32_t i = 0; i < toUpload; ++i)
+      memcpy((mat4 *)vpData + i, SpotLight::spotLightData[i].viewProjMatrix.value_ptr(), sizeof(mat4));
+    vkUnmapMemory(device.getLogicalDevice(), _spotViewProjMemory);
+  }
+
   for (uint32_t f = 0; f < gpuScene.framesInFlight; ++f) {
   VkDescriptorBufferInfo binfoDeferredLightData;
   binfoDeferredLightData.buffer = _pointLightCullingDataBuffer;
@@ -1431,9 +1461,23 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWriteSpotIdx_deferred.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   setWriteSpotIdx_deferred.pBufferInfo = &binfoDeferredSpotIdx;
 
-  std::array<VkWriteDescriptorSet, 4> writes_deferredlighting = {
+  // Binding 15: spot view-proj matrices for shadow lookup.
+  VkDescriptorBufferInfo binfoSpotVP;
+  binfoSpotVP.buffer = _spotViewProjBuffer;
+  binfoSpotVP.offset = 0;
+  binfoSpotVP.range = SPOT_SHADOW_MAX_COUNT * sizeof(mat4);
+  VkWriteDescriptorSet setWriteSpotVP = {};
+  setWriteSpotVP.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setWriteSpotVP.dstBinding = 15;
+  setWriteSpotVP.dstSet = gpuScene.deferredLightingDescriptorSet[f];
+  setWriteSpotVP.descriptorCount = 1;
+  setWriteSpotVP.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  setWriteSpotVP.pBufferInfo = &binfoSpotVP;
+
+  std::array<VkWriteDescriptorSet, 5> writes_deferredlighting = {
       setWriteIndices_deferredlighting, setWrite_Deferredlighting,
-      setWriteSpotData_deferred, setWriteSpotIdx_deferred};
+      setWriteSpotData_deferred, setWriteSpotIdx_deferred,
+      setWriteSpotVP};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(),
                          writes_deferredlighting.size(),

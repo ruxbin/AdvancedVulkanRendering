@@ -1278,6 +1278,25 @@ void GpuScene::init_deferredlighting_descriptors() {
   spotLightIndicesBindingDef.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   spotLightIndicesBindingDef.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  // Spot shadow bindings added in Phase D/E.
+  VkDescriptorSetLayoutBinding spotShadowMapsBinding = {};
+  spotShadowMapsBinding.binding = 13;
+  spotShadowMapsBinding.descriptorCount = 1;
+  spotShadowMapsBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  spotShadowMapsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding spotShadowSamplerBinding = {};
+  spotShadowSamplerBinding.binding = 14;
+  spotShadowSamplerBinding.descriptorCount = 1;
+  spotShadowSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  spotShadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding spotViewProjBinding = {};
+  spotViewProjBinding.binding = 15;
+  spotViewProjBinding.descriptorCount = 1;
+  spotViewProjBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  spotViewProjBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {albedoBinding,
                                              normalBinding,
                                              emessiveBinding,
@@ -1290,7 +1309,10 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              lightIndicesBinding,
                                              aoBinding,
                                              spotLightCullingDataBinding,
-                                             spotLightIndicesBindingDef};
+                                             spotLightIndicesBindingDef,
+                                             spotShadowMapsBinding,
+                                             spotShadowSamplerBinding,
+                                             spotViewProjBinding};
 
   VkDescriptorSetLayoutCreateInfo setinfo = {};
   setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1311,7 +1333,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12 * framesInFlight},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 3 * framesInFlight},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5 * framesInFlight}, // point + spot data/indices + headroom
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * framesInFlight}, // point + spot data/indices + viewProj
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -2890,6 +2912,17 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
           vec4(direction_x, direction_y, direction_z, coneRad), flags));
       _spotLights.emplace_back(SpotLight(i * sizeof(SpotLightData),
                                          &SpotLight::spotLightData.back()));
+
+      // Compute view-proj matrix for spot shadow rendering.
+      // Upload format matches CSM: transpose(P) * transpose(V), so the HLSL
+      // shader can do mul(spotViewProjMatrices[idx], worldPos) to get clip space.
+      {
+        vec3 spotDir = normalize(vec3(direction_x, direction_y, direction_z));
+        vec3 up = (fabsf(spotDir.y) < 0.99f) ? vec3(0.f, 1.f, 0.f) : vec3(0.f, 0.f, 1.f);
+        mat4 spotV = invLookAt(vec3(posx, posy, posz), up, spotDir);
+        mat4 spotP = perspective(2.0f * coneRad, 1.0f, 0.1f, height);
+        SpotLight::spotLightData.back().viewProjMatrix = transpose(spotP) * transpose(spotV);
+      }
     }
   }
 }
@@ -3562,6 +3595,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   }
 
   {_shadow->RenderShadowMap(commandBuffer, *this, device); }
+  {_shadow->RenderSpotShadowMaps(commandBuffer, *this, device); }
 
   // Draw occluders first for Hi-Z generation
   DrawOccluders(commandBuffer);

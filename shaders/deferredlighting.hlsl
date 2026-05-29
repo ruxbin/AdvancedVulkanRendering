@@ -30,6 +30,13 @@ cbuffer cam
 [[vk::binding(11,1)]] StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData;
 [[vk::binding(12,1)]] StructuredBuffer<uint> spotLightIndices;
 
+// Spot shadow resources (Phase D).
+#define SPOT_SHADOW_MAX_COUNT 32
+#define SPOT_SHADOW_DEPTH_BIAS 0.001f
+[[vk::binding(13,1)]] Texture2DArray<float> spotShadowMaps;
+[[vk::binding(14,1)]] SamplerComparisonState spotShadowSampler;
+[[vk::binding(15,1)]] StructuredBuffer<float4x4> spotViewProjMatrices;
+
 struct VSOutput
 {
     float4 Position : SV_POSITION;
@@ -143,14 +150,37 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 		result += lightingShaderPointSpot(surfaceData,depth,worldPosition,frameConstants,cameraParams,posRadiusSqr,pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].color.xyz);
 	}
 
-	// Spot lights: per-tile list parallel to point lights. shadow=1.0 is a
-	// stub; the spot shadow pass (Phase D) replaces this with an array lookup.
+	// Spot lights with per-light PCF shadow lookup.
+	// Lights with index >= SPOT_SHADOW_MAX_COUNT fall back to shadow=1.
 	uint spotCount = spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE];
 	for (uint si = 0; si < spotCount; ++si)
 	{
 		uint spotIdx = spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE + si + 1];
 		AAPLSpotLightCullingData spot = spotLightCullingData[spotIdx];
-		result += applySpotLight(surfaceData, worldPosition, frameConstants, cameraParams, spot, 1.0f);
+
+		float shadow = 1.0f;
+		if (spotIdx < SPOT_SHADOW_MAX_COUNT)
+		{
+			float4 lsp = mul(spotViewProjMatrices[spotIdx], worldPosition);
+			lsp /= lsp.w;
+			if (all(lsp.xyz < 1.0f) && all(lsp.xyz > float3(-1.0f, -1.0f, 0.0f)))
+			{
+				float lightDepth = lsp.z - SPOT_SHADOW_DEPTH_BIAS;
+				float2 suv = lsp.xy * 0.5f + 0.5f;
+				float smW, smH, smL, smM;
+				spotShadowMaps.GetDimensions(0, smW, smH, smL, smM);
+				float2 texelSize = float2(1.0f / smW, 1.0f / smH);
+				shadow = 0.0f;
+				for (int pj = -1; pj <= 1; ++pj)
+					for (int pk = -1; pk <= 1; ++pk)
+					{
+						float3 suvArr = float3(suv + float2(pk, pj) * texelSize, (float)spotIdx);
+						shadow += spotShadowMaps.SampleCmpLevelZero(spotShadowSampler, suvArr, lightDepth);
+					}
+				shadow /= 9.0f;
+			}
+		}
+		result += applySpotLight(surfaceData, worldPosition, frameConstants, cameraParams, spot, shadow);
 	}
     }
     

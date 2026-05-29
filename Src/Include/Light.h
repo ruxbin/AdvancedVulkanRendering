@@ -94,6 +94,7 @@ public:
   VkBuffer GetSpotLightIndicesBuffer(uint32_t frame) const {
     return _spotLightIndicesBuffer[frame];
   }
+  VkBuffer GetSpotViewProjBuffer() const { return _spotViewProjBuffer; }
 
 private:
   VkBuffer _pointLightCullingDataBuffer;
@@ -112,6 +113,11 @@ private:
   std::vector<VkBuffer> _spotXZRangeBuffer;
   std::vector<VkBuffer> _spotLightIndicesBuffer;
   std::vector<VkBuffer> _spotLightIndicesTransparentBuffer;
+
+  // One mat4 per spot light — view-proj matrices for shadow sampling in the
+  // deferred lighting shader (binding 15).
+  VkBuffer _spotViewProjBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _spotViewProjMemory = VK_NULL_HANDLE;
 
   VkDescriptorSetLayout coarseCullSetLayout;
   VkDescriptorPool coarseCullDescriptorPool;

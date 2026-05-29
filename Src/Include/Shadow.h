@@ -54,6 +54,19 @@ private:
   bool _gpuShadowInitialized = false;
   void InitGPUShadowResources(const VulkanDevice &, const GpuScene &);
 
+  // Spot light shadow map atlas: 256×256 × SPOT_SHADOW_MAX_COUNT array.
+  VkImage _spotShadowMaps = VK_NULL_HANDLE;
+  VkDeviceMemory _spotShadowMapsMemory = VK_NULL_HANDLE;
+  std::array<VkImageView, SPOT_SHADOW_MAX_COUNT> _spotShadowSliceViews{};
+  VkImageView _spotShadowArrayView = VK_NULL_HANDLE;
+  std::array<VkFramebuffer, SPOT_SHADOW_MAX_COUNT> _spotShadowFrameBuffers{};
+  VkPipelineLayout _spotShadowPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline _spotShadowOpaquePipeline = VK_NULL_HANDLE;
+  VkPipeline _spotShadowAlphaMaskPipeline = VK_NULL_HANDLE;
+  bool _spotShadowsRendered = false;
+
+  void CreateSpotShadowResources(const VulkanDevice &, const GpuScene &);
+
   struct ShadowCullParams {
     uint32_t opaqueChunkCount;
     uint32_t alphaMaskedChunkCount;
@@ -76,5 +89,9 @@ public:
   void RenderShadowMap(VkCommandBuffer &, const GpuScene &,
                        const VulkanDevice &);
   void UpdateShadowMatrices(const GpuScene &);
+  void RenderSpotShadowMaps(VkCommandBuffer &, const GpuScene &,
+                             const VulkanDevice &);
+  VkImageView GetSpotShadowArrayView() const { return _spotShadowArrayView; }
+  VkSampler GetSpotShadowSampler() const { return _shadowMapSampler; }
   friend class GpuScene;
 };
