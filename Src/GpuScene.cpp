@@ -7425,7 +7425,10 @@ void GpuScene::createDecalResources() {
     allocInfo.descriptorSetCount = framesInFlight;
     allocInfo.pSetLayouts = layouts.data();
     vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, _decalDescriptorSets.data());
-
+  // --- 5. Load default decal texture ---
+  {
+    loadDecalTexture(std::string(_rootPath.generic_string() + "/" + _decalTexPaths[0]).c_str());
+  }
     for (uint32_t i = 0; i < framesInFlight; i++) {
       VkDescriptorImageInfo depthInfo{};
       depthInfo.imageView = device.getWindowDepthOnlyImageView(i);
@@ -7472,10 +7475,7 @@ void GpuScene::createDecalResources() {
     }
   }
 
-  // --- 5. Load default decal texture ---
-  {
-    loadDecalTexture(std::string(_rootPath.generic_string() + "/" + _decalTexPaths[0]).c_str());
-  }
+
 
   // --- 6. Create depth readback buffer (single float for decal placement) ---
   {
