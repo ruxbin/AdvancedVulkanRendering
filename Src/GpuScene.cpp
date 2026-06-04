@@ -5654,6 +5654,8 @@ void GpuScene::processStreamingWork(int frameIndex) {
       vkFreeMemory(device.getLogicalDevice(), work.stagingMem, nullptr);
     }
   }
+spdlog::info("textureToDelete: frame {} size {}", frameIndex, textureToDelete[frameIndex].size());
+
 
   streamingDescriptorsDirtyMask = (framesInFlight >= 32) ? ~0u : ((1u << framesInFlight) - 1u);
 }

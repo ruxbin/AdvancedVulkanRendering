@@ -47,7 +47,7 @@ struct AAPLTextureData {
 // Texture streaming: mirrors Metal's AAPLTextureManager mip-streaming design
 static constexpr unsigned int PERMANENT_TEXTURE_SIZE = 64;
 static constexpr unsigned int MAX_TEXTURE_SIZE = 4096;
-static constexpr int TEXTURE_RETENTION_FRAMES = 3;
+static constexpr int TEXTURE_RETENTION_FRAMES = 3 + 1;
 
 struct TextureStreamingEntry {
   const AAPLTextureData* desc = nullptr;
