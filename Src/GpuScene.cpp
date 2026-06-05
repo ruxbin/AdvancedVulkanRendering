@@ -2951,6 +2951,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
                           device.getSwapChainExtent().height);
   }
   createScatterVolume();
+  // Build debug spot-cone wireframe geometry (needs spotLightData populated).
+  createSpotLightConeResources();
 }
 
 void GpuScene::CreateForwardLightingPass() {
@@ -3871,8 +3873,14 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                                     applMesh->_transparentChunkCount,
                                     sizeof(VkDrawIndexedIndirectCommand));
 
-      // Debug: draw occluder wireframe overlay
-      drawOccludersWireframe(commandBuffer);
+      // Debug: draw occluder wireframe overlay (ImGui toggle)
+      if (_showOccluderWireframe) {
+        drawOccludersWireframe(commandBuffer);
+      }
+      // Debug: draw spot light cone wireframes (ImGui toggle)
+      if (_showSpotLightViz) {
+        drawSpotLightCones(commandBuffer);
+      }
 
       // ImGui overlay (rendered last in forward pass)
       renderImGuiOverlay(commandBuffer, imageIndex);
@@ -6220,6 +6228,186 @@ void GpuScene::drawOccludersWireframe(VkCommandBuffer commandBuffer) {
                    0);
 }
 
+// --- Spot light cone wireframe debug visualization ---
+// Builds a single line-list vertex buffer covering all spot lights:
+//   per cone:  base circle (N segments, line list) + K generatrices from apex
+// Reuses occluders.wireframe.* shaders (which output green) so no new shader
+// is needed. Uses a separate pipeline solely to switch topology to LINE_LIST.
+void GpuScene::createSpotLightConeResources() {
+  const auto &lights = SpotLight::spotLightData;
+  if (lights.empty()) return;
+
+  // Cone tessellation
+  constexpr int kCircleSegs   = 24;  // base circle resolution
+  constexpr int kGeneratrices = 8;   // lines from apex to circle
+  constexpr int kVertsPerCone = (kCircleSegs + kGeneratrices) * 2; // line list
+
+  std::vector<float> verts;
+  verts.reserve(lights.size() * kVertsPerCone * 3);
+
+  auto pushVec3 = [&](const vec3 &p) {
+    verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+  };
+
+  for (const auto &L : lights) {
+    vec3 apex(L.posAndHeight.x, L.posAndHeight.y, L.posAndHeight.z);
+    float height = L.posAndHeight.w;
+    vec3 dir(L.dirAndOuterAngle.x, L.dirAndOuterAngle.y, L.dirAndOuterAngle.z);
+    float coneRad = L.dirAndOuterAngle.w;  // radians (outer half-angle)
+
+    // Orthonormal basis around dir
+    vec3 axis = normalize(dir);
+    vec3 helper = (std::fabs(axis.y) < 0.99f) ? vec3(0,1,0) : vec3(1,0,0);
+    vec3 right = normalize(helper.cross(axis));
+    vec3 up    = axis.cross(right);
+
+    vec3 baseCenter = apex + axis * height;
+    float baseR     = height * std::tan(coneRad);
+
+    // Build circle points on the base plane
+    std::vector<vec3> circle(kCircleSegs);
+    for (int i = 0; i < kCircleSegs; ++i) {
+      float t = (float)i / (float)kCircleSegs * 2.0f * 3.14159265358979f;
+      circle[i] = baseCenter + (right * std::cos(t) + up * std::sin(t)) * baseR;
+    }
+
+    // Base circle: kCircleSegs line segments
+    for (int i = 0; i < kCircleSegs; ++i) {
+      pushVec3(circle[i]);
+      pushVec3(circle[(i + 1) % kCircleSegs]);
+    }
+    // Generatrices: apex → every (kCircleSegs / kGeneratrices)-th vertex
+    for (int i = 0; i < kGeneratrices; ++i) {
+      int idx = i * (kCircleSegs / kGeneratrices);
+      pushVec3(apex);
+      pushVec3(circle[idx]);
+    }
+  }
+
+  _spotConeVertexCount = (uint32_t)(verts.size() / 3);
+
+  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bi.size = verts.size() * sizeof(float);
+  bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+  bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (vkCreateBuffer(device.getLogicalDevice(), &bi, nullptr,
+                     &_spotConeVertBuffer) != VK_SUCCESS)
+    throw std::runtime_error("failed to create spot cone vertex buffer");
+
+  VkMemoryRequirements req;
+  vkGetBufferMemoryRequirements(device.getLogicalDevice(), _spotConeVertBuffer, &req);
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize  = req.size;
+  ai.memoryTypeIndex = device.findMemoryType(req.memoryTypeBits,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if (vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr,
+                       &_spotConeVertBufferMem) != VK_SUCCESS)
+    throw std::runtime_error("failed to alloc spot cone vertex memory");
+  vkBindBufferMemory(device.getLogicalDevice(), _spotConeVertBuffer,
+                     _spotConeVertBufferMem, 0);
+
+  void *mapped = nullptr;
+  vkMapMemory(device.getLogicalDevice(), _spotConeVertBufferMem, 0, bi.size, 0, &mapped);
+  std::memcpy(mapped, verts.data(), verts.size() * sizeof(float));
+  vkUnmapMemory(device.getLogicalDevice(), _spotConeVertBufferMem);
+
+  // Pipeline: same shaders as occluder wireframe, topology = LINE_LIST.
+  auto vsCode = readFile((_rootPath / "shaders/occluders.wireframe.vs.spv").generic_string());
+  auto psCode = readFile((_rootPath / "shaders/occluders.wireframe.ps.spv").generic_string());
+  VkShaderModule vs = createShaderModule(vsCode);
+  VkShaderModule ps = createShaderModule(psCode);
+
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vs;
+  stages[0].pName  = "RenderSceneVS";
+  stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = ps;
+  stages[1].pName  = "WireframePS";
+
+  VkVertexInputBindingDescription binding{0, sizeof(float) * 3, VK_VERTEX_INPUT_RATE_VERTEX};
+  VkVertexInputAttributeDescription attr{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+  VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  vertexInput.vertexBindingDescriptionCount   = 1;
+  vertexInput.pVertexBindingDescriptions      = &binding;
+  vertexInput.vertexAttributeDescriptionCount = 1;
+  vertexInput.pVertexAttributeDescriptions    = &attr;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+  VkViewport viewport{};
+  viewport.width  = (float)device.getSwapChainExtent().width;
+  viewport.height = (float)device.getSwapChainExtent().height;
+  viewport.maxDepth = 1.0f;
+  VkRect2D scissor{{0, 0}, device.getSwapChainExtent()};
+  VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+  viewportState.viewportCount = 1;
+  viewportState.pViewports    = &viewport;
+  viewportState.scissorCount  = 1;
+  viewportState.pScissors     = &scissor;
+
+  VkPipelineRasterizationStateCreateInfo rast{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+  rast.polygonMode = VK_POLYGON_MODE_FILL;  // LINE_LIST topology already gives lines
+  rast.lineWidth   = 1.0f;
+  rast.cullMode    = VK_CULL_MODE_NONE;
+  rast.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+  VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+  ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  ds.depthTestEnable   = VK_TRUE;
+  ds.depthWriteEnable  = VK_FALSE;
+  ds.depthCompareOp    = VK_COMPARE_OP_GREATER;  // reverse-Z
+
+  VkPipelineColorBlendAttachmentState ba{};
+  ba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  ba.blendEnable    = VK_FALSE;
+  VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+  cb.attachmentCount = 1;
+  cb.pAttachments    = &ba;
+
+  VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+  pi.stageCount          = 2;
+  pi.pStages             = stages;
+  pi.pVertexInputState   = &vertexInput;
+  pi.pInputAssemblyState = &inputAssembly;
+  pi.pViewportState      = &viewportState;
+  pi.pRasterizationState = &rast;
+  pi.pMultisampleState   = &ms;
+  pi.pDepthStencilState  = &ds;
+  pi.pColorBlendState    = &cb;
+  pi.layout              = pipelineLayout;        // global descriptor set only
+  pi.renderPass          = _forwardLightingPass;
+  pi.subpass             = 0;
+  if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
+                                &pi, nullptr, &_spotConePipeline) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create spot cone pipeline");
+  }
+  vkDestroyShaderModule(device.getLogicalDevice(), vs, nullptr);
+  vkDestroyShaderModule(device.getLogicalDevice(), ps, nullptr);
+
+  spdlog::info("Spot light cone viz: {} cones, {} vertices",
+               (int)lights.size(), _spotConeVertexCount);
+}
+
+void GpuScene::drawSpotLightCones(VkCommandBuffer commandBuffer) {
+  if (_spotConePipeline == VK_NULL_HANDLE || _spotConeVertexCount == 0)
+    return;
+  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _spotConePipeline);
+  VkBuffer vbs[] = {_spotConeVertBuffer};
+  VkDeviceSize offs[] = {0};
+  vkCmdBindVertexBuffers(commandBuffer, 0, 1, vbs, offs);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipelineLayout, 0, 1,
+                          &globalDescriptorSets[currentFrame], 0, nullptr);
+  vkCmdDraw(commandBuffer, _spotConeVertexCount, 1, 0, 0);
+}
+
 // --- Scalable Ambient Obscurance (SAO) ---
 
 void GpuScene::createSAOResources() {
@@ -8325,6 +8513,10 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
     }
   }
   ImGui::Checkbox("TAA", &_taaEnabled);
+  ImGui::Separator();
+  ImGui::Text("Debug overlays:");
+  ImGui::Checkbox("Occluder Wireframe", &_showOccluderWireframe);
+  ImGui::Checkbox("Spot Light Cones",   &_showSpotLightViz);
 
   ImGui::End();
 

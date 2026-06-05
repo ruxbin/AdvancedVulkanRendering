@@ -397,6 +397,15 @@ private:
   void createOccluderWireframePipeline();
   void drawOccludersWireframe(VkCommandBuffer commandBuffer);
 
+  // Debug spot light cone visualization (line-list wireframe).
+  // Geometry built once at scene load (spot lights are static).
+  VkBuffer       _spotConeVertBuffer    = VK_NULL_HANDLE;
+  VkDeviceMemory _spotConeVertBufferMem = VK_NULL_HANDLE;
+  uint32_t       _spotConeVertexCount   = 0;
+  VkPipeline     _spotConePipeline      = VK_NULL_HANDLE;
+  void createSpotLightConeResources();
+  void drawSpotLightCones(VkCommandBuffer commandBuffer);
+
   Shadow *_shadow;
   std::vector<PointLight> _pointLights;
   std::vector<SpotLight> _spotLights;
@@ -407,6 +416,8 @@ private:
 
   bool useClusterLighting = true;
   bool useRayTracing = true;     // ImGui toggle: switch to full RT path
+  bool _showOccluderWireframe = false;  // ImGui debug toggle
+  bool _showSpotLightViz      = false;  // ImGui debug toggle: spot light cones
 
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
