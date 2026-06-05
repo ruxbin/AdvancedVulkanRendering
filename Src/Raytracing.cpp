@@ -44,6 +44,14 @@ RayTracing::~RayTracing() {
     if (_rtLitMemory[i] != VK_NULL_HANDLE)
       vkFreeMemory(dev, _rtLitMemory[i], nullptr);
   }
+  for (size_t i = 0; i < _accumImage.size(); ++i) {
+    if (_accumImageView[i] != VK_NULL_HANDLE)
+      vkDestroyImageView(dev, _accumImageView[i], nullptr);
+    if (_accumImage[i] != VK_NULL_HANDLE)
+      vkDestroyImage(dev, _accumImage[i], nullptr);
+    if (_accumMemory[i] != VK_NULL_HANDLE)
+      vkFreeMemory(dev, _accumMemory[i], nullptr);
+  }
   if (_rtPipeline != VK_NULL_HANDLE)
     vkDestroyPipeline(dev, _rtPipeline, nullptr);
   if (_rtPipelineLayout != VK_NULL_HANDLE)
@@ -541,51 +549,86 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   const uint32_t N = _device.getSwapChainImageCount();
   _rtExtent = _device.getSwapChainExtent();
 
-  // 1) Output images (HDR R16G16B16A16, STORAGE+TRANSFER_SRC+SAMPLED).
+  // Helper to allocate a 2D storage image and create its image view.
+  auto createStorageImage = [&](VkFormat fmt, VkImageUsageFlags extraUsage,
+                                VkImage &outImg, VkDeviceMemory &outMem,
+                                VkImageView &outView) {
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType   = VK_IMAGE_TYPE_2D;
+    ii.format      = fmt;
+    ii.extent      = {_rtExtent.width, _rtExtent.height, 1};
+    ii.mipLevels   = 1;
+    ii.arrayLayers = 1;
+    ii.samples     = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage       = VK_IMAGE_USAGE_STORAGE_BIT | extraUsage;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(dev, &ii, nullptr, &outImg) != VK_SUCCESS)
+      throw std::runtime_error("RT: vkCreateImage failed");
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(dev, outImg, &req);
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = _device.findMemoryType(req.memoryTypeBits,
+                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(dev, &ai, nullptr, &outMem) != VK_SUCCESS)
+      throw std::runtime_error("RT: vkAllocateMemory failed");
+    vkBindImageMemory(dev, outImg, outMem, 0);
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image      = outImg;
+    vci.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format     = fmt;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(dev, &vci, nullptr, &outView) != VK_SUCCESS)
+      throw std::runtime_error("RT: vkCreateImageView failed");
+  };
+
+  // 1a) Output images (HDR R16G16B16A16, STORAGE+TRANSFER_SRC).
   _rtLitImage.resize(N);
   _rtLitMemory.resize(N);
   _rtLitImageView.resize(N);
   for (uint32_t f = 0; f < N; ++f) {
-    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ii.imageType = VK_IMAGE_TYPE_2D;
-    ii.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    ii.extent = {_rtExtent.width, _rtExtent.height, 1};
-    ii.mipLevels = 1;
-    ii.arrayLayers = 1;
-    ii.samples = VK_SAMPLE_COUNT_1_BIT;
-    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-               VK_IMAGE_USAGE_SAMPLED_BIT;
-    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (vkCreateImage(dev, &ii, nullptr, &_rtLitImage[f]) != VK_SUCCESS) {
-      throw std::runtime_error("RT: vkCreateImage (output) failed");
-    }
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(dev, _rtLitImage[f], &req);
-    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = _device.findMemoryType(req.memoryTypeBits,
-                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(dev, &ai, nullptr, &_rtLitMemory[f]) != VK_SUCCESS) {
-      throw std::runtime_error("RT: vkAllocateMemory (output) failed");
-    }
-    vkBindImageMemory(dev, _rtLitImage[f], _rtLitMemory[f], 0);
+    createStorageImage(VK_FORMAT_R16G16B16A16_SFLOAT,
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       _rtLitImage[f], _rtLitMemory[f], _rtLitImageView[f]);
+  }
 
-    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vci.image = _rtLitImage[f];
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = ii.format;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(dev, &vci, nullptr, &_rtLitImageView[f]) != VK_SUCCESS) {
-      throw std::runtime_error("RT: vkCreateImageView (output) failed");
+  // 1b) Accumulation images (R32G32B32A32_SFLOAT, persistent across frames).
+  _accumImage.resize(N);
+  _accumMemory.resize(N);
+  _accumImageView.resize(N);
+  for (uint32_t f = 0; f < N; ++f) {
+    createStorageImage(VK_FORMAT_R32G32B32A32_SFLOAT, 0,
+                       _accumImage[f], _accumMemory[f], _accumImageView[f]);
+  }
+
+  // Pre-transition all accumulation images to GENERAL layout so they are
+  // ready for read-write on the first frame.
+  {
+    VkCommandBuffer cmd = _device.beginSingleTimeCommands();
+    for (uint32_t f = 0; f < N; ++f) {
+      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      b.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
+      b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+      b.srcAccessMask    = 0;
+      b.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.image            = _accumImage[f];
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      vkCmdPipelineBarrier(cmd,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                           0, 0, nullptr, 0, nullptr, 1, &b);
     }
+    _device.endSingleTimeCommands(cmd);
   }
 
   // 2) RT descriptor set layout (set 1).
   // Bindings match rt_lighting.hlsl set 1:
   //   0  TLAS                 (acceleration structure)
-  //   1  outLitColor          (storage image)
+  //   1  outLitColor          (storage image, display output with tone mapping)
   //   2  vbPositions          (storage buffer)
   //   3  vbNormals            (storage buffer)
   //   4  vbTangents           (storage buffer)
@@ -596,7 +639,8 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   //   9  pointLightsRT        (storage buffer)
   //  10  _Textures[]          (sampled image array, bindless)
   //  11  _LinearRepeatSampler (sampler)
-  const uint32_t bindingCount = 12;
+  //  12  outAccumColor        (storage image, progressive accumulation)
+  const uint32_t bindingCount = 13;
   std::array<VkDescriptorSetLayoutBinding, bindingCount> b{};
   auto fill = [](VkDescriptorSetLayoutBinding &x, uint32_t binding,
                  VkDescriptorType type, uint32_t count, VkShaderStageFlags stages) {
@@ -623,6 +667,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   const uint32_t bindlessCount = (uint32_t)_scene.textures.size();
   fill(b[10], 10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,            bindlessCount, rtAllStages);
   fill(b[11], 11, VK_DESCRIPTOR_TYPE_SAMPLER,                  1, rtAllStages);
+  fill(b[12], 12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,            1, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
 
   std::array<VkDescriptorBindingFlags, bindingCount> bf{};
   bf[10] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT;
@@ -643,7 +688,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   // 3) Descriptor pool sized for N per-frame sets.
   std::vector<VkDescriptorPoolSize> poolSizes = {
       {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, N},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              N},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              2 * N},  // outLitColor + outAccumColor
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             8 * N},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,              bindlessCount * N + 1},
       {VK_DESCRIPTOR_TYPE_SAMPLER,                    N}};
@@ -696,7 +741,11 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
     VkDescriptorImageInfo samplerInfo{};
     samplerInfo.sampler = _scene.textureSampler;
 
-    std::array<VkWriteDescriptorSet, 12> w{};
+    VkDescriptorImageInfo accumImg{};
+    accumImg.imageView   = _accumImageView[f];
+    accumImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    std::array<VkWriteDescriptorSet, 13> w{};
     auto bufW = [&](uint32_t i, uint32_t binding, VkDescriptorBufferInfo *bi,
                     VkDescriptorType type) {
       w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -741,6 +790,13 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
     w[11].descriptorCount = 1;
     w[11].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     w[11].pImageInfo = &samplerInfo;
+
+    w[12] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w[12].dstSet = _rtDescriptorSets[f];
+    w[12].dstBinding = 12;
+    w[12].descriptorCount = 1;
+    w[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w[12].pImageInfo = &accumImg;
 
     vkUpdateDescriptorSets(dev, (uint32_t)w.size(), w.data(), 0, nullptr);
   }
@@ -838,7 +894,33 @@ void RayTracing::EndImGuiCompositePass(VkCommandBuffer cb) {
 
 void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
                                   VkExtent2D extent) {
-  // Transition output image UNDEFINED/SHADER_READ → GENERAL for write
+  // --- Camera dirty check: reset accumulation if camera moved ---
+  const mat4 &currentView = _scene.maincamera->getObjectToCamera();
+  bool cameraMoved = (std::memcmp(&currentView, &_prevViewMatrix, sizeof(mat4)) != 0);
+  if (cameraMoved) {
+    _accumCount = 0;
+    _prevViewMatrix = currentView;
+  }
+  const bool resetAccum = (_accumCount == 0);
+
+  // --- Memory barrier for accumulation image ---
+  // Ensure previous frame's write to the accum image is visible before we
+  // read and write it again this frame.
+  VkImageMemoryBarrier accumBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  accumBarrier.oldLayout        = VK_IMAGE_LAYOUT_GENERAL;
+  accumBarrier.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+  accumBarrier.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT;
+  accumBarrier.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+  accumBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  accumBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  accumBarrier.image            = _accumImage[imageIndex];
+  accumBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdPipelineBarrier(cb,
+                       VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                       VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                       0, 0, nullptr, 0, nullptr, 1, &accumBarrier);
+
+  // Transition output (display) image UNDEFINED → GENERAL for write
   VkImageMemoryBarrier toGeneral{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   toGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -862,21 +944,25 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
   vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
                           _rtPipelineLayout, 0, 2, sets, 0, nullptr);
 
-  // Push constants (RTPushConsts in rt_lighting.hlsl)
+  // Push constants — must match RTPushConsts in rt_lighting.hlsl (32 bytes)
   struct RTPC {
     uint32_t pointLightCount;
-    uint32_t shadowTaps;
+    uint32_t accumCount;
     float    sunConeRadius;
     float    pixelSpreadAngle;
     uint32_t frameSeed;
-    uint32_t pad0, pad1, pad2;
+    uint32_t maxBounces;
+    uint32_t resetAccum;
+    uint32_t pad;
   } pc{};
   pc.pointLightCount = (uint32_t)_scene._pointLights.size();
-  pc.shadowTaps = 4;
-  // sun half angle ≈ 0.5 deg ≈ 8.7e-3 rad; tan small angle ≈ angle
-  pc.sunConeRadius = 0.0087f;
-  pc.pixelSpreadAngle = 2.0f * std::tan(0.5f * 1.0472f /* fovY≈60deg */) / float(extent.height);
-  pc.frameSeed = _scene.frameConstants.frameCounter;
+  pc.accumCount      = _accumCount;
+  pc.sunConeRadius   = 0.0087f;
+  pc.pixelSpreadAngle = 2.0f * std::tan(0.5f * 1.0472f) / float(extent.height);
+  pc.frameSeed       = _scene.frameConstants.frameCounter;
+  pc.maxBounces      = maxBounces;
+  pc.resetAccum      = resetAccum ? 1u : 0u;
+  pc.pad             = 0;
   vkCmdPushConstants(cb, _rtPipelineLayout,
                      VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                          VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
@@ -886,6 +972,9 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
 
   pfnCmdTraceRays(cb, &_rgenRegion, &_missRegion, &_hitRegion, &_callRegion,
                   extent.width, extent.height, 1);
+
+  // Advance accumulation counter for next frame
+  ++_accumCount;
 }
 
 void RayTracing::RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) {

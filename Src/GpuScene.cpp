@@ -8287,6 +8287,14 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   ImGui::Checkbox("Ray Tracing", &useRayTracing);
   if (useRayTracing) {
     ImGui::TextDisabled("(raster pipeline skipped)");
+    if (_raytracing) {
+      ImGui::Text("Samples accumulated: %u", _raytracing->getAccumCount());
+      int bounces = (int)_raytracing->maxBounces;
+      if (ImGui::SliderInt("Max Bounces", &bounces, 1, 8))
+        _raytracing->maxBounces = (uint32_t)bounces;
+      if (ImGui::Button("Reset Accumulation"))
+        _raytracing->resetAccumulation();
+    }
   }
   ImGui::Checkbox("TAA", &_taaEnabled);
 
