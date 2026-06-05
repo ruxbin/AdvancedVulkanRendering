@@ -632,7 +632,8 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   //  10  _Textures[]          (sampled image array, bindless)
   //  11  _LinearRepeatSampler (sampler)
   //  12  outAccumColor        (storage image, progressive accumulation)
-  const uint32_t bindingCount = 13;
+  //  13  spotLightsRT         (storage buffer, AAPLSpotLightCullingData)
+  const uint32_t bindingCount = 14;
   std::array<VkDescriptorSetLayoutBinding, bindingCount> b{};
   auto fill = [](VkDescriptorSetLayoutBinding &x, uint32_t binding,
                  VkDescriptorType type, uint32_t count, VkShaderStageFlags stages) {
@@ -660,6 +661,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   fill(b[10], 10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,            bindlessCount, rtAllStages);
   fill(b[11], 11, VK_DESCRIPTOR_TYPE_SAMPLER,                  1, rtAllStages);
   fill(b[12], 12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,            1, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+  fill(b[13], 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            1, rtAllStages);
 
   std::array<VkDescriptorBindingFlags, bindingCount> bf{};
   bf[10] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT;
@@ -681,7 +683,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   std::vector<VkDescriptorPoolSize> poolSizes = {
       {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, N},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              2 * N},  // outLitColor + outAccumColor
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             8 * N},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             9 * N},  // 8 mesh/material + 1 spot light
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,              bindlessCount * N + 1},
       {VK_DESCRIPTOR_TYPE_SAMPLER,                    N}};
   VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -724,6 +726,9 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
     VkDescriptorBufferInfo bpl {
         _scene._lightCuller ? _scene._lightCuller->GetPointLightCullingDataBuffer() : VK_NULL_HANDLE,
         0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo bsp {
+        _scene._lightCuller ? _scene._lightCuller->GetSpotLightCullingDataBuffer() : VK_NULL_HANDLE,
+        0, VK_WHOLE_SIZE};
 
     std::vector<VkDescriptorImageInfo> texImgs(bindlessCount);
     for (uint32_t i = 0; i < bindlessCount; ++i) {
@@ -737,7 +742,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
     accumImg.imageView   = _accumImageView;
     accumImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    std::array<VkWriteDescriptorSet, 13> w{};
+    std::array<VkWriteDescriptorSet, 14> w{};
     auto bufW = [&](uint32_t i, uint32_t binding, VkDescriptorBufferInfo *bi,
                     VkDescriptorType type) {
       w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -789,6 +794,8 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
     w[12].descriptorCount = 1;
     w[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     w[12].pImageInfo = &accumImg;
+
+    bufW(13, 13, &bsp, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
     vkUpdateDescriptorSets(dev, (uint32_t)w.size(), w.data(), 0, nullptr);
   }
@@ -952,7 +959,7 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
     uint32_t frameSeed;
     uint32_t maxBounces;
     uint32_t resetAccum;
-    uint32_t pad;
+    uint32_t spotLightCount;
   } pc{};
   static_assert(sizeof(RTPC) == 32, "RTPC must match RTPushConsts in rt_lighting.hlsl");
   static_assert(offsetof(RTPC, accumCount)       == 4,  "RTPC layout drift");
@@ -961,6 +968,7 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
   static_assert(offsetof(RTPC, frameSeed)        == 16, "RTPC layout drift");
   static_assert(offsetof(RTPC, maxBounces)       == 20, "RTPC layout drift");
   static_assert(offsetof(RTPC, resetAccum)       == 24, "RTPC layout drift");
+  static_assert(offsetof(RTPC, spotLightCount)   == 28, "RTPC layout drift");
   pc.pointLightCount = (uint32_t)_scene._pointLights.size();
   pc.accumCount      = _accumCount;
   pc.sunConeRadius   = 0.0087f;
@@ -970,7 +978,7 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
                        + _accumCount * 1597334677u;
   pc.maxBounces      = maxBounces;
   pc.resetAccum      = resetAccum ? 1u : 0u;
-  pc.pad             = 0;
+  pc.spotLightCount  = (uint32_t)_scene._spotLights.size();
   vkCmdPushConstants(cb, _rtPipelineLayout,
                      VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                          VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |

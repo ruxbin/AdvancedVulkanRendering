@@ -37,6 +37,7 @@
 [[vk::binding(10,1)]] Texture2D<half4>    _Textures[];
 [[vk::binding(11,1)]] SamplerState        _LinearRepeatSampler;
 [[vk::binding(12,1)]] RWTexture2D<float4> outAccumColor;  // persistent accumulation buffer
+[[vk::binding(13,1)]] StructuredBuffer<AAPLSpotLightCullingData> spotLightsRT;
 
 // AAPLShaderMaterial layout matches GpuScene.h (alignas(16)).
 struct AAPLShaderMaterial {
@@ -60,7 +61,7 @@ struct RTPushConsts {
     uint  frameSeed;        // per-frame jitter seed
     uint  maxBounces;       // max path depth
     uint  resetAccum;       // 1 = camera moved, start fresh
-    uint  _pad;
+    uint  spotLightCount;
 };
 [[vk::push_constant]] RTPushConsts pc;
 
@@ -268,6 +269,93 @@ float3 sampleSunDir(inout uint rng) {
     return normalize(local.x * t + local.y * b + local.z * sunAxis);
 }
 
+// Smooth distance attenuation matching raster lighting.hlsl:84.
+float distanceAttenuation(float3 unormLightVec, float invSqrAttRadius) {
+    float sqrDist = dot(unormLightVec, unormLightVec);
+    float att = 1.0f / max(sqrDist, 1e-4f);
+    float factor = sqrDist * invSqrAttRadius;
+    float smoothFactor = saturate(1.0f - factor * factor);
+    att *= smoothFactor * smoothFactor;
+    return att;
+}
+
+// Trace a shadow ray to a finite-distance light. Returns 1 if visible, 0 if occluded.
+float traceShadowRay(float3 origin, float3 dir, float tMax) {
+    RayDesc sr;
+    sr.Origin    = origin;
+    sr.Direction = dir;
+    sr.TMin      = 1e-3f;
+    sr.TMax      = tMax;
+    ShadowPayload sp; sp.visible = 0;
+    TraceRay(tlas,
+             RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+             RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+             0xFF, 1, 2, 1, sr, sp);
+    return float(sp.visible);
+}
+
+// NEE for all point + spot lights at a hit point. Each light: distance / cone
+// cull cheaply, then if its contribution would be non-zero fire a shadow ray
+// and add BRDF*light*attenuation. Returns the total radiance contribution
+// (already multiplied by throughput in the caller's accumulation).
+float3 evalLocalLightsNEE(float3 wsP, float3 N, float3 V,
+                          float3 albedo, float3 F0, float roughness) {
+    float3 result = (float3)0;
+
+    // --- Point lights ---
+    for (uint i = 0; i < pc.pointLightCount; ++i) {
+        AAPLPointLightCullingData L = pointLightsRT[i];
+        float3 toLight = L.posRadius.xyz - wsP;
+        float  d2      = dot(toLight, toLight);
+        float  radius  = L.posRadius.w;
+        if (d2 > radius * radius) continue;
+
+        float  dist    = sqrt(d2);
+        float3 Ldir    = toLight / max(dist, 1e-4f);
+        if (dot(N, Ldir) <= 0.0f) continue;
+
+        float invSqrR  = 1.0f / max(radius * radius, 1e-4f);
+        float distAtt  = distanceAttenuation(toLight, invSqrR);
+        if (distAtt <= 0.0f) continue;
+
+        // Light visibility (shadow ray)
+        float vis = traceShadowRay(wsP, Ldir, dist - 2e-3f);
+        if (vis <= 0.0f) continue;
+
+        float3 lightCol = L.color.xyz * PI * distAtt * frameConstants.localLightIntensity;
+        result += evalBRDF(N, V, Ldir, albedo, F0, roughness) * lightCol;
+    }
+
+    // --- Spot lights ---
+    for (uint j = 0; j < pc.spotLightCount; ++j) {
+        AAPLSpotLightCullingData S = spotLightsRT[j];
+        float3 toLight = S.posAndHeight.xyz - wsP;
+        float  dist    = length(toLight);
+        if (dist > S.posAndHeight.w) continue;
+
+        float3 Ldir    = toLight / max(dist, 1e-4f);
+        // Cone test: cos(angle) between -L and spot dir vs cos(outerAngle)
+        float cosTheta = dot(-Ldir, S.dirAndOuterAngle.xyz);
+        if (cosTheta < S.dirAndOuterAngle.w) continue;
+        if (dot(N, Ldir) <= 0.0f) continue;
+
+        float invSqrR  = 1.0f / max(S.posAndHeight.w * S.posAndHeight.w, 1e-4f);
+        float distAtt  = distanceAttenuation(toLight, invSqrR);
+        float angRange = max(S.cosInnerAngle - S.dirAndOuterAngle.w, 1e-4f);
+        float t        = saturate((cosTheta - S.dirAndOuterAngle.w) / angRange);
+        float angAtt   = t * t;
+        if (distAtt * angAtt <= 0.0f) continue;
+
+        float vis = traceShadowRay(wsP, Ldir, dist - 2e-3f);
+        if (vis <= 0.0f) continue;
+
+        float3 lightCol = S.color.xyz * PI * (distAtt * angAtt)
+                          * frameConstants.localLightIntensity;
+        result += evalBRDF(N, V, Ldir, albedo, F0, roughness) * lightCol;
+    }
+    return result;
+}
+
 // Reconstruct primary ray from pixel with sub-pixel jitter.
 void cameraRayFromPixel(uint2 px, uint2 dim, float2 jitter,
                         out float3 origin, out float3 dir) {
@@ -356,6 +444,15 @@ void RayGen() {
                     radiance  = min(radiance, FIREFLY_CLAMP);
                 }
             }
+        }
+
+        // --- NEE: point + spot lights (only at primary hit to keep cost
+        // bounded; secondary bounces still get sun NEE + emissive). ---
+        if (bounce == 0) {
+            float3 localContrib = evalLocalLightsNEE(wsP, N, V,
+                                                     p.albedo, p.F0, p.roughness);
+            radiance += throughput * localContrib;
+            radiance  = min(radiance, FIREFLY_CLAMP);
         }
 
         // --- Sample BRDF for next bounce ---
