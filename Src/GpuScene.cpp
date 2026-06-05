@@ -3515,10 +3515,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   }
   if (!_raytracing) {
     _raytracing = new RayTracing(const_cast<VulkanDevice &>(device), *this);
-   // _raytracing->Init();
-    //_raytracing->BuildAccelerationStructures();
-    //_raytracing->CreateOutputImagesAndDescriptorSet();
-    //_raytracing->CreatePipelineAndSBT();
+    _raytracing->Init();
+    _raytracing->BuildAccelerationStructures();
+    _raytracing->CreateOutputImagesAndDescriptorSet();
+    _raytracing->CreatePipelineAndSBT();
   }
 
     {
@@ -4188,6 +4188,12 @@ void GpuScene::cleanupSwapChainResources() {
 
   // 注意：如果 GBuffer images 也是独立创建的，也需要在这里销毁
   // vkDestroyImage, vkFreeMemory 等
+
+  // RT path's size-dependent resources (output / accum images + composite
+  // framebuffers). Pipeline / SBT / descriptor pool / set layout are kept.
+  if (_raytracing && _raytracing->IsBuilt()) {
+    _raytracing->destroySizeDependentResources();
+  }
 }
 
 void GpuScene::recreateSwapChainResources() {
@@ -4255,17 +4261,23 @@ void GpuScene::recreateSwapChainResources() {
     _decalRenderPass = VK_NULL_HANDLE;
     createDecalRenderPass();
   }
-  
+
   // 更新 camera aspect ratio
   if (maincamera) {
-    float aspect = device.getSwapChainExtent().width / 
+    float aspect = device.getSwapChainExtent().width /
                    static_cast<float>(device.getSwapChainExtent().height);
     // 如果 Camera 类有设置 aspect ratio 的方法，在这里调用
     // maincamera->setAspectRatio(aspect);
   }
 
-  spdlog::info("Swapchain resources recreated: {}x{}", 
-               device.getSwapChainExtent().width, 
+  // RT path resize: rebuild output / accum images + composite framebuffers,
+  // rewrite size-dependent descriptor bindings, reset accumulation counter.
+  if (_raytracing && _raytracing->IsBuilt()) {
+    _raytracing->createSizeDependentResources();
+  }
+
+  spdlog::info("Swapchain resources recreated: {}x{}",
+               device.getSwapChainExtent().width,
                device.getSwapChainExtent().height);
 }
 

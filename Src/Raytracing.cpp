@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 
@@ -894,12 +895,16 @@ void RayTracing::EndImGuiCompositePass(VkCommandBuffer cb) {
 
 void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
                                   VkExtent2D extent) {
-  // --- Camera dirty check: reset accumulation if camera moved ---
-  const mat4 &currentView = _scene.maincamera->getObjectToCamera();
-  bool cameraMoved = (std::memcmp(&currentView, &_prevViewMatrix, sizeof(mat4)) != 0);
+  // --- Camera dirty check: reset accumulation if view OR projection moved ---
+  // Project-side math lib quirk: A * B actually computes B * A
+  // (see memory mat4_operator_quirk; alignment with Camera.cpp:74).
+  mat4 view = _scene.maincamera->getObjectToCamera();
+  mat4 proj = _scene.maincamera->getProjectMatrix();
+  mat4 currentVP = view * proj;
+  bool cameraMoved = (std::memcmp(&currentVP, &_prevViewProjMatrix, sizeof(mat4)) != 0);
   if (cameraMoved) {
     _accumCount = 0;
-    _prevViewMatrix = currentView;
+    _prevViewProjMatrix = currentVP;
   }
   const bool resetAccum = (_accumCount == 0);
 
@@ -955,11 +960,20 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
     uint32_t resetAccum;
     uint32_t pad;
   } pc{};
+  static_assert(sizeof(RTPC) == 32, "RTPC must match RTPushConsts in rt_lighting.hlsl");
+  static_assert(offsetof(RTPC, accumCount)       == 4,  "RTPC layout drift");
+  static_assert(offsetof(RTPC, sunConeRadius)    == 8,  "RTPC layout drift");
+  static_assert(offsetof(RTPC, pixelSpreadAngle) == 12, "RTPC layout drift");
+  static_assert(offsetof(RTPC, frameSeed)        == 16, "RTPC layout drift");
+  static_assert(offsetof(RTPC, maxBounces)       == 20, "RTPC layout drift");
+  static_assert(offsetof(RTPC, resetAccum)       == 24, "RTPC layout drift");
   pc.pointLightCount = (uint32_t)_scene._pointLights.size();
   pc.accumCount      = _accumCount;
   pc.sunConeRadius   = 0.0087f;
-  pc.pixelSpreadAngle = 2.0f * std::tan(0.5f * 1.0472f) / float(extent.height);
-  pc.frameSeed       = _scene.frameConstants.frameCounter;
+  pc.pixelSpreadAngle = 2.0f * std::tan(0.5f * _scene.maincamera->Fov())
+                        / float(extent.height);
+  pc.frameSeed       = _scene.frameConstants.frameCounter * 2654435761u
+                       + _accumCount * 1597334677u;
   pc.maxBounces      = maxBounces;
   pc.resetAccum      = resetAccum ? 1u : 0u;
   pc.pad             = 0;
@@ -1033,4 +1047,183 @@ void RayTracing::RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) 
                        VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                        0, nullptr, 0, nullptr, 1, &toColor);
+}
+
+// --- Swapchain resize support ---
+// destroySizeDependentResources frees the per-swapchain-image resources that
+// must follow the swapchain extent. Render pass / pipeline / SBT / descriptor
+// pool / set layout are kept (extent-independent).
+void RayTracing::destroySizeDependentResources() {
+  VkDevice dev = _device.getLogicalDevice();
+  for (size_t i = 0; i < _rtLitImage.size(); ++i) {
+    if (_rtLitImageView[i] != VK_NULL_HANDLE) {
+      vkDestroyImageView(dev, _rtLitImageView[i], nullptr);
+      _rtLitImageView[i] = VK_NULL_HANDLE;
+    }
+    if (_rtLitImage[i] != VK_NULL_HANDLE) {
+      vkDestroyImage(dev, _rtLitImage[i], nullptr);
+      _rtLitImage[i] = VK_NULL_HANDLE;
+    }
+    if (_rtLitMemory[i] != VK_NULL_HANDLE) {
+      vkFreeMemory(dev, _rtLitMemory[i], nullptr);
+      _rtLitMemory[i] = VK_NULL_HANDLE;
+    }
+  }
+  for (size_t i = 0; i < _accumImage.size(); ++i) {
+    if (_accumImageView[i] != VK_NULL_HANDLE) {
+      vkDestroyImageView(dev, _accumImageView[i], nullptr);
+      _accumImageView[i] = VK_NULL_HANDLE;
+    }
+    if (_accumImage[i] != VK_NULL_HANDLE) {
+      vkDestroyImage(dev, _accumImage[i], nullptr);
+      _accumImage[i] = VK_NULL_HANDLE;
+    }
+    if (_accumMemory[i] != VK_NULL_HANDLE) {
+      vkFreeMemory(dev, _accumMemory[i], nullptr);
+      _accumMemory[i] = VK_NULL_HANDLE;
+    }
+  }
+  for (auto &fb : _rtImguiFrameBuffer) {
+    if (fb != VK_NULL_HANDLE) {
+      vkDestroyFramebuffer(dev, fb, nullptr);
+      fb = VK_NULL_HANDLE;
+    }
+  }
+}
+
+// createSizeDependentResources rebuilds the resources freed above and rewrites
+// only the descriptor bindings that point at them (binding 1 = outLitColor,
+// binding 12 = outAccumColor). Resets the accumulation counter since the
+// previous accumulation image content is gone.
+void RayTracing::createSizeDependentResources() {
+  VkDevice dev = _device.getLogicalDevice();
+  const uint32_t N = _device.getSwapChainImageCount();
+  _rtExtent = _device.getSwapChainExtent();
+
+  auto createStorageImage = [&](VkFormat fmt, VkImageUsageFlags extraUsage,
+                                VkImage &outImg, VkDeviceMemory &outMem,
+                                VkImageView &outView) {
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType   = VK_IMAGE_TYPE_2D;
+    ii.format      = fmt;
+    ii.extent      = {_rtExtent.width, _rtExtent.height, 1};
+    ii.mipLevels   = 1;
+    ii.arrayLayers = 1;
+    ii.samples     = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage       = VK_IMAGE_USAGE_STORAGE_BIT | extraUsage;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(dev, &ii, nullptr, &outImg) != VK_SUCCESS)
+      throw std::runtime_error("RT: vkCreateImage failed (resize)");
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(dev, outImg, &req);
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = _device.findMemoryType(req.memoryTypeBits,
+                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(dev, &ai, nullptr, &outMem) != VK_SUCCESS)
+      throw std::runtime_error("RT: vkAllocateMemory failed (resize)");
+    vkBindImageMemory(dev, outImg, outMem, 0);
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image      = outImg;
+    vci.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format     = fmt;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(dev, &vci, nullptr, &outView) != VK_SUCCESS)
+      throw std::runtime_error("RT: vkCreateImageView failed (resize)");
+  };
+
+  _rtLitImage.assign(N, VK_NULL_HANDLE);
+  _rtLitMemory.assign(N, VK_NULL_HANDLE);
+  _rtLitImageView.assign(N, VK_NULL_HANDLE);
+  for (uint32_t f = 0; f < N; ++f) {
+    createStorageImage(VK_FORMAT_R16G16B16A16_SFLOAT,
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       _rtLitImage[f], _rtLitMemory[f], _rtLitImageView[f]);
+  }
+
+  _accumImage.assign(N, VK_NULL_HANDLE);
+  _accumMemory.assign(N, VK_NULL_HANDLE);
+  _accumImageView.assign(N, VK_NULL_HANDLE);
+  for (uint32_t f = 0; f < N; ++f) {
+    createStorageImage(VK_FORMAT_R32G32B32A32_SFLOAT, 0,
+                       _accumImage[f], _accumMemory[f], _accumImageView[f]);
+  }
+
+  // Pre-transition accum images to GENERAL (matches one-time init).
+  {
+    VkCommandBuffer cmd = _device.beginSingleTimeCommands();
+    for (uint32_t f = 0; f < N; ++f) {
+      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      b.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
+      b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+      b.srcAccessMask    = 0;
+      b.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.image            = _accumImage[f];
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      vkCmdPipelineBarrier(cmd,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                           0, 0, nullptr, 0, nullptr, 1, &b);
+    }
+    _device.endSingleTimeCommands(cmd);
+  }
+
+  // Recreate composite framebuffers (render pass is kept).
+  _rtImguiFrameBuffer.assign(N, VK_NULL_HANDLE);
+  for (uint32_t f = 0; f < N; ++f) {
+    std::array<VkImageView, 2> views = {
+        _device.getSwapChainImageView((int)f),
+        _device.getWindowDepthImageView(f)
+    };
+    VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbci.renderPass      = _rtImguiPass;
+    fbci.attachmentCount = static_cast<uint32_t>(views.size());
+    fbci.pAttachments    = views.data();
+    fbci.width  = _rtExtent.width;
+    fbci.height = _rtExtent.height;
+    fbci.layers = 1;
+    if (vkCreateFramebuffer(dev, &fbci, nullptr, &_rtImguiFrameBuffer[f]) != VK_SUCCESS) {
+      throw std::runtime_error("RT: failed to create imgui composite framebuffer (resize)");
+    }
+  }
+
+  // Rewrite descriptor bindings 1 + 12 (size-dependent storage images).
+  // Other bindings (TLAS, vertex buffers, materials, textures, sampler) keep
+  // their original writes from CreateOutputImagesAndDescriptorSet.
+  if (!_rtDescriptorSets.empty()) {
+    for (uint32_t f = 0; f < N; ++f) {
+      VkDescriptorImageInfo outImg{};
+      outImg.imageView   = _rtLitImageView[f];
+      outImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+      VkDescriptorImageInfo accumImg{};
+      accumImg.imageView   = _accumImageView[f];
+      accumImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+      std::array<VkWriteDescriptorSet, 2> w{};
+      w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      w[0].dstSet = _rtDescriptorSets[f];
+      w[0].dstBinding = 1;
+      w[0].descriptorCount = 1;
+      w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      w[0].pImageInfo = &outImg;
+
+      w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      w[1].dstSet = _rtDescriptorSets[f];
+      w[1].dstBinding = 12;
+      w[1].descriptorCount = 1;
+      w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      w[1].pImageInfo = &accumImg;
+
+      vkUpdateDescriptorSets(dev, (uint32_t)w.size(), w.data(), 0, nullptr);
+    }
+  }
+
+  _accumCount = 0;
+  spdlog::info("RT: size-dependent resources rebuilt (extent {}x{})",
+               _rtExtent.width, _rtExtent.height);
 }

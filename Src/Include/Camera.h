@@ -18,6 +18,7 @@ private:
   Frustum _frustum;
   float _near;
   float _far;
+  float _fov;  // vertical FOV in radians
 
 public:
   Camera(float fov, float n, float f, vec3 origin, float aspect, vec3 lookat,
@@ -40,6 +41,7 @@ public:
 
   float Near() { return _near; }
   float Far() { return _far; }
+  float Fov() const { return _fov; }
   const vec3 &GetOrigin() const { return _origin; }
   vec3 GetCameraDir() const;
   vec3 ScreenToWorldRay(float screenX, float screenY, float screenW, float screenH,

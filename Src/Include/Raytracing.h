@@ -27,6 +27,12 @@ public:
   void CreatePipelineAndSBT();             // stub for stage 4
   void CreateOutputImagesAndDescriptorSet(); // stub for stage 4
 
+  // Swapchain resize: rebuild only the size-dependent resources (output/accum
+  // images + composite framebuffer) and rewrite the descriptor bindings that
+  // reference them. BLAS/TLAS/pipeline/SBT/descriptor pool are kept.
+  void destroySizeDependentResources();
+  void createSizeDependentResources();
+
   // Per-frame recording (stub for stage 4/5).
   void RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
                        VkExtent2D extent);
@@ -111,7 +117,7 @@ private:
 
   // Progressive accumulation state
   uint32_t _accumCount = 0;
-  mat4     _prevViewMatrix{};   // detect camera movement → reset accumulation
+  mat4     _prevViewProjMatrix{};   // detect camera movement → reset accumulation
 
   // Composite render pass (load swapchain, draw ImGui, present)
   VkRenderPass _rtImguiPass = VK_NULL_HANDLE;

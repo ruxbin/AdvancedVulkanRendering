@@ -21,6 +21,7 @@ Camera::Camera(float fov, float n, float f, vec3 origin, float aspect,
                vec3 lookat, vec3 up) {
   _near = n;
   _far = f;
+  _fov = fov;
   // mat4 proj = perspective(fov, aspect, n, f);
   mat4 flipx;
   flipx.x[0] = -1;
