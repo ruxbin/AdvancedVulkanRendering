@@ -45,14 +45,12 @@ RayTracing::~RayTracing() {
     if (_rtLitMemory[i] != VK_NULL_HANDLE)
       vkFreeMemory(dev, _rtLitMemory[i], nullptr);
   }
-  for (size_t i = 0; i < _accumImage.size(); ++i) {
-    if (_accumImageView[i] != VK_NULL_HANDLE)
-      vkDestroyImageView(dev, _accumImageView[i], nullptr);
-    if (_accumImage[i] != VK_NULL_HANDLE)
-      vkDestroyImage(dev, _accumImage[i], nullptr);
-    if (_accumMemory[i] != VK_NULL_HANDLE)
-      vkFreeMemory(dev, _accumMemory[i], nullptr);
-  }
+  if (_accumImageView != VK_NULL_HANDLE)
+    vkDestroyImageView(dev, _accumImageView, nullptr);
+  if (_accumImage != VK_NULL_HANDLE)
+    vkDestroyImage(dev, _accumImage, nullptr);
+  if (_accumMemory != VK_NULL_HANDLE)
+    vkFreeMemory(dev, _accumMemory, nullptr);
   if (_rtPipeline != VK_NULL_HANDLE)
     vkDestroyPipeline(dev, _rtPipeline, nullptr);
   if (_rtPipelineLayout != VK_NULL_HANDLE)
@@ -595,34 +593,27 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
                        _rtLitImage[f], _rtLitMemory[f], _rtLitImageView[f]);
   }
 
-  // 1b) Accumulation images (R32G32B32A32_SFLOAT, persistent across frames).
-  _accumImage.resize(N);
-  _accumMemory.resize(N);
-  _accumImageView.resize(N);
-  for (uint32_t f = 0; f < N; ++f) {
-    createStorageImage(VK_FORMAT_R32G32B32A32_SFLOAT, 0,
-                       _accumImage[f], _accumMemory[f], _accumImageView[f]);
-  }
+  // 1b) Accumulation image (single, shared across all frames).
+  createStorageImage(VK_FORMAT_R32G32B32A32_SFLOAT, 0,
+                     _accumImage, _accumMemory, _accumImageView);
 
-  // Pre-transition all accumulation images to GENERAL layout so they are
+  // Pre-transition the accumulation image to GENERAL layout so it is
   // ready for read-write on the first frame.
   {
     VkCommandBuffer cmd = _device.beginSingleTimeCommands();
-    for (uint32_t f = 0; f < N; ++f) {
-      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-      b.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
-      b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
-      b.srcAccessMask    = 0;
-      b.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.image            = _accumImage[f];
-      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      vkCmdPipelineBarrier(cmd,
-                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                           VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                           0, 0, nullptr, 0, nullptr, 1, &b);
-    }
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcAccessMask    = 0;
+    b.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image            = _accumImage;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0, 0, nullptr, 0, nullptr, 1, &b);
     _device.endSingleTimeCommands(cmd);
   }
 
@@ -743,7 +734,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
     samplerInfo.sampler = _scene.textureSampler;
 
     VkDescriptorImageInfo accumImg{};
-    accumImg.imageView   = _accumImageView[f];
+    accumImg.imageView   = _accumImageView;
     accumImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     std::array<VkWriteDescriptorSet, 13> w{};
@@ -805,27 +796,30 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   spdlog::info("RT: descriptor set + {} output images created (extent {}x{})",
                N, _rtExtent.width, _rtExtent.height);
 
-  // 5) ImGui composite render pass: compatible with _forwardLightingPass so the
-  //    ImGui pipeline (created against _forwardLightingPass) can be reused here.
-  //    Must have identical subpass description (color + depth) and dependency.
+  // 5) ImGui composite render pass: render-pass-compatible with
+  //    _forwardLightingPass so the ImGui pipeline (created against
+  //    _forwardLightingPass) can be reused. Compatibility requires identical
+  //    attachment formats, sample counts, and subpass attachment refs. Color
+  //    is therefore R16G16B16A16_SFLOAT and we draw ImGui into the HDR buffer,
+  //    then blit HDR → swapchain in RecordHdrToSwapchain.
   VkAttachmentDescription colorAtt{};
-  colorAtt.format = _device.getSwapChainImageFormat();
+  colorAtt.format = VK_FORMAT_R16G16B16A16_SFLOAT;
   colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
   colorAtt.loadOp  = VK_ATTACHMENT_LOAD_OP_LOAD;
   colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   colorAtt.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  colorAtt.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  colorAtt.finalLayout   = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
   VkAttachmentDescription depthAtt{};
   depthAtt.format  = _device.getWindowDepthFormat();
   depthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-  depthAtt.loadOp  = VK_ATTACHMENT_LOAD_OP_LOAD;
+  depthAtt.loadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // ImGui doesn't read depth
   depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  depthAtt.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  depthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;  // accept any prior depth layout
   depthAtt.finalLayout   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -862,7 +856,7 @@ void RayTracing::CreateOutputImagesAndDescriptorSet() {
   _rtImguiFrameBuffer.resize(N);
   for (uint32_t f = 0; f < N; ++f) {
     std::array<VkImageView, 2> views = {
-        _device.getSwapChainImageView((int)f),
+        _scene._hdrLightingBufferView,
         _device.getWindowDepthImageView(f)
     };
     VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
@@ -918,7 +912,7 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
   accumBarrier.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
   accumBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   accumBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  accumBarrier.image            = _accumImage[imageIndex];
+  accumBarrier.image            = _accumImage;
   accumBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   vkCmdPipelineBarrier(cb,
                        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
@@ -992,10 +986,14 @@ void RayTracing::RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
 }
 
 void RayTracing::RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) {
-  VkImage rtImg = _rtLitImage[imageIndex];
-  VkImage swap = _device.getSwapChainImage((int)imageIndex);
+  // RT-path post-trace flow step 1: blit RT lit image → HDR lighting buffer,
+  // then transition HDR buffer to COLOR_ATTACHMENT_OPTIMAL so the composite
+  // pass (which is render-pass-compatible with _forwardLightingPass) can draw
+  // ImGui into it. The actual swapchain blit happens in RecordHdrToSwapchain.
+  VkImage rtImg  = _rtLitImage[imageIndex];
+  VkImage hdrImg = _scene._hdrLightingBuffer;
 
-  // RT image GENERAL → TRANSFER_SRC; swap UNDEFINED → TRANSFER_DST
+  // RT image GENERAL → TRANSFER_SRC; HDR image (any prior layout) → TRANSFER_DST
   std::array<VkImageMemoryBarrier, 2> barriers{};
   barriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1008,13 +1006,13 @@ void RayTracing::RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) 
   barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
   barriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;  // contents will be overwritten
   barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   barriers[1].srcAccessMask = 0;
   barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barriers[1].image = swap;
+  barriers[1].image = hdrImg;
   barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
   vkCmdPipelineBarrier(cb,
@@ -1030,10 +1028,10 @@ void RayTracing::RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) 
   region.dstOffsets[0] = {0, 0, 0};
   region.dstOffsets[1] = {(int32_t)_rtExtent.width, (int32_t)_rtExtent.height, 1};
   vkCmdBlitImage(cb, rtImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                 swap, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 hdrImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  1, &region, VK_FILTER_NEAREST);
 
-  // Transition swapchain → COLOR_ATTACHMENT (for ImGui)
+  // HDR TRANSFER_DST → COLOR_ATTACHMENT_OPTIMAL (matches _rtImguiPass.colorAtt.initialLayout)
   VkImageMemoryBarrier toColor{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   toColor.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1041,12 +1039,89 @@ void RayTracing::RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) 
   toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
   toColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  toColor.image = swap;
+  toColor.image = hdrImg;
   toColor.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   vkCmdPipelineBarrier(cb,
                        VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                        0, nullptr, 0, nullptr, 1, &toColor);
+}
+
+// RT-path post-trace flow step 2 (after ImGui composite): blit the HDR buffer
+// (which now contains tone-mapped RT result + ImGui overlay) to the swapchain
+// and transition swapchain to PRESENT_SRC_KHR.
+void RayTracing::RecordHdrToSwapchain(VkCommandBuffer cb, uint32_t imageIndex) {
+  VkImage hdrImg = _scene._hdrLightingBuffer;
+  VkImage swap   = _device.getSwapChainImage((int)imageIndex);
+
+  std::array<VkImageMemoryBarrier, 2> barriers{};
+  barriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  barriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barriers[0].image = hdrImg;
+  barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  barriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barriers[1].srcAccessMask = 0;
+  barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barriers[1].image = swap;
+  barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  vkCmdPipelineBarrier(cb,
+                       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                       0, nullptr, 0, nullptr, (uint32_t)barriers.size(), barriers.data());
+
+  VkImageBlit region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.srcOffsets[0] = {0, 0, 0};
+  region.srcOffsets[1] = {(int32_t)_rtExtent.width, (int32_t)_rtExtent.height, 1};
+  region.dstSubresource = region.srcSubresource;
+  region.dstOffsets[0] = {0, 0, 0};
+  region.dstOffsets[1] = {(int32_t)_rtExtent.width, (int32_t)_rtExtent.height, 1};
+  vkCmdBlitImage(cb, hdrImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 swap, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 1, &region, VK_FILTER_NEAREST);
+
+  // Final transitions:
+  //  - swap TRANSFER_DST → PRESENT_SRC_KHR
+  //  - hdr  TRANSFER_SRC → COLOR_ATTACHMENT_OPTIMAL (so the next frame's
+  //    forward pass — if user toggles RT off — finds it in the layout the
+  //    raster path expects).
+  std::array<VkImageMemoryBarrier, 2> finalBarriers{};
+  finalBarriers[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  finalBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  finalBarriers[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  finalBarriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  finalBarriers[0].dstAccessMask = 0;
+  finalBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  finalBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  finalBarriers[0].image = swap;
+  finalBarriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  finalBarriers[1] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  finalBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  finalBarriers[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  finalBarriers[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  finalBarriers[1].dstAccessMask = 0;  // no in-flight writes; next frame's pass syncs via its own dependency
+  finalBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  finalBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  finalBarriers[1].image = hdrImg;
+  finalBarriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+  vkCmdPipelineBarrier(cb,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                       0, nullptr, 0, nullptr,
+                       (uint32_t)finalBarriers.size(), finalBarriers.data());
 }
 
 // --- Swapchain resize support ---
@@ -1069,19 +1144,17 @@ void RayTracing::destroySizeDependentResources() {
       _rtLitMemory[i] = VK_NULL_HANDLE;
     }
   }
-  for (size_t i = 0; i < _accumImage.size(); ++i) {
-    if (_accumImageView[i] != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, _accumImageView[i], nullptr);
-      _accumImageView[i] = VK_NULL_HANDLE;
-    }
-    if (_accumImage[i] != VK_NULL_HANDLE) {
-      vkDestroyImage(dev, _accumImage[i], nullptr);
-      _accumImage[i] = VK_NULL_HANDLE;
-    }
-    if (_accumMemory[i] != VK_NULL_HANDLE) {
-      vkFreeMemory(dev, _accumMemory[i], nullptr);
-      _accumMemory[i] = VK_NULL_HANDLE;
-    }
+  if (_accumImageView != VK_NULL_HANDLE) {
+    vkDestroyImageView(dev, _accumImageView, nullptr);
+    _accumImageView = VK_NULL_HANDLE;
+  }
+  if (_accumImage != VK_NULL_HANDLE) {
+    vkDestroyImage(dev, _accumImage, nullptr);
+    _accumImage = VK_NULL_HANDLE;
+  }
+  if (_accumMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(dev, _accumMemory, nullptr);
+    _accumMemory = VK_NULL_HANDLE;
   }
   for (auto &fb : _rtImguiFrameBuffer) {
     if (fb != VK_NULL_HANDLE) {
@@ -1143,32 +1216,26 @@ void RayTracing::createSizeDependentResources() {
                        _rtLitImage[f], _rtLitMemory[f], _rtLitImageView[f]);
   }
 
-  _accumImage.assign(N, VK_NULL_HANDLE);
-  _accumMemory.assign(N, VK_NULL_HANDLE);
-  _accumImageView.assign(N, VK_NULL_HANDLE);
-  for (uint32_t f = 0; f < N; ++f) {
-    createStorageImage(VK_FORMAT_R32G32B32A32_SFLOAT, 0,
-                       _accumImage[f], _accumMemory[f], _accumImageView[f]);
-  }
+  // Single shared accumulation image.
+  createStorageImage(VK_FORMAT_R32G32B32A32_SFLOAT, 0,
+                     _accumImage, _accumMemory, _accumImageView);
 
-  // Pre-transition accum images to GENERAL (matches one-time init).
+  // Pre-transition accum image to GENERAL (matches one-time init).
   {
     VkCommandBuffer cmd = _device.beginSingleTimeCommands();
-    for (uint32_t f = 0; f < N; ++f) {
-      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-      b.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
-      b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
-      b.srcAccessMask    = 0;
-      b.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.image            = _accumImage[f];
-      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      vkCmdPipelineBarrier(cmd,
-                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                           VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                           0, 0, nullptr, 0, nullptr, 1, &b);
-    }
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcAccessMask    = 0;
+    b.dstAccessMask    = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image            = _accumImage;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0, 0, nullptr, 0, nullptr, 1, &b);
     _device.endSingleTimeCommands(cmd);
   }
 
@@ -1176,7 +1243,7 @@ void RayTracing::createSizeDependentResources() {
   _rtImguiFrameBuffer.assign(N, VK_NULL_HANDLE);
   for (uint32_t f = 0; f < N; ++f) {
     std::array<VkImageView, 2> views = {
-        _device.getSwapChainImageView((int)f),
+        _scene._hdrLightingBufferView,
         _device.getWindowDepthImageView(f)
     };
     VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
@@ -1201,7 +1268,7 @@ void RayTracing::createSizeDependentResources() {
       outImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
       VkDescriptorImageInfo accumImg{};
-      accumImg.imageView   = _accumImageView[f];
+      accumImg.imageView   = _accumImageView;
       accumImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
       std::array<VkWriteDescriptorSet, 2> w{};
@@ -1226,4 +1293,25 @@ void RayTracing::createSizeDependentResources() {
   _accumCount = 0;
   spdlog::info("RT: size-dependent resources rebuilt (extent {}x{})",
                _rtExtent.width, _rtExtent.height);
+}
+
+void RayTracing::RefreshTextureDescriptors(uint32_t imageIndex) {
+  if (_rtDescriptorSets.empty() || imageIndex >= _rtDescriptorSets.size())
+    return;
+  const uint32_t bindlessCount = (uint32_t)_scene.textures.size();
+  if (bindlessCount == 0) return;
+
+  std::vector<VkDescriptorImageInfo> texImgs(bindlessCount);
+  for (uint32_t i = 0; i < bindlessCount; ++i) {
+    texImgs[i].imageView   = _scene.textures[i].second;
+    texImgs[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    texImgs[i].sampler     = VK_NULL_HANDLE;
+  }
+  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  w.dstSet          = _rtDescriptorSets[imageIndex];
+  w.dstBinding      = 10;
+  w.descriptorCount = bindlessCount;
+  w.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  w.pImageInfo      = texImgs.data();
+  vkUpdateDescriptorSets(_device.getLogicalDevice(), 1, &w, 0, nullptr);
 }

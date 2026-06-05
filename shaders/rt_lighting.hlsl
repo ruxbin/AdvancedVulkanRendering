@@ -252,8 +252,10 @@ HitInputs gatherHit(BuiltInTriangleIntersectionAttributes attribs) {
 }
 
 // Sample a direction toward the sun disk cone.
+// Note: frameConstants.sunDirection is already surface→sun (matches raster's
+// lighting.hlsl:63 which uses it directly as the light direction). Don't negate.
 float3 sampleSunDir(inout uint rng) {
-    float3 sunAxis = normalize(-frameConstants.sunDirection);
+    float3 sunAxis = normalize(frameConstants.sunDirection);
     float cosThetaMax = cos(pc.sunConeRadius);
     float2 xi = rng2F(rng);
     float cosTheta = lerp(cosThetaMax, 1.0f, xi.x);
@@ -315,7 +317,7 @@ void RayGen() {
         p.F0 = 0.04f; p.roughness = 1.0f; p.emissive = 0; p.alpha = 1; p.hitT = 0;
 
         // hgOffset=0, hgStride=2, missIdx=0
-        TraceRay(tlas, RAY_FLAG_NONE, 0xFF, 0, 2, 0, ray, p);
+        TraceRay(tlas, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 2, 0, ray, p);
 
         if (!p.hit) {
             radiance += throughput * skyColor(ray.Direction);
@@ -445,13 +447,31 @@ void ClosestHitPrimary(inout PrimaryPayload p,
     p.hitT     = h.hitT;
 }
 
+// Slim AnyHit helper: fetch ONLY UV (skip 6 Load3 of normals/tangents).
+// AnyHit fires many times per ray on alpha-masked foliage; cutting per-call
+// work is the biggest win for keeping the path tracer under TDR.
+float2 fetchHitUV(BuiltInTriangleIntersectionAttributes attribs, out uint matIdx) {
+    uint geomIdx = GeometryIndex();
+    AAPLMeshChunk chunk = meshChunksRT[geomIdx];
+    matIdx = chunk.materialIndex;
+    uint primIdx = PrimitiveIndex();
+    uint3 idx = fetchTriangleIndices(chunk, primIdx);
+    float2 u0 = vbUVs[idx.x];
+    float2 u1 = vbUVs[idx.y];
+    float2 u2 = vbUVs[idx.z];
+    float3 bary = float3(1.0f - attribs.barycentrics.x - attribs.barycentrics.y,
+                          attribs.barycentrics.x, attribs.barycentrics.y);
+    return bary.x * u0 + bary.y * u1 + bary.z * u2;
+}
+
 [shader("anyhit")]
 void AnyHitAlpha(inout PrimaryPayload p,
                  BuiltInTriangleIntersectionAttributes attribs) {
-    HitInputs h = gatherHit(attribs);
-    AAPLShaderMaterial mat = materialsRT[h.materialIndex];
+    uint matIdx;
+    float2 uv = fetchHitUV(attribs, matIdx);
+    AAPLShaderMaterial mat = materialsRT[matIdx];
     half4 baseColor = _Textures[NonUniformResourceIndex(mat.albedo_texture_index)].SampleLevel(
-        _LinearRepeatSampler, h.uv, 0);
+        _LinearRepeatSampler, uv, 0);
     if (baseColor.a < (half)ALPHA_CUTOUT)
         IgnoreHit();
 }
@@ -459,10 +479,11 @@ void AnyHitAlpha(inout PrimaryPayload p,
 [shader("anyhit")]
 void AnyHitAlphaShadow(inout ShadowPayload sp,
                        BuiltInTriangleIntersectionAttributes attribs) {
-    HitInputs h = gatherHit(attribs);
-    AAPLShaderMaterial mat = materialsRT[h.materialIndex];
+    uint matIdx;
+    float2 uv = fetchHitUV(attribs, matIdx);
+    AAPLShaderMaterial mat = materialsRT[matIdx];
     half4 baseColor = _Textures[NonUniformResourceIndex(mat.albedo_texture_index)].SampleLevel(
-        _LinearRepeatSampler, h.uv, 0);
+        _LinearRepeatSampler, uv, 0);
     if (baseColor.a < (half)ALPHA_CUTOUT)
         IgnoreHit();
 }

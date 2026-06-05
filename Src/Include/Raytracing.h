@@ -27,6 +27,12 @@ public:
   void CreatePipelineAndSBT();             // stub for stage 4
   void CreateOutputImagesAndDescriptorSet(); // stub for stage 4
 
+  // Re-write the bindless texture descriptor (binding 10) for one frame.
+  // Must be called when texture streaming swaps an entry — otherwise the RT
+  // descriptor still points at a destroyed VkImageView and AnyHit/ClosestHit
+  // will GPU-fault on sample.
+  void RefreshTextureDescriptors(uint32_t imageIndex);
+
   // Swapchain resize: rebuild only the size-dependent resources (output/accum
   // images + composite framebuffer) and rewrite the descriptor bindings that
   // reference them. BLAS/TLAS/pipeline/SBT/descriptor pool are kept.
@@ -37,6 +43,9 @@ public:
   void RecordTraceRays(VkCommandBuffer cb, uint32_t imageIndex,
                        VkExtent2D extent);
   void RecordBlitToSwapchain(VkCommandBuffer cb, uint32_t imageIndex);
+  // Final HDR → swapchain blit + transition to PRESENT_SRC. Call after
+  // EndImGuiCompositePass; replaces the old direct rt→swapchain blit.
+  void RecordHdrToSwapchain(VkCommandBuffer cb, uint32_t imageIndex);
   // Begin/end a load-only render pass that lets ImGui draw on top of the
   // blitted RT output and transitions swapchain to PRESENT_SRC_KHR.
   void BeginImGuiCompositePass(VkCommandBuffer cb, uint32_t imageIndex,
@@ -108,10 +117,12 @@ private:
   std::vector<VkDeviceMemory> _rtLitMemory;
   std::vector<VkImageView> _rtLitImageView;
 
-  // Accumulation images (per-frame; R32G32B32A32_SFLOAT; persistent across frames)
-  std::vector<VkImage> _accumImage;
-  std::vector<VkDeviceMemory> _accumMemory;
-  std::vector<VkImageView> _accumImageView;
+  // Accumulation image (single, shared across all frames; R32G32B32A32_SFLOAT;
+  // persistent across frames). Per-swapchain copies would break progressive
+  // accumulation because each swapchain image would accumulate independently.
+  VkImage        _accumImage       = VK_NULL_HANDLE;
+  VkDeviceMemory _accumMemory      = VK_NULL_HANDLE;
+  VkImageView    _accumImageView   = VK_NULL_HANDLE;
 
   VkExtent2D _rtExtent{};
 
@@ -124,7 +135,7 @@ private:
   std::vector<VkFramebuffer> _rtImguiFrameBuffer;
 
 public:
-  uint32_t maxBounces = 4;      // exposed for ImGui
+  uint32_t maxBounces = 4;      
   uint32_t getAccumCount() const { return _accumCount; }
   void resetAccumulation() { _accumCount = 0; }
 };

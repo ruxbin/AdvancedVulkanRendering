@@ -3612,11 +3612,19 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   // --- Fast RT path: skip the entire raster pipeline ---
   if (useRayTracing) {
     VkExtent2D extent = device.getSwapChainExtent();
+    // Texture streaming may have swapped some bindless texture views since
+    // the RT descriptor was last written. Refresh before any TraceRay so
+    // AnyHit/ClosestHit don't sample destroyed image views.
+    if (rtStreamingDescriptorsDirtyMask & (1u << imageIndex)) {
+      _raytracing->RefreshTextureDescriptors((uint32_t)imageIndex);
+      rtStreamingDescriptorsDirtyMask &= ~(1u << imageIndex);
+    }
     _raytracing->RecordTraceRays(commandBuffer, (uint32_t)imageIndex, extent);
     _raytracing->RecordBlitToSwapchain(commandBuffer, (uint32_t)imageIndex);
     _raytracing->BeginImGuiCompositePass(commandBuffer, (uint32_t)imageIndex, extent);
     renderImGuiOverlay(commandBuffer, (uint32_t)imageIndex);
     _raytracing->EndImGuiCompositePass(commandBuffer);
+    _raytracing->RecordHdrToSwapchain(commandBuffer, (uint32_t)imageIndex);
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
       throw std::runtime_error("failed to record command buffer!");
     }
@@ -5738,6 +5746,9 @@ void GpuScene::processStreamingWork(int frameIndex) {
   }
 
   streamingDescriptorsDirtyMask = (framesInFlight >= 32) ? ~0u : ((1u << framesInFlight) - 1u);
+  // Same set for the RT descriptor set: one bit per swapchain image.
+  const uint32_t rtN = device.getSwapChainImageCount();
+  rtStreamingDescriptorsDirtyMask = (rtN >= 32) ? ~0u : ((1u << rtN) - 1u);
 }
 
 void GpuScene::UpdateTextureStreaming(int frameIndex) {
@@ -6551,7 +6562,12 @@ void GpuScene::createHDRLightingBuffer() {
   imageInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
   imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
   imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  // TRANSFER_SRC / TRANSFER_DST added so the RT path can blit RT-lit content
+  // into this buffer and out to swapchain (see Raytracing.cpp Record*Hdr*).
+  imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
   imageInfo.flags = 0;
 

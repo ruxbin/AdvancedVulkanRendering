@@ -277,3 +277,293 @@ static_assert(offsetof(RTPC, resetAccum)       == 24, "RTPC layout drift");
   - "Max Bounces" slider 1 → 8 时 GI 强度变化
   - 拖动 window resize 不应 crash，counter 重置
   - RenderDoc 检查 push constant 偏移 4 是 accumCount 小值（0~1000），不是百万级
+
+---
+
+## 第二轮修复：RT 路径首次运行 validation 报错
+
+第一轮实施完成后实际跑起来，遇到两类 Vulkan validation error：
+
+### Bug A: render-pass 不兼容（VUID-vkCmdDrawIndexed-renderPass-02684）
+
+```
+pAttachments[0].format (VK_FORMAT_B8G8R8A8_UNORM)
+   != pAttachments[0].format (VK_FORMAT_R16G16B16A16_SFLOAT)
+```
+
+**根因**：ImGui pipeline 在初始化时绑定到 `_forwardLightingPass`（color = R16G16B16A16_SFLOAT），但 `_rtImguiPass` 用 `_device.getSwapChainImageFormat()`（BGRA8）。Render-pass-compatibility 要求 attachment format 必须一致 → 不兼容 → 用 ImGui pipeline draw 在 `_rtImguiPass` 内时报错。
+
+### Bug B: depth layout 不一致（DrawState-InvalidImageLayout）
+
+```
+expects layout DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+instead, current layout is DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
+```
+
+**根因**：上一帧 raster path 跑完后 forward pass 把 depth 转成 `DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL`（其 finalLayout）。下一帧 RT path 启动 `_rtImguiPass` 时 initialLayout 写的是 `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` → 不匹配。
+
+### 修复策略
+
+让 `_rtImguiPass` 与 `_forwardLightingPass` **真正 render-pass-compatible**，并把 ImGui 画到 `_hdrLightingBuffer`（HDR R16）而不是 swapchain。最后多一步 hdr → swapchain blit。
+
+#### 1. `_rtImguiPass` attachment 修改
+
+```cpp
+colorAtt.format = VK_FORMAT_R16G16B16A16_SFLOAT;       // 改：原 swapchain format
+colorAtt.initialLayout = COLOR_ATTACHMENT_OPTIMAL;
+colorAtt.finalLayout   = COLOR_ATTACHMENT_OPTIMAL;     // 改：ImGui 画完后保持
+
+depthAtt.loadOp = LOAD_OP_DONT_CARE;                   // 改：ImGui 不读 depth
+depthAtt.initialLayout = UNDEFINED;                    // 改：接受任何 prior layout
+depthAtt.finalLayout = DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+```
+
+#### 2. Framebuffer 改成绑定 hdrLightingBuffer
+
+```cpp
+std::array<VkImageView, 2> views = {
+    _scene._hdrLightingBufferView,                     // 改：原 swapchain view
+    _device.getWindowDepthImageView(f)
+};
+```
+
+`createSizeDependentResources()` 中 framebuffer 创建同样改。
+
+#### 3. `RecordBlitToSwapchain` 重写为"blit 到 hdr"
+
+不再 blit 到 swapchain，改成：
+- `_rtLitImage` GENERAL → TRANSFER_SRC
+- `_hdrLightingBuffer` UNDEFINED → TRANSFER_DST
+- blit
+- `_hdrLightingBuffer` TRANSFER_DST → COLOR_ATTACHMENT_OPTIMAL（为 ImGui pass 准备）
+
+#### 4. 新增 `RecordHdrToSwapchain`
+
+ImGui 画完后调用：
+- `_hdrLightingBuffer` COLOR_ATTACHMENT → TRANSFER_SRC
+- swapchain UNDEFINED → TRANSFER_DST
+- blit hdr → swapchain
+- swapchain TRANSFER_DST → PRESENT_SRC_KHR
+- **`_hdrLightingBuffer` TRANSFER_SRC → COLOR_ATTACHMENT_OPTIMAL**（关键：让用户 toggle RT off 后下一帧 forward pass 仍能 LOAD）
+
+#### 5. GpuScene RT 调用链
+
+```cpp
+_raytracing->RecordTraceRays(...);
+_raytracing->RecordBlitToSwapchain(...);   // 现在是 blit 到 hdr
+_raytracing->BeginImGuiCompositePass(...);
+renderImGuiOverlay(...);                    // ImGui 画到 hdr
+_raytracing->EndImGuiCompositePass(...);
+_raytracing->RecordHdrToSwapchain(...);    // 新增：hdr → swap + transitions
+```
+
+### 关键设计点
+
+让 `_rtImguiPass` 与 `_forwardLightingPass` **format-level 兼容**比"做一份独立的 RT-only ImGui pipeline"简单得多。代价是 RT 路径多一次 blit（rt → hdr → swap 而不是 rt → swap），但 1080p 量级几乎可以忽略。
+
+最后一步把 hdr 转回 `COLOR_ATTACHMENT_OPTIMAL` 是关键：raster path 的 `_forwardLightingPass.color.initialLayout = COLOR_ATTACHMENT_OPTIMAL`，所以 RT→raster 切换不会因 layout 不一致再报错。
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `Src/Raytracing.cpp` | `_rtImguiPass` attachment 改 R16 + UNDEFINED depth；framebuffer 绑 hdr view（两处：one-time init 和 resize）；`RecordBlitToSwapchain` 改写；新增 `RecordHdrToSwapchain` |
+| `Src/Include/Raytracing.h` | 加 `RecordHdrToSwapchain` 声明 |
+| `Src/GpuScene.cpp:3613-3625` | 调用链末尾加 `RecordHdrToSwapchain` |
+
+---
+
+## 第三轮修复：texture streaming 导致 RT descriptor stale → device lost
+
+### 现象
+
+修完 render pass 兼容、补好 hdr buffer 的 TRANSFER_SRC/DST usage 之后，运行时**第一帧能看到正确的 albedo，但接着立刻 device lost**（`vkQueueSubmit` 返回 `-4`，nvlddmkm Event ID 153）。
+
+### 根因
+
+`texture_streaming` 分支后台线程会动态替换 `textures[i]` 中的 `VkImageView`（升 / 降 mip 时新建 view + 销毁旧 view）。
+
+raster path 通过 `streamingDescriptorsDirtyMask`（`Src/GpuScene.cpp:3386-3404`）每帧检查并 patch 自己的 `applDescriptorSets[currentFrame]`，但 **RT 的 `_rtDescriptorSets` 在 `CreateOutputImagesAndDescriptorSet()` 写入一次后就再也没刷新**。
+
+时间线：
+1. 用户开 RT toggle → lazy init → RT descriptor binding 10 写入当下的 textures view 数组
+2. 几帧后 streaming 完成一次 swap → 旧 VkImageView 销毁
+3. RT 路径下一次 dispatch → AnyHit / ClosestHit 通过 `_Textures[i].SampleLevel(...)` 访问已销毁的 view → GPU page fault → device lost
+
+完美解释了"第一帧 OK，立刻就崩"——descriptor 写入瞬间还有效，等 streaming 一触发 swap 立刻全废。
+
+### 修复
+
+#### 1. 在 `RayTracing` 中加刷新方法
+
+```cpp
+// Src/Raytracing.cpp
+void RayTracing::RefreshTextureDescriptors(uint32_t imageIndex) {
+  if (_rtDescriptorSets.empty() || imageIndex >= _rtDescriptorSets.size()) return;
+  const uint32_t bindlessCount = (uint32_t)_scene.textures.size();
+  if (bindlessCount == 0) return;
+
+  std::vector<VkDescriptorImageInfo> texImgs(bindlessCount);
+  for (uint32_t i = 0; i < bindlessCount; ++i) {
+    texImgs[i].imageView   = _scene.textures[i].second;
+    texImgs[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    texImgs[i].sampler     = VK_NULL_HANDLE;
+  }
+  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  w.dstSet          = _rtDescriptorSets[imageIndex];
+  w.dstBinding      = 10;
+  w.descriptorCount = bindlessCount;
+  w.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  w.pImageInfo      = texImgs.data();
+  vkUpdateDescriptorSets(_device.getLogicalDevice(), 1, &w, 0, nullptr);
+}
+```
+
+binding 10 已经设了 `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT`，所以可以热更新。
+
+#### 2. 加独立的 RT dirty mask（按 swapchain image 索引）
+
+`streamingDescriptorsDirtyMask` 是按 `framesInFlight`（通常 2）维度，但 RT descriptor sets 是按 swapchain image count（通常 3）。索引域不一样，必须分开。
+
+```cpp
+// Src/Include/GpuScene.h
+uint32_t streamingDescriptorsDirtyMask = 0;            // 已存在，raster 用
+uint32_t rtStreamingDescriptorsDirtyMask = 0;          // 新增，RT 用
+```
+
+#### 3. swap 完成后同时设两个 mask 全部位
+
+```cpp
+// Src/GpuScene.cpp:5741-5745（streaming swap 完成处）
+streamingDescriptorsDirtyMask = (framesInFlight >= 32) ? ~0u : ((1u << framesInFlight) - 1u);
+const uint32_t rtN = device.getSwapChainImageCount();
+rtStreamingDescriptorsDirtyMask = (rtN >= 32) ? ~0u : ((1u << rtN) - 1u);
+```
+
+#### 4. RT 路径首步检查 + 刷新对应 imageIndex
+
+```cpp
+// Src/GpuScene.cpp:3613-3621
+if (useRayTracing) {
+    if (rtStreamingDescriptorsDirtyMask & (1u << imageIndex)) {
+      _raytracing->RefreshTextureDescriptors((uint32_t)imageIndex);
+      rtStreamingDescriptorsDirtyMask &= ~(1u << imageIndex);
+    }
+    _raytracing->RecordTraceRays(...);
+    ...
+}
+```
+
+### 关键设计点
+
+raster 和 RT 的描述符**索引域不同**（frame-in-flight vs swapchain-image-index），所以**dirty mask 必须分两份**。raster 那个不能直接复用——raster 已经"自己刷新过"会清掉 mask 位，但 RT 这边可能还没轮到。
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `Src/Include/Raytracing.h` | 加 `RefreshTextureDescriptors(imageIndex)` 声明 |
+| `Src/Raytracing.cpp` | 实现 `RefreshTextureDescriptors`（重写 binding 10） |
+| `Src/Include/GpuScene.h:347-349` | 加 `rtStreamingDescriptorsDirtyMask` |
+| `Src/GpuScene.cpp:3613-3621` | RT 路径首步条件刷新 |
+| `Src/GpuScene.cpp:5741-5745` | streaming swap 完成处同时设 RT mask |
+
+---
+
+## 第四轮修复：accumulation buffer 误建成 per-swapchain-image → 画面抖动
+
+### 现象
+
+texture stale 修完后能稳定不崩了，但**画面剧烈抖动，看不到 progressive accumulation 收敛过程**。理论上相机静止时 PT 输出应该越来越平滑，实际却像每帧独立 stochastic 渲染，从未"积累"。
+
+### 根因
+
+```cpp
+// 误：N 张 image，每张独立累积
+std::vector<VkImage>        _accumImage;       // size = swapChainImageCount
+std::vector<VkImageView>    _accumImageView;
+std::vector<VkDeviceMemory> _accumMemory;
+```
+
+descriptor binding 12（outAccumColor）按 imageIndex 各绑各的：
+- 第 N 个 swap image 的 RT descriptor → 第 N 张 accum image
+- 第 N+1 个 swap image 的 RT descriptor → 第 N+1 张 accum image
+
+所以 frame N 写 `_accumImage[2]`，frame N+1 写 `_accumImage[0]`，frame N+2 写 `_accumImage[1]`——**三张完全独立累积**！
+
+更糟的是，`_accumCount` 是单一全局计数器：
+
+```hlsl
+float t = 1.0f / float(pc.accumCount + 1u);
+accumulated = lerp(prev, radiance, t);
+```
+
+frame N+1 读 `_accumImage[0]`（包含 3 帧前的内容），但 lerp 权重用的是 `_accumCount`（已经 = 3）→ 权重和 prev 内容**完全不匹配**，画面在 N 张 image 之间疯狂跳变。
+
+### 修复
+
+把 accumulation buffer 改成**单张共享**：
+
+```cpp
+// Src/Include/Raytracing.h
+VkImage        _accumImage     = VK_NULL_HANDLE;
+VkDeviceMemory _accumMemory    = VK_NULL_HANDLE;
+VkImageView    _accumImageView = VK_NULL_HANDLE;
+```
+
+所有 N 个 RT descriptor set 的 binding 12 全指向同一个 view：
+
+```cpp
+// Src/Raytracing.cpp:CreateOutputImagesAndDescriptorSet
+VkDescriptorImageInfo accumImg{};
+accumImg.imageView   = _accumImageView;          // 不再是 _accumImageView[f]
+accumImg.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+```
+
+`RecordTraceRays` 起始处的 RT_SHADER → RT_SHADER barrier 直接用单张 image：
+
+```cpp
+accumBarrier.image = _accumImage;                // 不再是 _accumImage[imageIndex]
+```
+
+### 跨帧同步说明
+
+单张 image 跨所有 frame 共享，需要保证 frame N+1 不和 frame N 同时读写。两层保护已经够：
+
+1. **CPU 端**：每帧开始 `vkWaitForFences` 等本 frame slot 的 in-flight fence。framesInFlight=2 时，frame N+2 启动前 frame N 必已完成
+2. **GPU 端**：`RecordTraceRays` 入口的 image barrier `oldLayout=GENERAL → newLayout=GENERAL, srcAccess=SHADER_WRITE, dstAccess=SHADER_READ|SHADER_WRITE, srcStage=RT_SHADER, dstStage=RT_SHADER` 把上一帧 RT 写入对当前帧可见
+
+### 关键设计点
+
+**accumulation buffer 必须是逻辑单一资源**——它的语义是"全程累积同一画面"。per-frame-in-flight 拆分是 *output* 资源（每帧渲染独立结果用）的标准模式，但对 accumulation 这种**跨帧累积**资源是反模式。
+
+类似教训：output / framebuffer / 临时 attachment 通常按 frame-in-flight 或 swapchain-image 拆；持久状态（accumulation, history buffer for TAA, persistent g-buffer 等）必须单张共享并配合显式跨帧 barrier。
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `Src/Include/Raytracing.h` | `_accumImage / _accumMemory / _accumImageView` 从 vector 改成单一 handle |
+| `Src/Raytracing.cpp` 析构函数 | 销毁单张 |
+| `Src/Raytracing.cpp` `CreateOutputImagesAndDescriptorSet` | 创建单张 + pre-transition GENERAL；descriptor 写 binding 12 时用单 view |
+| `Src/Raytracing.cpp` `destroy/createSizeDependentResources` | 销毁/重建单张；resize descriptor rewrite 同样用单 view |
+| `Src/Raytracing.cpp` `RecordTraceRays` | accumBarrier image 改单张 |
+
+---
+
+## 关于 sun direction 符号
+
+第四轮调试期间还修了一个独立的 shader bug：`sampleSunDir` 用了 `-frameConstants.sunDirection`，导致 NEE shadow ray 朝远离太阳方向打 → 大部分被地面挡住 → 阴影区一片漆黑（只剩 emissive 物体亮）。
+
+参照 `lighting.hlsl:63` 的 raster 用法：
+
+```hlsl
+half3 lightDirection = (half3) frameData.sunDirection;
+```
+
+raster 直接把 `sunDirection` 当 wi 用，证明它已经是 surface→sun 方向。**PT 不应再加负号**：
+
+```hlsl
+// shaders/rt_lighting.hlsl
+float3 sunAxis = normalize(frameConstants.sunDirection);  // 去掉了 '-'
+```

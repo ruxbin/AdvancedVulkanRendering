@@ -345,6 +345,8 @@ private:
   // Flag: descriptors need re-writing because streaming swaps happened.
   // One bit per frame slot — set all bits on swap, cleared per-slot after update.
   uint32_t streamingDescriptorsDirtyMask = 0;
+  // Same role for the RT descriptor set; indexed by swapchain image index.
+  uint32_t rtStreamingDescriptorsDirtyMask = 0;
 
   std::vector<AAPLShaderMaterial> materials;
 
@@ -404,7 +406,7 @@ private:
   LightCuller *_lightCuller = nullptr;
 
   bool useClusterLighting = true;
-  bool useRayTracing = false;     // ImGui toggle: switch to full RT path
+  bool useRayTracing = true;     // ImGui toggle: switch to full RT path
 
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
