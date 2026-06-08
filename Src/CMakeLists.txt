@@ -35,6 +35,7 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Light.cpp
     ${CMAKE_CURRENT_LIST_DIR}/AssetLoader.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Raytracing.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PbrtExporter.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

@@ -3,6 +3,7 @@
 #include "AssetLoader.h"
 #include "Light.h"
 #include "ObjLoader.h"
+#include "PbrtExporter.h"
 #include "Raytracing.h"
 #include "Shadow.h"
 #include "ThirdParty/lzfse.h"
@@ -8517,6 +8518,16 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   ImGui::Text("Debug overlays:");
   ImGui::Checkbox("Occluder Wireframe", &_showOccluderWireframe);
   ImGui::Checkbox("Spot Light Cones",   &_showSpotLightViz);
+
+  ImGui::Separator();
+  if (ImGui::Button("Export PBRT")) {
+      bool ok = PbrtExporter::Export(*this, _rootPath / "scene.pbrt");
+      if (ok) {
+          spdlog::info("Exported scene to scene.pbrt");
+      } else {
+          spdlog::error("PBRT export failed");
+      }
+  }
 
   ImGui::End();
 
