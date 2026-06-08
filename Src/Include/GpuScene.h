@@ -960,6 +960,7 @@ public:
   friend class SpotLight;
   friend class LightCuller;
   friend class RayTracing;
+  friend class PbrtExporter;
   FrameConstants frameConstants{
       vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),  // sunDirection
       vec3(1.0f, 0.95f, 0.8f),   // sunColor
