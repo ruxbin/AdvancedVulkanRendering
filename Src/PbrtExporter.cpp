@@ -2,9 +2,7 @@
 #include "GpuScene.h"
 #include "spdlog/spdlog.h"
 
-#include <fstream>
 #include <iomanip>
-#include <sstream>
 
 namespace {
 
@@ -64,7 +62,11 @@ struct Indent {
     }
 };
 
-std::string ResolveTexturePath(
+} // anonymous namespace
+
+// ---- PbrtExporter private helpers ----
+
+std::string PbrtExporter::ResolveTexturePath(
     uint32_t hash,
     const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
     const std::vector<TextureStreamingEntry>& streamingEntries)
@@ -76,7 +78,7 @@ std::string ResolveTexturePath(
     return entry.desc->_path;
 }
 
-void WriteCamera(std::ofstream& out, const GpuScene& scene) {
+void PbrtExporter::WriteCamera(std::ofstream& out, const GpuScene& scene) {
     const Camera* cam = scene.maincamera;
     if (!cam) {
         spdlog::warn("PbrtExporter: no camera; using defaults");
@@ -86,19 +88,18 @@ void WriteCamera(std::ofstream& out, const GpuScene& scene) {
     }
     const vec3& eye = cam->GetOrigin();
     vec3 dir = cam->GetCameraDir();
-    vec3 lookAt = vec3(eye.x + dir.x, eye.y + dir.y, eye.z + dir.z);
-    // Use a default up vector (scene data negates up, use standard Y-up for pbrt)
+    vec3 lookAt(eye.x + dir.x, eye.y + dir.y, eye.z + dir.z);
     vec3 up(0.0f, 1.0f, 0.0f);
     out << "LookAt " << eye << ' ' << lookAt << ' ' << up << '\n';
     out << R"(Camera "perspective" "float fov" [65])" << '\n';
 }
 
-void WriteFilm(std::ofstream& out) {
+void PbrtExporter::WriteFilm(std::ofstream& out) {
     out << R"(Film "rgb" "integer xresolution" [1224] "integer yresolution" [691])" << '\n';
     out << R"(    "string filename" "output.png")" << '\n';
 }
 
-void WriteMaterials(std::ofstream& out, const GpuScene& scene) {
+void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene) {
     if (!scene.cpuMaterials || scene.applMesh->_materialCount == 0) {
         spdlog::warn("PbrtExporter: no materials to export");
         return;
@@ -140,7 +141,7 @@ void WriteMaterials(std::ofstream& out, const GpuScene& scene) {
     }
 }
 
-void WriteGeometry(std::ofstream& out, const GpuScene& scene) {
+void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
     const AAPLMeshData* mesh = scene.applMesh;
     if (!mesh || !scene.m_SubMeshes) {
         spdlog::warn("PbrtExporter: no mesh data to export");
@@ -193,7 +194,7 @@ void WriteGeometry(std::ofstream& out, const GpuScene& scene) {
     }
 }
 
-void WriteLights(std::ofstream& out, const GpuScene& scene) {
+void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
     // Directional sun
     const vec3& sunDir = scene.frameConstants.sunDirection;
     const vec3& sunColor = scene.frameConstants.sunColor;
@@ -238,7 +239,7 @@ void WriteLights(std::ofstream& out, const GpuScene& scene) {
     }
 }
 
-} // anonymous namespace
+// ---- Public API ----
 
 bool PbrtExporter::Export(const GpuScene& scene,
                           const std::filesystem::path& outputPath) {
