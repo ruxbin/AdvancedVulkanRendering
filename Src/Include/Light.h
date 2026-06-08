@@ -60,6 +60,7 @@ public:
   static std::vector<SpotLightData> spotLightData;
 
   friend class LightCuller;
+  friend class PbrtExporter;
 };
 
 #define DEFAULT_LIGHT_CULLING_TILE_SIZE (32)
