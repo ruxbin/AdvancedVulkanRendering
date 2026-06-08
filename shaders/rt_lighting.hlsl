@@ -20,7 +20,7 @@
 };
 
 [[vk::binding(0,1)]] RaytracingAccelerationStructure tlas;
-[[vk::binding(1,1)]] RWTexture2D<float4>             outLitColor;   // tone-mapped display output
+[[vk::binding(1,1)]] [[vk::image_format("rgba16f")]] RWTexture2D<float4>             outLitColor;   // tone-mapped display output
 
 // vbPositions/Normals/Tangents are tightly packed float3 (stride=12). Use
 // ByteAddressBuffer + Load3 to avoid DXC's StructuredBuffer<float3> 16-byte
