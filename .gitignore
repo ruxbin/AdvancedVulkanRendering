@@ -5,3 +5,4 @@ CMakeCache.txt
 ThirdPartyBuild
 Bin
 Makefile
+shaders/*.spv
