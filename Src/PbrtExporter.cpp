@@ -2,11 +2,14 @@
 #include "GpuScene.h"
 #include "spdlog/spdlog.h"
 
+#include <cstring>
 #include <iomanip>
 
 namespace {
 
 constexpr int kPrecision = 6;
+
+// ---- ostream formatters ----
 
 std::ostream& operator<<(std::ostream& os, const vec3& v) {
     os << std::fixed << std::setprecision(kPrecision)
@@ -35,24 +38,6 @@ void WriteVec2Array(std::ofstream& out, const vec2* data, size_t count) {
     out << ']';
 }
 
-void WriteIndexArray(std::ofstream& out, const uint32_t* data, size_t count) {
-    out << "[ ";
-    for (size_t i = 0; i < count; ++i) {
-        if (i > 0 && i % 30 == 0) out << "\n  ";
-        out << data[i] << ' ';
-    }
-    out << ']';
-}
-
-void WriteIndexArray16(std::ofstream& out, const uint16_t* data, size_t count) {
-    out << "[ ";
-    for (size_t i = 0; i < count; ++i) {
-        if (i > 0 && i % 30 == 0) out << "\n  ";
-        out << static_cast<uint32_t>(data[i]) << ' ';
-    }
-    out << ']';
-}
-
 struct Indent {
     int level;
     explicit Indent(int n) : level(n) {}
@@ -61,6 +46,293 @@ struct Indent {
         return os;
     }
 };
+
+// ---- BCn decompression (BC1 / BC3 / BC5) ----
+
+// MTLPixelFormat enum subset (matching GpuScene.cpp MTLPixelFormat enum)
+enum : uint32_t {
+    kBC1_RGBA_sRGB   = 131,
+    kBC3_RGBA_sRGB   = 135,
+    kBC5_RGUnorm     = 142,
+};
+
+inline uint16_t read16le(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+
+// Decompress a single BC1 (DXT1) 4x4 block into 16 RGBA pixels.
+// Output buffer must be at least 16 * 4 bytes.
+void DecodeBC1Block(const uint8_t* block, uint8_t* rgbaOut) {
+    uint16_t c0 = read16le(block);
+    uint16_t c1 = read16le(block + 2);
+    uint32_t bits = (uint32_t)block[4] | ((uint32_t)block[5] << 8) |
+                    ((uint32_t)block[6] << 16) | ((uint32_t)block[7] << 24);
+
+    // Extract 5-6-5 RGB
+    uint8_t r0 = (uint8_t)(((c0 >> 11) & 0x1F) * 255 / 31);
+    uint8_t g0 = (uint8_t)(((c0 >> 5)  & 0x3F) * 255 / 63);
+    uint8_t b0 = (uint8_t)((c0         & 0x1F) * 255 / 31);
+    uint8_t r1 = (uint8_t)(((c1 >> 11) & 0x1F) * 255 / 31);
+    uint8_t g1 = (uint8_t)(((c1 >> 5)  & 0x3F) * 255 / 63);
+    uint8_t b1 = (uint8_t)((c1         & 0x1F) * 255 / 31);
+
+    for (int i = 0; i < 16; ++i) {
+        uint8_t code = (uint8_t)((bits >> (i * 2)) & 3);
+        uint8_t* dst = rgbaOut + i * 4;
+        if (c0 > c1) {
+            switch (code) {
+            case 0: dst[0]=r0; dst[1]=g0; dst[2]=b0; dst[3]=255; break;
+            case 1: dst[0]=r1; dst[1]=g1; dst[2]=b1; dst[3]=255; break;
+            case 2: dst[0]=(uint8_t)((2*r0+r1)/3); dst[1]=(uint8_t)((2*g0+g1)/3); dst[2]=(uint8_t)((2*b0+b1)/3); dst[3]=255; break;
+            case 3: dst[0]=(uint8_t)((r0+2*r1)/3); dst[1]=(uint8_t)((g0+2*g1)/3); dst[2]=(uint8_t)((b0+2*b1)/3); dst[3]=255; break;
+            }
+        } else {
+            switch (code) {
+            case 0: dst[0]=r0; dst[1]=g0; dst[2]=b0; dst[3]=255; break;
+            case 1: dst[0]=r1; dst[1]=g1; dst[2]=b1; dst[3]=255; break;
+            case 2: dst[0]=(uint8_t)((r0+r1)/2); dst[1]=(uint8_t)((g0+g1)/2); dst[2]=(uint8_t)((b0+b1)/2); dst[3]=255; break;
+            case 3: dst[0]=0; dst[1]=0; dst[2]=0; dst[3]=0; break;
+            }
+        }
+    }
+}
+
+// Decompress a single BC3 (DXT5) 4x4 block into 16 RGBA pixels.
+void DecodeBC3Block(const uint8_t* block, uint8_t* rgbaOut) {
+    // Alpha block (8 bytes): block[0..7]
+    uint8_t a0 = block[0], a1 = block[1];
+    // 48-bit alpha indices packed in block[2..7], 3 bits per pixel
+    uint64_t aBits = 0;
+    for (int i = 2; i < 8; ++i)
+        aBits |= ((uint64_t)block[i]) << ((i - 2) * 8);
+
+    uint8_t alphas[8];
+    alphas[0] = a0;
+    alphas[1] = a1;
+    if (a0 > a1) {
+        for (int i = 2; i < 8; ++i)
+            alphas[i] = (uint8_t)(((8 - i) * a0 + (i - 1) * a1) / 7);
+    } else {
+        for (int i = 2; i < 6; ++i)
+            alphas[i] = (uint8_t)(((6 - i) * a0 + (i - 1) * a1) / 5);
+        alphas[6] = 0;
+        alphas[7] = 255;
+    }
+
+    // Color block (8 bytes): block[8..15] — same as BC1
+    uint8_t colorBlock[16];
+    DecodeBC1Block(block + 8, colorBlock);
+
+    for (int i = 0; i < 16; ++i) {
+        uint8_t alphaIdx = (uint8_t)((aBits >> (i * 3)) & 7);
+        uint8_t* dst = rgbaOut + i * 4;
+        dst[0] = colorBlock[i*4];
+        dst[1] = colorBlock[i*4+1];
+        dst[2] = colorBlock[i*4+2];
+        dst[3] = alphas[alphaIdx];
+    }
+}
+
+// Decompress a single BC5 (3Dc) 4x4 block into 16 RG pixels (output as RG in RGBA).
+// BC5 is two independent BC4 alpha blocks: red channel then green channel.
+void DecodeBC4Block(const uint8_t* block, uint8_t* values) {
+    uint8_t v0 = block[0], v1 = block[1];
+    uint64_t bits = (uint64_t)read16le(block + 2) | ((uint64_t)read16le(block + 4) << 16) | ((uint64_t)read16le(block + 6) << 32);
+
+    uint8_t palette[8];
+    palette[0] = v0;
+    palette[1] = v1;
+    if (v0 > v1) {
+        for (int i = 2; i < 8; ++i)
+            palette[i] = (uint8_t)(((8 - i) * v0 + (i - 1) * v1) / 7);
+    } else {
+        for (int i = 2; i < 6; ++i)
+            palette[i] = (uint8_t)(((6 - i) * v0 + (i - 1) * v1) / 5);
+        palette[6] = 0;
+        palette[7] = 255;
+    }
+
+    for (int i = 0; i < 16; ++i) {
+        uint8_t idx = (uint8_t)((bits >> (i * 3)) & 7);
+        values[i] = palette[idx];
+    }
+}
+
+void DecodeBC5Block(const uint8_t* block, uint8_t* rgbaOut) {
+    uint8_t r[16], g[16];
+    DecodeBC4Block(block, r);
+    DecodeBC4Block(block + 8, g);
+    for (int i = 0; i < 16; ++i) {
+        uint8_t* dst = rgbaOut + i * 4;
+        dst[0] = r[i];
+        dst[1] = g[i];
+        dst[2] = 0;
+        dst[3] = 255;
+    }
+}
+
+// Decompress a full BC texture into RGBA8.
+// blockW/blockH: number of 4x4 blocks in each dimension.
+// src: compressed data, rgbaOut: output buffer (blockW*4 * blockH*4 * 4 bytes).
+void DecompressBC(uint32_t pixelFormat, const uint8_t* src,
+                  uint32_t blockW, uint32_t blockH, uint8_t* rgbaOut) {
+    for (uint32_t by = 0; by < blockH; ++by) {
+        for (uint32_t bx = 0; bx < blockW; ++bx) {
+            uint32_t blockIdx = by * blockW + bx;
+            uint32_t outBase = (by * blockW * 16 + bx * 4) * 4; // 16 pixels * 4 bytes per block row
+
+            if (pixelFormat == kBC1_RGBA_sRGB) {
+                DecodeBC1Block(src + blockIdx * 8, rgbaOut + outBase);
+            } else if (pixelFormat == kBC3_RGBA_sRGB) {
+                DecodeBC3Block(src + blockIdx * 16, rgbaOut + outBase);
+            } else if (pixelFormat == kBC5_RGUnorm) {
+                DecodeBC5Block(src + blockIdx * 16, rgbaOut + outBase);
+            }
+        }
+    }
+}
+
+// ---- BMP file writer (no external dependencies) ----
+
+#pragma pack(push, 1)
+struct BmpHeader {
+    uint16_t bfType = 0x4D42;   // 'BM'
+    uint32_t bfSize;
+    uint16_t bfReserved1 = 0;
+    uint16_t bfReserved2 = 0;
+    uint32_t bfOffBits = 54;
+};
+struct BmpDibHeader {
+    uint32_t biSize = 40;
+    int32_t  biWidth;
+    int32_t  biHeight;          // positive = bottom-up
+    uint16_t biPlanes = 1;
+    uint16_t biBitCount = 32;   // 32 bpp BGRA
+    uint32_t biCompression = 0; // BI_RGB
+    uint32_t biSizeImage = 0;
+    int32_t  biXPelsPerMeter = 2835; // 72 DPI
+    int32_t  biYPelsPerMeter = 2835;
+    uint32_t biClrUsed = 0;
+    uint32_t biClrImportant = 0;
+};
+#pragma pack(pop)
+
+// Write RGBA pixel data as a 32-bit BMP file (BGRA byte order).
+// 'pixels' is row-major top-to-bottom RGBA. We flip to bottom-up BMP.
+bool WriteBMP(const std::filesystem::path& path,
+              uint32_t width, uint32_t height, const uint8_t* pixels) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+
+    uint32_t rowBytes = width * 4;
+    uint32_t padBytes = (4 - (rowBytes & 3)) & 3; // BMP rows are 4-byte aligned
+    uint32_t paddedRow = rowBytes + padBytes;
+    uint32_t pixelDataSize = paddedRow * height;
+
+    BmpHeader hdr;
+    hdr.bfSize = sizeof(BmpHeader) + sizeof(BmpDibHeader) + pixelDataSize;
+    BmpDibHeader dib;
+    dib.biWidth  = width;
+    dib.biHeight = (int32_t)height;
+    dib.biSizeImage = pixelDataSize;
+
+    f.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+    f.write(reinterpret_cast<const char*>(&dib), sizeof(dib));
+
+    // Write bottom-up: last row first. Convert RGBA -> BGRA.
+    std::vector<uint8_t> row(paddedRow, 0);
+    for (int y = (int)height - 1; y >= 0; --y) {
+        const uint8_t* srcRow = pixels + y * width * 4;
+        uint8_t* dst = row.data();
+        for (uint32_t x = 0; x < width; ++x) {
+            dst[0] = srcRow[2]; // B
+            dst[1] = srcRow[1]; // G
+            dst[2] = srcRow[0]; // R
+            dst[3] = srcRow[3]; // A
+            dst += 4; srcRow += 4;
+        }
+        f.write(reinterpret_cast<const char*>(row.data()), paddedRow);
+    }
+
+    return f.good();
+}
+
+// Given a texture hash, find the corresponding AAPLTextureData and export the
+// decompressed pixel data as a BMP file. Returns the output filename (without
+// directory) on success, empty string on failure.
+std::string ExportTextureData(
+    uint32_t hash,
+    const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
+    const std::vector<TextureStreamingEntry>& streamingEntries,
+    const AAPLMeshData* mesh,
+    const std::filesystem::path& outputDir)
+{
+    auto it = streamingEntryMap.find(hash);
+    if (it == streamingEntryMap.end()) return {};
+
+    const auto& entry = streamingEntries[it->second];
+    if (!entry.desc) return {};
+
+    const AAPLTextureData& tex = *entry.desc;
+
+    // Build output filename from the embedded path (strip directories)
+    std::string srcPath = tex._path;
+    auto slashPos = srcPath.find_last_of("/\\");
+    std::string baseName = (slashPos != std::string::npos)
+        ? srcPath.substr(slashPos + 1) : srcPath;
+    // Replace extension with .bmp
+    auto dotPos = baseName.find_last_of('.');
+    if (dotPos != std::string::npos)
+        baseName = baseName.substr(0, dotPos);
+    std::string outName = baseName + ".bmp";
+    auto outPath = outputDir / outName;
+
+    // Get compressed data from the .bin texture payload
+    if (!mesh->_textureData || tex._pixelDataOffset + tex._pixelDataLength >
+        (unsigned long long)(ptrdiff_t)-1) {
+        return {};
+    }
+    const uint8_t* srcData = static_cast<const uint8_t*>(mesh->_textureData)
+                             + tex._pixelDataOffset;
+
+    // Calculate block dimensions
+    uint32_t blockSize = 4;
+    if (tex._pixelFormat == kBC1_RGBA_sRGB) blockSize = 8;
+    else if (tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm)
+        blockSize = 16;
+
+    uint32_t blockW = ((uint32_t)tex._width  + 3) / 4;
+    uint32_t blockH = ((uint32_t)tex._height + 3) / 4;
+
+    // Allocate decompression buffer
+    uint32_t pixelCount = blockW * 4 * blockH * 4;
+    std::vector<uint8_t> rgba(pixelCount * 4);
+
+    DecompressBC(tex._pixelFormat, srcData, blockW, blockH, rgba.data());
+
+    uint32_t w = blockW * 4;
+    uint32_t h = blockH * 4;
+    // Clamp to the actual texture dimensions (may not be exact multiple of 4)
+    if (w > tex._width)  w = (uint32_t)tex._width;
+    if (h > tex._height) h = (uint32_t)tex._height;
+
+    // Crop the decompressed buffer to the actual size
+    if (w != blockW * 4 || h != blockH * 4) {
+        std::vector<uint8_t> cropped(w * h * 4);
+        for (uint32_t y = 0; y < h; ++y) {
+            const uint8_t* srcRow = rgba.data() + y * blockW * 4 * 4;
+            uint8_t* dstRow = cropped.data() + y * w * 4;
+            std::memcpy(dstRow, srcRow, w * 4);
+        }
+        rgba = std::move(cropped);
+    }
+
+    if (!WriteBMP(outPath, w, h, rgba.data())) {
+        spdlog::warn("PbrtExporter: failed to write texture {}", outPath.string());
+        return {};
+    }
+
+    spdlog::info("PbrtExporter: exported texture {} ({}x{})", outName, w, h);
+    return outName;
+}
 
 } // anonymous namespace
 
@@ -71,11 +343,8 @@ std::string PbrtExporter::ResolveTexturePath(
     const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
     const std::vector<TextureStreamingEntry>& streamingEntries)
 {
-    auto it = streamingEntryMap.find(hash);
-    if (it == streamingEntryMap.end()) return {};
-    const auto& entry = streamingEntries[it->second];
-    if (!entry.desc || entry.desc->_path.empty()) return {};
-    return entry.desc->_path;
+    // Returns the exported BMP filename (not the original path)
+    return {};
 }
 
 void PbrtExporter::WriteCamera(std::ofstream& out, const GpuScene& scene) {
@@ -120,24 +389,13 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene) {
         if (mat.emissiveColor.x > 0 || mat.emissiveColor.y > 0 || mat.emissiveColor.z > 0)
             out << Indent(1) << "\"rgb Le\" [ "
                 << mat.emissiveColor.x << ' ' << mat.emissiveColor.y << ' ' << mat.emissiveColor.z << " ]\n";
-        if (mat.hasBaseColorTexture) {
-            std::string path = ResolveTexturePath(mat.baseColorTextureHash,
-                scene.streamingEntryMap, scene.streamingEntries);
-            if (!path.empty())
-                out << Indent(1) << "\"texture Kd\" \"color_" << i << "\"\n";
-        }
-        if (mat.hasMetallicRoughnessTexture) {
-            std::string path = ResolveTexturePath(mat.metallicRoughnessHash,
-                scene.streamingEntryMap, scene.streamingEntries);
-            if (!path.empty())
-                out << Indent(1) << "\"texture roughness\" \"roughness_" << i << "\"\n";
-        }
-        if (mat.hasNormalMap) {
-            std::string path = ResolveTexturePath(mat.normalMapHash,
-                scene.streamingEntryMap, scene.streamingEntries);
-            if (!path.empty())
-                out << Indent(1) << "\"texture bumpmap\" \"normal_" << i << "\"\n";
-        }
+        // Texture references: exported BMP filenames
+        if (mat.hasBaseColorTexture)
+            out << Indent(1) << "\"texture Kd\" \"color_" << i << "\"\n";
+        if (mat.hasMetallicRoughnessTexture)
+            out << Indent(1) << "\"texture roughness\" \"roughness_" << i << "\"\n";
+        if (mat.hasNormalMap)
+            out << Indent(1) << "\"texture bumpmap\" \"normal_" << i << "\"\n";
     }
 }
 
@@ -156,50 +414,72 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
         return;
     }
     const int meshCount = static_cast<int>(mesh->_meshCount);
-    size_t vertexCount = mesh->_vertexCount;
     bool is16bit = (mesh->_indexType == 2);
     for (int m = 0; m < meshCount; ++m) {
         const AAPLSubMesh& submesh = scene.m_SubMeshes[m];
-        if((submesh.indexCount)%3!=0)
-            spdlog::warn("PbrtExporter: submesh {} has index count {}, which is not a multiple of 3",
-                         m, submesh.indexCount);
-        size_t submeshVertexCount = submesh.indexCount / 3;
         if (submesh.indexCount == 0) continue;
+        if ((submesh.indexCount % 3) != 0)
+            spdlog::warn("PbrtExporter: submesh {} has index count {}, not a multiple of 3",
+                         m, submesh.indexCount);
+
+        uint32_t idxMin = 0xFFFFFFFF, idxMax = 0;
+        if (is16bit) {
+            const uint16_t* scan = static_cast<const uint16_t*>(indices) + submesh.indexBegin;
+            for (uint32_t k = 0; k < submesh.indexCount; ++k) {
+                if (scan[k] < idxMin) idxMin = scan[k];
+                if (scan[k] > idxMax) idxMax = scan[k];
+            }
+        } else {
+            const uint32_t* scan = static_cast<const uint32_t*>(indices) + submesh.indexBegin;
+            for (uint32_t k = 0; k < submesh.indexCount; ++k) {
+                if (scan[k] < idxMin) idxMin = scan[k];
+                if (scan[k] > idxMax) idxMax = scan[k];
+            }
+        }
+        if (idxMin > idxMax) continue;
+
+        uint32_t rangeCount = idxMax - idxMin + 1;
+
         out << '\n' << Indent(1) << "AttributeBegin\n";
         int matIndex = static_cast<int>(submesh.materialIndex);
         if (matIndex >= 0 && matIndex < static_cast<int>(mesh->_materialCount))
             out << Indent(2) << "NamedMaterial \"material_" << matIndex << "\"\n";
         out << Indent(2) << R"(Shape "trianglemesh")" << '\n';
         out << Indent(2) << "\"point3 P\" ";
-        WriteVec3Array(out, verts, submeshVertexCount);
+        WriteVec3Array(out, verts + idxMin, rangeCount);
         out << '\n';
         if (norms) {
             out << Indent(2) << "\"normal N\" ";
-            WriteVec3Array(out, norms, submeshVertexCount);
+            WriteVec3Array(out, norms + idxMin, rangeCount);
             out << '\n';
         }
         if (uvs) {
             out << Indent(2) << "\"float uv\" ";
-            WriteVec2Array(out, uvs, submeshVertexCount);
+            WriteVec2Array(out, uvs + idxMin, rangeCount);
             out << '\n';
         }
         out << Indent(2) << "\"integer indices\" ";
-        uint32_t indexBegin = submesh.indexBegin;
+        out << "[ ";
         uint32_t indexCountVal = submesh.indexCount;
         if (is16bit) {
-            const uint16_t* idx = static_cast<const uint16_t*>(indices) + indexBegin;
-            WriteIndexArray16(out, idx, indexCountVal);
+            const uint16_t* idx = static_cast<const uint16_t*>(indices) + submesh.indexBegin;
+            for (uint32_t k = 0; k < indexCountVal; ++k) {
+                if (k > 0 && k % 30 == 0) out << "\n  ";
+                out << static_cast<uint32_t>(idx[k] - idxMin) << ' ';
+            }
         } else {
-            const uint32_t* idx = static_cast<const uint32_t*>(indices) + indexBegin;
-            WriteIndexArray(out, idx, indexCountVal);
+            const uint32_t* idx = static_cast<const uint32_t*>(indices) + submesh.indexBegin;
+            for (uint32_t k = 0; k < indexCountVal; ++k) {
+                if (k > 0 && k % 30 == 0) out << "\n  ";
+                out << (idx[k] - idxMin) << ' ';
+            }
         }
-        out << '\n';
+        out << "]\n";
         out << Indent(1) << "AttributeEnd\n";
     }
 }
 
 void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
-    // Directional sun
     const vec3& sunDir = scene.frameConstants.sunDirection;
     const vec3& sunColor = scene.frameConstants.sunColor;
     if (sunColor.x > 0 || sunColor.y > 0 || sunColor.z > 0) {
@@ -209,7 +489,6 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
         out << Indent(2) << "\"rgb L\" [ "
             << sunColor.x << ' ' << sunColor.y << ' ' << sunColor.z << " ]\n";
     }
-    // Point lights
     for (const auto& pl : scene._pointLights) {
         const PointLightData* d = pl.getPointLightData();
         if (!d) continue;
@@ -222,7 +501,6 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
             << d->color.y * intensity << ' '
             << d->color.z * intensity << " ]\n";
     }
-    // Spot lights
     for (const auto& sl : scene._spotLights) {
         const SpotLightData* d = sl._spotLightData;
         if (!d) continue;
@@ -248,6 +526,30 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
 bool PbrtExporter::Export(const GpuScene& scene,
                           const std::filesystem::path& outputPath) {
     try {
+        // Step 1: Export texture data to BMP files alongside the .pbrt file
+        std::filesystem::path outputDir = outputPath.parent_path();
+        if (outputDir.empty()) outputDir = ".";
+        std::unordered_map<uint32_t, std::string> exportedTexNames; // hash -> filename
+
+        if (scene.cpuMaterials && scene.applMesh->_textureData) {
+            const int matCount = static_cast<int>(scene.applMesh->_materialCount);
+            for (int i = 0; i < matCount; ++i) {
+                const AAPLMaterial& mat = scene.cpuMaterials[i];
+                auto exportTex = [&](uint32_t hash) {
+                    if (hash == 0 || exportedTexNames.count(hash)) return;
+                    std::string name = ExportTextureData(hash,
+                        scene.streamingEntryMap, scene.streamingEntries,
+                        scene.applMesh, outputDir);
+                    if (!name.empty())
+                        exportedTexNames[hash] = name;
+                };
+                if (mat.hasBaseColorTexture)       exportTex(mat.baseColorTextureHash);
+                if (mat.hasMetallicRoughnessTexture) exportTex(mat.metallicRoughnessHash);
+                if (mat.hasNormalMap)              exportTex(mat.normalMapHash);
+            }
+        }
+
+        // Step 2: Write the .pbrt scene file
         std::ofstream out(outputPath);
         if (!out.is_open()) {
             spdlog::error("PbrtExporter: failed to open {} for writing",
@@ -262,35 +564,24 @@ bool PbrtExporter::Export(const GpuScene& scene,
         WriteCamera(out, scene);
         out << R"(PixelFilter "gaussian" "float xradius" [1.5] "float yradius" [1.5])" << '\n';
 
-        // Texture declarations before WorldBegin
+        // Texture declarations with exported BMP filenames
         if (scene.cpuMaterials) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
-                if (mat.hasBaseColorTexture) {
-                    std::string path = ResolveTexturePath(mat.baseColorTextureHash,
-                        scene.streamingEntryMap, scene.streamingEntries);
-                    if (!path.empty()) {
-                        out << "Texture \"color_" << i << R"(" "color" "imagemap")" << '\n';
-                        out << Indent(1) << "\"string filename\" \"" << path << "\"\n";
-                    }
-                }
-                if (mat.hasMetallicRoughnessTexture) {
-                    std::string path = ResolveTexturePath(mat.metallicRoughnessHash,
-                        scene.streamingEntryMap, scene.streamingEntries);
-                    if (!path.empty()) {
-                        out << "Texture \"roughness_" << i << R"(" "color" "imagemap")" << '\n';
-                        out << Indent(1) << "\"string filename\" \"" << path << "\"\n";
-                    }
-                }
-                if (mat.hasNormalMap) {
-                    std::string path = ResolveTexturePath(mat.normalMapHash,
-                        scene.streamingEntryMap, scene.streamingEntries);
-                    if (!path.empty()) {
-                        out << "Texture \"normal_" << i << R"(" "color" "imagemap")" << '\n';
-                        out << Indent(1) << "\"string filename\" \"" << path << "\"\n";
-                    }
-                }
+                auto declTex = [&](uint32_t hash, const char* prefix) {
+                    auto it = exportedTexNames.find(hash);
+                    if (it == exportedTexNames.end()) return;
+                    out << "Texture \"" << prefix << i << R"(" "color" "imagemap")" << '\n';
+                    out << Indent(1) << "\"string filename\" \""
+                        << it->second << "\"\n";
+                };
+                if (mat.hasBaseColorTexture)
+                    declTex(mat.baseColorTextureHash, "color_");
+                if (mat.hasMetallicRoughnessTexture)
+                    declTex(mat.metallicRoughnessHash, "roughness_");
+                if (mat.hasNormalMap)
+                    declTex(mat.normalMapHash, "normal_");
             }
         }
 
