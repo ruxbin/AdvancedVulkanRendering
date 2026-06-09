@@ -442,12 +442,15 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
             out << Indent(1) << "\"rgb reflectance\" [ "
                 << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
         }
-        out << Indent(1) << "\"float roughness\" [ " << roughness << " ]\n";
+        out << Indent(1) << "\"float uroughness\" [ " << roughness << " ]\n";
+        out << Indent(1) << "\"float vroughness\" [ " << roughness << " ]\n";
         // Texture references
         if (mat.hasBaseColorTexture)
             out << Indent(1) << "\"texture reflectance\" \"color_" << i << "\"\n";
-        if (mat.hasMetallicRoughnessTexture)
-            out << Indent(1) << "\"texture roughness\" \"roughness_" << i << "\"\n";
+        if (mat.hasMetallicRoughnessTexture) {
+            out << Indent(1) << "\"texture uroughness\" \"roughness_" << i << "\"\n";
+            out << Indent(1) << "\"texture vroughness\" \"roughness_" << i << "\"\n";
+        }
         // Normal maps: pbrt-v4 uses "string normalmap" pointing directly to the file
         if (mat.hasNormalMap) {
             auto it = exportedTexNames.find(mat.normalMapHash);
