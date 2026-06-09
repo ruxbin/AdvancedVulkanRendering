@@ -507,7 +507,7 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
         WriteVec3Array(out, verts + idxMin, rangeCount);
         out << '\n';
         if (norms) {
-            out << Indent(2) << "\"normal3 N\" ";
+            out << Indent(2) << "\"normal N\" ";
             WriteVec3Array(out, norms + idxMin, rangeCount);
             out << '\n';
         }
