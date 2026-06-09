@@ -175,7 +175,7 @@ void DecodeBC5Block(const uint8_t* block, uint8_t* rgbaOut) {
         // Reconstruct Z from XY: decode [0,255]→[-1,1], then Z=sqrt(1-X²-Y²)→[0,1]→[0,255]
         float x = r[i] / 127.5f - 1.0f;
         float y = g[i] / 127.5f - 1.0f;
-        float z = std::sqrt(std::max(0.0f, 1.0f - x*x - y*y));
+        float z = std::sqrt((std::max)(0.0f, 1.0f - x*x - y*y));
         dst[2] = (uint8_t)((z * 0.5f + 0.5f) * 255.0f);
         dst[3] = 255;
     }
