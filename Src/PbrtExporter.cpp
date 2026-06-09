@@ -429,29 +429,23 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
         float roughness = mat.metallicRoughness.y;
 
         // pbrt-v4: use "conductor" for metals, "coateddiffuse" for dielectrics.
-        // "uber" was removed in v4. Conductor takes EITHER (eta+k) OR reflectance,
-        // NOT both. We use reflectance, which pbrt internally inverts to eta/k.
-        if (metallic > 0.5f) {
-            out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
-            out << Indent(1) << "\"string type\" \"conductor\"\n";
-            out << Indent(1) << "\"rgb reflectance\" [ "
-                << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
-        } else {
-            out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
-            out << Indent(1) << "\"string type\" \"coateddiffuse\"\n";
-            out << Indent(1) << "\"rgb reflectance\" [ "
-                << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
-        }
-        out << Indent(1) << "\"float uroughness\" [ " << roughness << " ]\n";
-        out << Indent(1) << "\"float vroughness\" [ " << roughness << " ]\n";
-        // Texture references
+        // "uber" was removed in v4. Each parameter must appear EXACTLY ONCE
+        // (inline value OR texture reference, never both).
+        out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
+        out << Indent(1) << "\"string type\" \""
+            << (metallic > 0.5f ? "conductor" : "coateddiffuse") << "\"\n";
         if (mat.hasBaseColorTexture)
             out << Indent(1) << "\"texture reflectance\" \"color_" << i << "\"\n";
+        else
+            out << Indent(1) << "\"rgb reflectance\" [ "
+                << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
         if (mat.hasMetallicRoughnessTexture) {
             out << Indent(1) << "\"texture uroughness\" \"roughness_" << i << "\"\n";
             out << Indent(1) << "\"texture vroughness\" \"roughness_" << i << "\"\n";
+        } else {
+            out << Indent(1) << "\"float uroughness\" [ " << roughness << " ]\n";
+            out << Indent(1) << "\"float vroughness\" [ " << roughness << " ]\n";
         }
-        // Normal maps: pbrt-v4 uses "string normalmap" pointing directly to the file
         if (mat.hasNormalMap) {
             auto it = exportedTexNames.find(mat.normalMapHash);
             if (it != exportedTexNames.end())
