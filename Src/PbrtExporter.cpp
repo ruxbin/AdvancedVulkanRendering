@@ -1,9 +1,13 @@
 #include "PbrtExporter.h"
 #include "GpuScene.h"
 #include "spdlog/spdlog.h"
-
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
+
+// From GpuScene.cpp: lzfse-decompresses mip data stored in the .bin file.
+void *uncompressData(unsigned char *data, size_t dataLength,
+                     uint64_t expectedsize);
 
 namespace {
 
@@ -289,69 +293,75 @@ std::string ExportTextureData(
     auto slashPos = srcPath.find_last_of("/\\");
     std::string baseName = (slashPos != std::string::npos)
         ? srcPath.substr(slashPos + 1) : srcPath;
-    // Replace extension with .bmp
     auto dotPos = baseName.find_last_of('.');
     if (dotPos != std::string::npos)
         baseName = baseName.substr(0, dotPos);
     std::string outName = baseName + ".bmp";
     auto outPath = outputDir / outName;
 
-    // Get compressed data from the .bin texture payload.
-    // NOTE: _textureData only contains the PERMANENT (low-res) mips.
-    // High-res mips reside in external DDS files referenced by _path.
     if (!mesh->_textureData) return {};
 
-    const uint8_t* srcData = static_cast<const uint8_t*>(mesh->_textureData)
-                             + tex._pixelDataOffset;
+    // Determine BC block size from pixel format.
+    uint32_t bcBlockBytes = 8;   // BC1 default
+    if (tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm)
+        bcBlockBytes = 16;
 
-    // Calculate block dimensions for the finest mip that fits in _pixelDataLength.
-    uint32_t blockSize = 4;
-    if (tex._pixelFormat == kBC1_RGBA_sRGB) blockSize = 8;
-    else if (tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm)
-        blockSize = 16;
-
+    // Walk down mip levels looking for one whose compressed data fits.
+    // The .bin stores every mip as an independent lzfse-compressed chunk
+    // at _pixelDataOffset + _mipOffsets[mip] with _mipLengths[mip] bytes.
     uint32_t mipW = (uint32_t)tex._width;
     uint32_t mipH = (uint32_t)tex._height;
-
-    // Walk down mip levels until the compressed data fits in _pixelDataLength.
     int mipLevel = 0;
-    uint32_t blockW, blockH;
-    uint64_t needed;
-    while (true) {
-        blockW = (mipW + 3) / 4;
-        blockH = (mipH + 3) / 4;
-        needed = (uint64_t)blockW * blockH * blockSize;
-        if (needed <= tex._pixelDataLength) break;
-        if (mipW <= 4 && mipH <= 4) {
-            spdlog::warn("PbrtExporter: texture {} smallest mip needs {} > data {}",
-                         baseName, needed, tex._pixelDataLength);
-            return {};
-        }
+    void* bcData = nullptr;
+    uint32_t blockW = 0, blockH = 0;
+    unsigned long long bcBytes = 0;
+
+    for (; mipLevel < (int)tex._mipmapLevelCount; ++mipLevel) {
+        if (mipLevel >= (int)tex._mipOffsets.size() ||
+            mipLevel >= (int)tex._mipLengths.size())
+            break;
+
+        unsigned long long compOff = tex._mipOffsets[mipLevel];
+        unsigned long long compLen = tex._mipLengths[mipLevel];
+        blockW = ((mipW + 3) / 4 > 0) ? (mipW + 3) / 4 : 1;
+        blockH = ((mipH + 3) / 4 > 0) ? (mipH + 3) / 4 : 1;
+        bcBytes = (unsigned long long)blockW * blockH * bcBlockBytes;
+
+        unsigned char* raw = (unsigned char*)mesh->_textureData
+                             + tex._pixelDataOffset + compOff;
+        bcData = uncompressData(raw, (size_t)compLen, bcBytes);
+        if (bcData) break;
+
+        spdlog::debug("PbrtExporter: {} mip {} decompress failed ({}->{}), "
+                      "trying next", baseName, mipLevel, compLen, bcBytes);
         mipW = (mipW > 1 ? mipW >> 1 : 1);
         mipH = (mipH > 1 ? mipH >> 1 : 1);
-        ++mipLevel;
     }
 
-    // Allocate decompression buffer
+    if (!bcData) {
+        spdlog::warn("PbrtExporter: texture {} all mips failed", baseName);
+        return {};
+    }
+
+    // BC decompression → RGBA pixels
     uint32_t pixelCount = blockW * 4 * blockH * 4;
     std::vector<uint8_t> rgba(pixelCount * 4);
-
-    DecompressBC(tex._pixelFormat, srcData, blockW, blockH, rgba.data());
+    DecompressBC(tex._pixelFormat, static_cast<const uint8_t*>(bcData),
+                 blockW, blockH, rgba.data());
+    free(bcData);
 
     uint32_t w = blockW * 4;
     uint32_t h = blockH * 4;
-    // Clamp output dimensions to the selected mip level's size.
-    if (w > mipW)  w = mipW;
-    if (h > mipH)  h = mipH;
+    if (w > mipW) w = mipW;
+    if (h > mipH) h = mipH;
 
-    // Crop the decompressed buffer to the actual size
+    // Crop if dimensions are not exact multiples of 4
     if (w != blockW * 4 || h != blockH * 4) {
+        uint32_t outStride = blockW * 16;
         std::vector<uint8_t> cropped(w * h * 4);
-        for (uint32_t y = 0; y < h; ++y) {
-            const uint8_t* srcRow = rgba.data() + y * blockW * 4 * 4;
-            uint8_t* dstRow = cropped.data() + y * w * 4;
-            std::memcpy(dstRow, srcRow, w * 4);
-        }
+        for (uint32_t y = 0; y < h; ++y)
+            std::memcpy(cropped.data() + y * w * 4,
+                        rgba.data() + y * outStride, w * 4);
         rgba = std::move(cropped);
     }
 
@@ -598,7 +608,9 @@ bool PbrtExporter::Export(const GpuScene& scene,
         WriteCamera(out, scene);
         out << R"(PixelFilter "gaussian" "float xradius" [1.5] "float yradius" [1.5])" << '\n';
 
-        // Texture declarations with exported BMP filenames
+        out << '\n' << "WorldBegin\n";
+
+        // Texture declarations with exported BMP filenames (must be inside WorldBegin)
         if (scene.cpuMaterials) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
@@ -606,8 +618,8 @@ bool PbrtExporter::Export(const GpuScene& scene,
                 auto declTex = [&](uint32_t hash, const char* prefix) {
                     auto it = exportedTexNames.find(hash);
                     if (it == exportedTexNames.end()) return;
-                    out << "Texture \"" << prefix << i << R"(" "color" "imagemap")" << '\n';
-                    out << Indent(1) << "\"string filename\" \""
+                    out << Indent(1) << "Texture \"" << prefix << i << R"(" "color" "imagemap")" << '\n';
+                    out << Indent(2) << "\"string filename\" \""
                         << it->second << "\"\n";
                 };
                 if (mat.hasBaseColorTexture)
@@ -618,8 +630,6 @@ bool PbrtExporter::Export(const GpuScene& scene,
                     declTex(mat.normalMapHash, "normal_");
             }
         }
-
-        out << '\n' << "WorldBegin\n";
 
         WriteMaterials(out, scene);
         WriteGeometry(out, scene);
