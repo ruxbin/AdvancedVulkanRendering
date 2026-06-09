@@ -297,15 +297,14 @@ std::string ExportTextureData(
     auto outPath = outputDir / outName;
 
     // Get compressed data from the .bin texture payload.
-    // Mip data starts at _pixelDataOffset + _mipOffsets[mip].
-    if (!mesh->_textureData || tex._mipOffsets.empty() || tex._mipLengths.empty()) {
-        return {};
-    }
-    // Use mip 0 (full resolution).
-    unsigned long long mip0Offset = tex._pixelDataOffset + tex._mipOffsets[0];
-    unsigned long long mip0Length = tex._mipLengths[0];
+    // NOTE: _textureData only contains the PERMANENT (low-res) mips.
+    // High-res mips reside in external DDS files referenced by _path.
+    if (!mesh->_textureData) return {};
 
-    // Calculate block dimensions
+    const uint8_t* srcData = static_cast<const uint8_t*>(mesh->_textureData)
+                             + tex._pixelDataOffset;
+
+    // Calculate block dimensions for the finest mip that fits in _pixelDataLength.
     uint32_t blockSize = 4;
     if (tex._pixelFormat == kBC1_RGBA_sRGB) blockSize = 8;
     else if (tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm)
@@ -313,19 +312,25 @@ std::string ExportTextureData(
 
     uint32_t mipW = (uint32_t)tex._width;
     uint32_t mipH = (uint32_t)tex._height;
-    uint32_t blockW = (mipW + 3) / 4;
-    uint32_t blockH = (mipH + 3) / 4;
-    uint64_t needed = (uint64_t)blockW * blockH * blockSize;
 
-    // If mip 0 data is too small, skip this texture.
-    if (mip0Length < needed) {
-        spdlog::warn("PbrtExporter: texture {} mip0 length {} < needed {}, skipping",
-                     baseName, mip0Length, needed);
-        return {};
+    // Walk down mip levels until the compressed data fits in _pixelDataLength.
+    int mipLevel = 0;
+    uint32_t blockW, blockH;
+    uint64_t needed;
+    while (true) {
+        blockW = (mipW + 3) / 4;
+        blockH = (mipH + 3) / 4;
+        needed = (uint64_t)blockW * blockH * blockSize;
+        if (needed <= tex._pixelDataLength) break;
+        if (mipW <= 4 && mipH <= 4) {
+            spdlog::warn("PbrtExporter: texture {} smallest mip needs {} > data {}",
+                         baseName, needed, tex._pixelDataLength);
+            return {};
+        }
+        mipW = (mipW > 1 ? mipW >> 1 : 1);
+        mipH = (mipH > 1 ? mipH >> 1 : 1);
+        ++mipLevel;
     }
-
-    const uint8_t* srcData = static_cast<const uint8_t*>(mesh->_textureData)
-                             + mip0Offset;
 
     // Allocate decompression buffer
     uint32_t pixelCount = blockW * 4 * blockH * 4;
@@ -335,9 +340,9 @@ std::string ExportTextureData(
 
     uint32_t w = blockW * 4;
     uint32_t h = blockH * 4;
-    // Clamp to the actual texture dimensions (may not be exact multiple of 4)
-    if (w > tex._width)  w = (uint32_t)tex._width;
-    if (h > tex._height) h = (uint32_t)tex._height;
+    // Clamp output dimensions to the selected mip level's size.
+    if (w > mipW)  w = mipW;
+    if (h > mipH)  h = mipH;
 
     // Crop the decompressed buffer to the actual size
     if (w != blockW * 4 || h != blockH * 4) {
@@ -355,7 +360,11 @@ std::string ExportTextureData(
         return {};
     }
 
-    spdlog::info("PbrtExporter: exported texture {} ({}x{})", outName, w, h);
+    if (mipLevel > 0)
+        spdlog::info("PbrtExporter: exported texture {} ({}x{}, mip {})",
+                     outName, w, h, mipLevel);
+    else
+        spdlog::info("PbrtExporter: exported texture {} ({}x{})", outName, w, h);
     return outName;
 }
 
