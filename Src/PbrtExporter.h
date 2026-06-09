@@ -25,7 +25,8 @@ private:
 
     static void WriteCamera(std::ofstream& out, const GpuScene& scene);
     static void WriteFilm(std::ofstream& out);
-    static void WriteMaterials(std::ofstream& out, const GpuScene& scene);
+    static void WriteMaterials(std::ofstream& out, const GpuScene& scene,
+                                const std::unordered_map<uint32_t, std::string>& exportedTexNames);
     static void WriteGeometry(std::ofstream& out, const GpuScene& scene);
     static void WriteLights(std::ofstream& out, const GpuScene& scene);
 };

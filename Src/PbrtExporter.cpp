@@ -416,7 +416,8 @@ void PbrtExporter::WriteFilm(std::ofstream& out) {
     out << R"(    "string filename" "output.png")" << '\n';
 }
 
-void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene) {
+void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
+    const std::unordered_map<uint32_t, std::string>& exportedTexNames) {
     if (!scene.cpuMaterials || scene.applMesh->_materialCount == 0) {
         spdlog::warn("PbrtExporter: no materials to export");
         return;
@@ -447,8 +448,12 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene) {
             out << Indent(1) << "\"texture reflectance\" \"color_" << i << "\"\n";
         if (mat.hasMetallicRoughnessTexture)
             out << Indent(1) << "\"texture roughness\" \"roughness_" << i << "\"\n";
-        if (mat.hasNormalMap)
-            out << Indent(1) << "\"texture bumpmap\" \"normal_" << i << "\"\n";
+        // Normal maps: pbrt-v4 uses "string normalmap" pointing directly to the file
+        if (mat.hasNormalMap) {
+            auto it = exportedTexNames.find(mat.normalMapHash);
+            if (it != exportedTexNames.end())
+                out << Indent(1) << "\"string normalmap\" \"" << it->second << "\"\n";
+        }
     }
 }
 
@@ -636,12 +641,11 @@ bool PbrtExporter::Export(const GpuScene& scene,
                     declTex(mat.baseColorTextureHash, "color_", "spectrum");
                 if (mat.hasMetallicRoughnessTexture)
                     declTex(mat.metallicRoughnessHash, "roughness_", "float");
-                if (mat.hasNormalMap)
-                    declTex(mat.normalMapHash, "normal_", "float");
+                // Normal maps use "string normalmap" directly (not a texture reference)
             }
         }
 
-        WriteMaterials(out, scene);
+        WriteMaterials(out, scene, exportedTexNames);
         WriteGeometry(out, scene);
         WriteLights(out, scene);
 
