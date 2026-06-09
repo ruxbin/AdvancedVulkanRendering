@@ -653,8 +653,8 @@ bool PbrtExporter::Export(const GpuScene& scene,
         }
         out << std::fixed << std::setprecision(kPrecision);
 
-        out << R"(Integrator "volpath" "integer maxdepth" [8])" << '\n';
-        out << R"(Sampler "sobol" "integer pixelsamples" [4])" << '\n';
+        out << R"(Integrator "path" "integer maxdepth" [8])" << '\n';
+        out << R"(Sampler "zsobol" "integer pixelsamples" [256])" << '\n';
         const VkExtent2D& ext = scene.device.getSwapChainExtent();
         WriteFilm(out, ext.width, ext.height);
         WriteCamera(out, scene);
