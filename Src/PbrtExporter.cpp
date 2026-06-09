@@ -640,8 +640,6 @@ bool PbrtExporter::Export(const GpuScene& scene,
         WriteGeometry(out, scene);
         WriteLights(out, scene);
 
-        out << "WorldEnd\n";
-
         spdlog::info("PbrtExporter: wrote scene to {}", outputPath.string());
         return true;
     } catch (const std::exception& e) {
