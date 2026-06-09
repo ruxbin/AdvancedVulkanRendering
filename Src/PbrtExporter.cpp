@@ -615,19 +615,20 @@ bool PbrtExporter::Export(const GpuScene& scene,
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
-                auto declTex = [&](uint32_t hash, const char* prefix) {
+                auto declTex = [&](uint32_t hash, const char* prefix, const char* texType) {
                     auto it = exportedTexNames.find(hash);
                     if (it == exportedTexNames.end()) return;
-                    out << Indent(1) << "Texture \"" << prefix << i << R"(" "color" "imagemap")" << '\n';
+                    out << Indent(1) << "Texture \"" << prefix << i << "\" \""
+                        << texType << "\" \"imagemap\"" << '\n';
                     out << Indent(2) << "\"string filename\" \""
                         << it->second << "\"\n";
                 };
                 if (mat.hasBaseColorTexture)
-                    declTex(mat.baseColorTextureHash, "color_");
+                    declTex(mat.baseColorTextureHash, "color_", "spectrum");
                 if (mat.hasMetallicRoughnessTexture)
-                    declTex(mat.metallicRoughnessHash, "roughness_");
+                    declTex(mat.metallicRoughnessHash, "roughness_", "float");
                 if (mat.hasNormalMap)
-                    declTex(mat.normalMapHash, "normal_");
+                    declTex(mat.normalMapHash, "normal_", "float");
             }
         }
 
