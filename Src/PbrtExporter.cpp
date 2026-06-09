@@ -172,7 +172,11 @@ void DecodeBC5Block(const uint8_t* block, uint8_t* rgbaOut) {
         uint8_t* dst = rgbaOut + i * 4;
         dst[0] = r[i];
         dst[1] = g[i];
-        dst[2] = 0;
+        // Reconstruct Z from XY: decode [0,255]→[-1,1], then Z=sqrt(1-X²-Y²)→[0,1]→[0,255]
+        float x = r[i] / 127.5f - 1.0f;
+        float y = g[i] / 127.5f - 1.0f;
+        float z = std::sqrt(std::max(0.0f, 1.0f - x*x - y*y));
+        dst[2] = (uint8_t)((z * 0.5f + 0.5f) * 255.0f);
         dst[3] = 255;
     }
 }
@@ -277,12 +281,16 @@ bool WriteBMP(const std::filesystem::path& path,
 // Given a texture hash, find the corresponding AAPLTextureData and export the
 // decompressed pixel data as a BMP file. Returns the output filename (without
 // directory) on success, empty string on failure.
+// channel: -1 = all channels (RGBA), 0/1/2 = extract R/G/B as greyscale.
+// suffix: appended before the ".bmp" extension (e.g. "_rough").
 std::string ExportTextureData(
     uint32_t hash,
     const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
     const std::vector<TextureStreamingEntry>& streamingEntries,
     const AAPLMeshData* mesh,
-    const std::filesystem::path& outputDir)
+    const std::filesystem::path& outputDir,
+    int channel = -1,
+    const char* suffix = "")
 {
     auto it = streamingEntryMap.find(hash);
     if (it == streamingEntryMap.end()) return {};
@@ -300,7 +308,7 @@ std::string ExportTextureData(
     auto dotPos = baseName.find_last_of('.');
     if (dotPos != std::string::npos)
         baseName = baseName.substr(0, dotPos);
-    std::string outName = baseName + ".bmp";
+    std::string outName = baseName + suffix + ".bmp";
     auto outPath = outputDir / outName;
 
     if (!mesh->_textureData) return {};
@@ -369,6 +377,16 @@ std::string ExportTextureData(
         rgba = std::move(cropped);
     }
 
+    // If a single channel was requested, convert to greyscale (R=G=B=channel).
+    if (channel >= 0 && channel <= 2) {
+        for (uint32_t i = 0; i < (uint32_t)rgba.size() / 4; ++i) {
+            uint8_t v = rgba[i * 4 + channel];
+            rgba[i * 4 + 0] = v;
+            rgba[i * 4 + 1] = v;
+            rgba[i * 4 + 2] = v;
+        }
+    }
+
     if (!WriteBMP(outPath, w, h, rgba.data())) {
         spdlog::warn("PbrtExporter: failed to write texture {}", outPath.string());
         return {};
@@ -386,15 +404,6 @@ std::string ExportTextureData(
 
 // ---- PbrtExporter private helpers ----
 
-std::string PbrtExporter::ResolveTexturePath(
-    uint32_t hash,
-    const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
-    const std::vector<TextureStreamingEntry>& streamingEntries)
-{
-    // Returns the exported BMP filename (not the original path)
-    return {};
-}
-
 void PbrtExporter::WriteCamera(std::ofstream& out, const GpuScene& scene) {
     const Camera* cam = scene.maincamera;
     if (!cam) {
@@ -408,16 +417,19 @@ void PbrtExporter::WriteCamera(std::ofstream& out, const GpuScene& scene) {
     vec3 lookAt(eye.x + dir.x, eye.y + dir.y, eye.z + dir.z);
     vec3 up(0.0f, 1.0f, 0.0f);
     out << "LookAt " << eye << ' ' << lookAt << ' ' << up << '\n';
-    out << R"(Camera "perspective" "float fov" [65])" << '\n';
+    float fovDeg = cam->Fov() * (180.0f / 3.14159265358979323846f);
+    out << R"(Camera "perspective" "float fov" [)" << fovDeg << "]\n";
 }
 
-void PbrtExporter::WriteFilm(std::ofstream& out) {
-    out << R"(Film "rgb" "integer xresolution" [1224] "integer yresolution" [691])" << '\n';
+void PbrtExporter::WriteFilm(std::ofstream& out, uint32_t width, uint32_t height) {
+    out << R"(Film "rgb" "integer xresolution" [)" << width
+        << R"(] "integer yresolution" [)" << height << "]\n";
     out << R"(    "string filename" "output.png")" << '\n';
 }
 
 void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
-    const std::unordered_map<uint32_t, std::string>& exportedTexNames) {
+    const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
+    const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames) {
     if (!scene.cpuMaterials || scene.applMesh->_materialCount == 0) {
         spdlog::warn("PbrtExporter: no materials to export");
         return;
@@ -426,7 +438,6 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
     for (int i = 0; i < materialCount; ++i) {
         const AAPLMaterial& mat = scene.cpuMaterials[i];
         float metallic = mat.metallicRoughness.x;
-        float roughness = mat.metallicRoughness.y;
 
         // pbrt-v4: use "conductor" for metals, "coateddiffuse" for dielectrics.
         // "uber" was removed in v4. Each parameter must appear EXACTLY ONCE
@@ -440,15 +451,23 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
             out << Indent(1) << "\"rgb reflectance\" [ "
                 << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
         if (mat.hasMetallicRoughnessTexture) {
-            out << Indent(1) << "\"texture uroughness\" \"roughness_" << i << "\"\n";
-            out << Indent(1) << "\"texture vroughness\" \"roughness_" << i << "\"\n";
+            auto it = exportedRoughTexNames.find(mat.metallicRoughnessHash);
+            if (it != exportedRoughTexNames.end()) {
+                out << Indent(1) << "\"texture uroughness\" \"roughness_" << i << "\"\n";
+                out << Indent(1) << "\"texture vroughness\" \"roughness_" << i << "\"\n";
+            } else {
+                float roughness = mat.metallicRoughness.y;
+                out << Indent(1) << "\"float uroughness\" [ " << roughness << " ]\n";
+                out << Indent(1) << "\"float vroughness\" [ " << roughness << " ]\n";
+            }
         } else {
+            float roughness = mat.metallicRoughness.y;
             out << Indent(1) << "\"float uroughness\" [ " << roughness << " ]\n";
             out << Indent(1) << "\"float vroughness\" [ " << roughness << " ]\n";
         }
         if (mat.hasNormalMap) {
-            auto it = exportedTexNames.find(mat.normalMapHash);
-            if (it != exportedTexNames.end())
+            auto it = exportedColorTexNames.find(mat.normalMapHash);
+            if (it != exportedColorTexNames.end())
                 out << Indent(1) << "\"string normalmap\" \"" << it->second << "\"\n";
         }
     }
@@ -538,7 +557,8 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
     const vec3& sunDir = scene.frameConstants.sunDirection;
     const vec3& sunColor = scene.frameConstants.sunColor;
     if (sunColor.x > 0 || sunColor.y > 0 || sunColor.z > 0) {
-        vec3 from(-sunDir.x * 10000.0f, -sunDir.y * 10000.0f, -sunDir.z * 10000.0f);
+        // sunDirection is surface→sun; place the distant light source in that direction.
+        vec3 from(sunDir.x * 10000.0f, sunDir.y * 10000.0f, sunDir.z * 10000.0f);
         out << '\n' << Indent(1) << R"(LightSource "distant")" << '\n';
         out << Indent(2) << "\"point3 from\" [ " << from << " ]\n";
         out << Indent(2) << "\"rgb L\" [ "
@@ -584,23 +604,34 @@ bool PbrtExporter::Export(const GpuScene& scene,
         // Step 1: Export texture data to BMP files alongside the .pbrt file
         std::filesystem::path outputDir = outputPath.parent_path();
         if (outputDir.empty()) outputDir = ".";
-        std::unordered_map<uint32_t, std::string> exportedTexNames; // hash -> filename
+        std::unordered_map<uint32_t, std::string> exportedColorTexNames; // hash -> color/normalmap BMP filename
+        std::unordered_map<uint32_t, std::string> exportedRoughTexNames; // hash -> roughness (G-channel) BMP filename
 
         if (scene.cpuMaterials && scene.applMesh->_textureData) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
+                // Export color and normal map textures with all channels.
                 auto exportTex = [&](uint32_t hash) {
-                    if (hash == 0 || exportedTexNames.count(hash)) return;
+                    if (hash == 0 || exportedColorTexNames.count(hash)) return;
                     std::string name = ExportTextureData(hash,
                         scene.streamingEntryMap, scene.streamingEntries,
                         scene.applMesh, outputDir);
                     if (!name.empty())
-                        exportedTexNames[hash] = name;
+                        exportedColorTexNames[hash] = name;
                 };
-                if (mat.hasBaseColorTexture)       exportTex(mat.baseColorTextureHash);
-                if (mat.hasMetallicRoughnessTexture) exportTex(mat.metallicRoughnessHash);
-                if (mat.hasNormalMap)              exportTex(mat.normalMapHash);
+                // Export roughness as G-channel-only greyscale BMP.
+                auto exportRoughTex = [&](uint32_t hash) {
+                    if (hash == 0 || exportedRoughTexNames.count(hash)) return;
+                    std::string name = ExportTextureData(hash,
+                        scene.streamingEntryMap, scene.streamingEntries,
+                        scene.applMesh, outputDir, /*channel=*/1, /*suffix=*/"_rough");
+                    if (!name.empty())
+                        exportedRoughTexNames[hash] = name;
+                };
+                if (mat.hasBaseColorTexture)        exportTex(mat.baseColorTextureHash);
+                if (mat.hasMetallicRoughnessTexture) exportRoughTex(mat.metallicRoughnessHash);
+                if (mat.hasNormalMap)               exportTex(mat.normalMapHash);
             }
         }
 
@@ -615,7 +646,8 @@ bool PbrtExporter::Export(const GpuScene& scene,
 
         out << R"(Integrator "volpath" "integer maxdepth" [8])" << '\n';
         out << R"(Sampler "sobol" "integer pixelsamples" [4])" << '\n';
-        WriteFilm(out);
+        const VkExtent2D& ext = scene.device.getSwapChainExtent();
+        WriteFilm(out, ext.width, ext.height);
         WriteCamera(out, scene);
         out << R"(PixelFilter "gaussian" "float xradius" [1.5] "float yradius" [1.5])" << '\n';
 
@@ -626,23 +658,31 @@ bool PbrtExporter::Export(const GpuScene& scene,
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
-                auto declTex = [&](uint32_t hash, const char* prefix, const char* texType) {
-                    auto it = exportedTexNames.find(hash);
-                    if (it == exportedTexNames.end()) return;
+                auto declColorTex = [&](uint32_t hash, const char* prefix, const char* texType) {
+                    auto it = exportedColorTexNames.find(hash);
+                    if (it == exportedColorTexNames.end()) return;
                     out << Indent(1) << "Texture \"" << prefix << i << "\" \""
                         << texType << "\" \"imagemap\"" << '\n';
                     out << Indent(2) << "\"string filename\" \""
                         << it->second << "\"\n";
                 };
+                auto declRoughTex = [&](uint32_t hash, const char* prefix) {
+                    auto it = exportedRoughTexNames.find(hash);
+                    if (it == exportedRoughTexNames.end()) return;
+                    out << Indent(1) << "Texture \"" << prefix << i << "\" "
+                        << "\"float\" \"imagemap\"" << '\n';
+                    out << Indent(2) << "\"string filename\" \""
+                        << it->second << "\"\n";
+                };
                 if (mat.hasBaseColorTexture)
-                    declTex(mat.baseColorTextureHash, "color_", "spectrum");
+                    declColorTex(mat.baseColorTextureHash, "color_", "spectrum");
                 if (mat.hasMetallicRoughnessTexture)
-                    declTex(mat.metallicRoughnessHash, "roughness_", "float");
+                    declRoughTex(mat.metallicRoughnessHash, "roughness_");
                 // Normal maps use "string normalmap" directly (not a texture reference)
             }
         }
 
-        WriteMaterials(out, scene, exportedTexNames);
+        WriteMaterials(out, scene, exportedColorTexNames, exportedRoughTexNames);
         WriteGeometry(out, scene);
         WriteLights(out, scene);
 

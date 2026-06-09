@@ -18,15 +18,11 @@ public:
                        const std::filesystem::path& outputPath);
 
 private:
-    static std::string ResolveTexturePath(
-        uint32_t hash,
-        const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
-        const std::vector<TextureStreamingEntry>& streamingEntries);
-
     static void WriteCamera(std::ofstream& out, const GpuScene& scene);
-    static void WriteFilm(std::ofstream& out);
+    static void WriteFilm(std::ofstream& out, uint32_t width, uint32_t height);
     static void WriteMaterials(std::ofstream& out, const GpuScene& scene,
-                                const std::unordered_map<uint32_t, std::string>& exportedTexNames);
+                                const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
+                                const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames);
     static void WriteGeometry(std::ofstream& out, const GpuScene& scene);
     static void WriteLights(std::ofstream& out, const GpuScene& scene);
 };
