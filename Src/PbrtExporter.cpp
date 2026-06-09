@@ -160,6 +160,10 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
     bool is16bit = (mesh->_indexType == 2);
     for (int m = 0; m < meshCount; ++m) {
         const AAPLSubMesh& submesh = scene.m_SubMeshes[m];
+        if((submesh.indexCount)%3!=0)
+            spdlog::warn("PbrtExporter: submesh {} has index count {}, which is not a multiple of 3",
+                         m, submesh.indexCount);
+        size_t submeshVertexCount = submesh.indexCount / 3;
         if (submesh.indexCount == 0) continue;
         out << '\n' << Indent(1) << "AttributeBegin\n";
         int matIndex = static_cast<int>(submesh.materialIndex);
@@ -167,16 +171,16 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
             out << Indent(2) << "NamedMaterial \"material_" << matIndex << "\"\n";
         out << Indent(2) << R"(Shape "trianglemesh")" << '\n';
         out << Indent(2) << "\"point3 P\" ";
-        WriteVec3Array(out, verts, vertexCount);
+        WriteVec3Array(out, verts, submeshVertexCount);
         out << '\n';
         if (norms) {
             out << Indent(2) << "\"normal N\" ";
-            WriteVec3Array(out, norms, vertexCount);
+            WriteVec3Array(out, norms, submeshVertexCount);
             out << '\n';
         }
         if (uvs) {
             out << Indent(2) << "\"float uv\" ";
-            WriteVec2Array(out, uvs, vertexCount);
+            WriteVec2Array(out, uvs, submeshVertexCount);
             out << '\n';
         }
         out << Indent(2) << "\"integer indices\" ";

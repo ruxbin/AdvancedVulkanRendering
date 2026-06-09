@@ -2391,6 +2391,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   // TODO: ugly
   vkUnmapMemory(device.getLogicalDevice(), applVertexBufferMemory);
 
+  applMesh->_vertexData = vertexs;
+
   vec3 *normals = (vec3 *)uncompressData(
       (unsigned char *)applMesh->_normalData,
       applMesh->compressedNormalDataLength, [this](uint64_t buffersize) {
@@ -2434,6 +2436,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         return data;
       });
   vkUnmapMemory(device.getLogicalDevice(), applNormalBufferMemory);
+
+  applMesh->_normalData = normals;
 
   vec3 *tangents = (vec3 *)uncompressData(
       (unsigned char *)applMesh->_tangentData,
@@ -2479,6 +2483,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
       });
   vkUnmapMemory(device.getLogicalDevice(), applTangentBufferMemory);
 
+  applMesh->_tangentData = tangents;
+
   vec2 *uvs = (vec2 *)uncompressData(
       (unsigned char *)applMesh->_uvData, applMesh->compressedUvDataLength,
       [this](uint64_t buffersize) {
@@ -2522,6 +2528,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         return data;
       });
   vkUnmapMemory(device.getLogicalDevice(), applUVBufferMemory);
+
+  applMesh->_uvData = uvs;
 
   uint32_t *indices = (uint32_t *)uncompressData(
       (unsigned char *)applMesh->_indexData,
@@ -2568,7 +2576,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         return data;
       });
   vkUnmapMemory(device.getLogicalDevice(), applIndexMemory);
-
+  applMesh->_indexData = indices;
+  
   m_Chunks = (AAPLMeshChunk *)uncompressData(
       (unsigned char *)applMesh->_chunkData,
       applMesh->compressedChunkDataLength,
