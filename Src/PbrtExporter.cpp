@@ -1,6 +1,7 @@
 #include "PbrtExporter.h"
 #include "GpuScene.h"
 #include "spdlog/spdlog.h"
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -16,14 +17,17 @@ constexpr int kPrecision = 6;
 // ---- ostream formatters ----
 
 std::ostream& operator<<(std::ostream& os, const vec3& v) {
-    os << std::fixed << std::setprecision(kPrecision)
-       << v.x << ' ' << v.y << ' ' << v.z;
+    os << std::fixed << std::setprecision(kPrecision);
+    os << (std::isnan(v.x) ? 0.0f : (double)v.x) << ' '
+       << (std::isnan(v.y) ? 0.0f : (double)v.y) << ' '
+       << (std::isnan(v.z) ? 0.0f : (double)v.z);
     return os;
 }
 
 std::ostream& operator<<(std::ostream& os, const vec2& v) {
-    os << std::fixed << std::setprecision(kPrecision)
-       << v.x << ' ' << v.y;
+    os << std::fixed << std::setprecision(kPrecision);
+    os << (std::isnan(v.x) ? 0.0f : (double)v.x) << ' '
+       << (std::isnan(v.y) ? 0.0f : (double)v.y);
     return os;
 }
 
