@@ -118,7 +118,7 @@ void DecodeBC3Block(const uint8_t* block, uint8_t* rgbaOut) {
     }
 
     // Color block (8 bytes): block[8..15] — same as BC1
-    uint8_t colorBlock[16];
+    uint8_t colorBlock[64]; // 16 pixels × 4 bytes RGBA
     DecodeBC1Block(block + 8, colorBlock);
 
     for (int i = 0; i < 16; ++i) {
@@ -174,17 +174,28 @@ void DecodeBC5Block(const uint8_t* block, uint8_t* rgbaOut) {
 // src: compressed data, rgbaOut: output buffer (blockW*4 * blockH*4 * 4 bytes).
 void DecompressBC(uint32_t pixelFormat, const uint8_t* src,
                   uint32_t blockW, uint32_t blockH, uint8_t* rgbaOut) {
+    uint32_t outStride = blockW * 16; // bytes per output row (blockW*4 pixels * 4 bytes)
+
     for (uint32_t by = 0; by < blockH; ++by) {
         for (uint32_t bx = 0; bx < blockW; ++bx) {
             uint32_t blockIdx = by * blockW + bx;
-            uint32_t outBase = (by * blockW * 16 + bx * 4) * 4; // 16 pixels * 4 bytes per block row
 
+            // Decode to a temp buffer (16 pixels = 64 bytes RGBA)
+            uint8_t blockPixels[64];
             if (pixelFormat == kBC1_RGBA_sRGB) {
-                DecodeBC1Block(src + blockIdx * 8, rgbaOut + outBase);
+                DecodeBC1Block(src + blockIdx * 8, blockPixels);
             } else if (pixelFormat == kBC3_RGBA_sRGB) {
-                DecodeBC3Block(src + blockIdx * 16, rgbaOut + outBase);
+                DecodeBC3Block(src + blockIdx * 16, blockPixels);
             } else if (pixelFormat == kBC5_RGUnorm) {
-                DecodeBC5Block(src + blockIdx * 16, rgbaOut + outBase);
+                DecodeBC5Block(src + blockIdx * 16, blockPixels);
+            } else {
+                continue;
+            }
+
+            // Copy 4 rows of 4 pixels each into the output image
+            for (int row = 0; row < 4; ++row) {
+                uint8_t* dstRow = rgbaOut + (by * 4 + row) * outStride + bx * 16;
+                std::memcpy(dstRow, blockPixels + row * 16, 16);
             }
         }
     }
@@ -285,13 +296,14 @@ std::string ExportTextureData(
     std::string outName = baseName + ".bmp";
     auto outPath = outputDir / outName;
 
-    // Get compressed data from the .bin texture payload
-    if (!mesh->_textureData || tex._pixelDataOffset + tex._pixelDataLength >
-        (unsigned long long)(ptrdiff_t)-1) {
+    // Get compressed data from the .bin texture payload.
+    // Mip data starts at _pixelDataOffset + _mipOffsets[mip].
+    if (!mesh->_textureData || tex._mipOffsets.empty() || tex._mipLengths.empty()) {
         return {};
     }
-    const uint8_t* srcData = static_cast<const uint8_t*>(mesh->_textureData)
-                             + tex._pixelDataOffset;
+    // Use mip 0 (full resolution).
+    unsigned long long mip0Offset = tex._pixelDataOffset + tex._mipOffsets[0];
+    unsigned long long mip0Length = tex._mipLengths[0];
 
     // Calculate block dimensions
     uint32_t blockSize = 4;
@@ -299,8 +311,21 @@ std::string ExportTextureData(
     else if (tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm)
         blockSize = 16;
 
-    uint32_t blockW = ((uint32_t)tex._width  + 3) / 4;
-    uint32_t blockH = ((uint32_t)tex._height + 3) / 4;
+    uint32_t mipW = (uint32_t)tex._width;
+    uint32_t mipH = (uint32_t)tex._height;
+    uint32_t blockW = (mipW + 3) / 4;
+    uint32_t blockH = (mipH + 3) / 4;
+    uint64_t needed = (uint64_t)blockW * blockH * blockSize;
+
+    // If mip 0 data is too small, skip this texture.
+    if (mip0Length < needed) {
+        spdlog::warn("PbrtExporter: texture {} mip0 length {} < needed {}, skipping",
+                     baseName, mip0Length, needed);
+        return {};
+    }
+
+    const uint8_t* srcData = static_cast<const uint8_t*>(mesh->_textureData)
+                             + mip0Offset;
 
     // Allocate decompression buffer
     uint32_t pixelCount = blockW * 4 * blockH * 4;
