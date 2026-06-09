@@ -533,7 +533,7 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
     if (sunColor.x > 0 || sunColor.y > 0 || sunColor.z > 0) {
         vec3 from(-sunDir.x * 10000.0f, -sunDir.y * 10000.0f, -sunDir.z * 10000.0f);
         out << '\n' << Indent(1) << R"(LightSource "distant")" << '\n';
-        out << Indent(2) << "\"point from\" [ " << from << " ]\n";
+        out << Indent(2) << "\"point3 from\" [ " << from << " ]\n";
         out << Indent(2) << "\"rgb L\" [ "
             << sunColor.x << ' ' << sunColor.y << ' ' << sunColor.z << " ]\n";
     }
@@ -543,7 +543,7 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
         vec3 pos(d->posSqrRadius.x, d->posSqrRadius.y, d->posSqrRadius.z);
         float intensity = scene.frameConstants.localLightIntensity;
         out << '\n' << Indent(1) << R"(LightSource "point")" << '\n';
-        out << Indent(2) << "\"point from\" [ " << pos << " ]\n";
+        out << Indent(2) << "\"point3 from\" [ " << pos << " ]\n";
         out << Indent(2) << "\"rgb I\" [ "
             << d->color.x * intensity << ' '
             << d->color.y * intensity << ' '
@@ -559,8 +559,8 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
         vec3 color(d->colorAndInnerAngle.x, d->colorAndInnerAngle.y, d->colorAndInnerAngle.z);
         float intensity = scene.frameConstants.localLightIntensity;
         out << '\n' << Indent(1) << R"(LightSource "spot")" << '\n';
-        out << Indent(2) << "\"point from\" [ " << pos << " ]\n";
-        out << Indent(2) << "\"point to\" [ " << lookAt << " ]\n";
+        out << Indent(2) << "\"point3 from\" [ " << pos << " ]\n";
+        out << Indent(2) << "\"point3 to\" [ " << lookAt << " ]\n";
         out << Indent(2) << "\"float coneangle\" [ " << coneDeg << " ]\n";
         out << Indent(2) << "\"rgb I\" [ "
             << color.x * intensity << ' '
