@@ -424,22 +424,32 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene) {
     const int materialCount = static_cast<int>(scene.applMesh->_materialCount);
     for (int i = 0; i < materialCount; ++i) {
         const AAPLMaterial& mat = scene.cpuMaterials[i];
-        out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
-        out << Indent(1) << "\"string type\" \"uber\"\n";
-        out << Indent(1) << "\"rgb Kd\" [ "
-            << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
         float metallic = mat.metallicRoughness.x;
         float roughness = mat.metallicRoughness.y;
-        out << Indent(1) << "\"float metallic\" [ " << metallic << " ]\n";
+
+        // pbrt-v4: use "conductor" for metals, "coateddiffuse" for dielectrics.
+        // "uber" was removed in v4.
+        if (metallic > 0.5f) {
+            out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
+            out << Indent(1) << "\"string type\" \"conductor\"\n";
+            // eta/k: use copper-like defaults; baseColor tints the reflectance
+            out << Indent(1) << "\"rgb eta\" [ 0.2 0.4 1.0 ]\n";
+            out << Indent(1) << "\"rgb k\" [ 3.0 2.5 2.0 ]\n";
+            out << Indent(1) << "\"rgb reflectance\" [ "
+                << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
+        } else {
+            out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
+            out << Indent(1) << "\"string type\" \"coateddiffuse\"\n";
+            out << Indent(1) << "\"rgb reflectance\" [ "
+                << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
+        }
         out << Indent(1) << "\"float roughness\" [ " << roughness << " ]\n";
-        if (mat.opacity < 1.0f)
-            out << Indent(1) << "\"float opacity\" [ " << mat.opacity << " ]\n";
         if (mat.emissiveColor.x > 0 || mat.emissiveColor.y > 0 || mat.emissiveColor.z > 0)
             out << Indent(1) << "\"rgb Le\" [ "
                 << mat.emissiveColor.x << ' ' << mat.emissiveColor.y << ' ' << mat.emissiveColor.z << " ]\n";
-        // Texture references: exported BMP filenames
+        // Texture references
         if (mat.hasBaseColorTexture)
-            out << Indent(1) << "\"texture Kd\" \"color_" << i << "\"\n";
+            out << Indent(1) << "\"texture reflectance\" \"color_" << i << "\"\n";
         if (mat.hasMetallicRoughnessTexture)
             out << Indent(1) << "\"texture roughness\" \"roughness_" << i << "\"\n";
         if (mat.hasNormalMap)
