@@ -424,7 +424,8 @@ void PbrtExporter::WriteCamera(std::ofstream& out, const GpuScene& scene) {
 void PbrtExporter::WriteFilm(std::ofstream& out, uint32_t width, uint32_t height) {
     out << R"(Film "rgb" "integer xresolution" [)" << width
         << R"(] "integer yresolution" [)" << height << "]\n";
-    out << R"(    "string filename" "output.png")" << '\n';
+    // EXR preserves full HDR range; avoids "out of gamut" clamp warnings on PNG.
+    out << R"(    "string filename" "output.exr")" << '\n';
 }
 
 void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
@@ -554,6 +555,11 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
 }
 
 void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
+    // Game engines store colors in normalized [0,1] linear sRGB; pbrt treats
+    // "rgb L/I" as physical W/(m²·sr) / W·sr⁻¹. Scale by 1/π so a diffuse-white
+    // surface lit head-on by a normalized sun produces exactly 1.0 output radiance.
+    constexpr float kLightScale = 1.0f / 3.14159265358979323846f;
+
     const vec3& sunDir = scene.frameConstants.sunDirection;
     const vec3& sunColor = scene.frameConstants.sunColor;
     if (sunColor.x > 0 || sunColor.y > 0 || sunColor.z > 0) {
@@ -563,6 +569,7 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
         out << Indent(2) << "\"point3 from\" [ " << from << " ]\n";
         out << Indent(2) << "\"rgb L\" [ "
             << sunColor.x << ' ' << sunColor.y << ' ' << sunColor.z << " ]\n";
+        out << Indent(2) << "\"float scale\" [ " << kLightScale << " ]\n";
     }
     for (const auto& pl : scene._pointLights) {
         const PointLightData* d = pl.getPointLightData();
@@ -575,6 +582,7 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
             << d->color.x * intensity << ' '
             << d->color.y * intensity << ' '
             << d->color.z * intensity << " ]\n";
+        out << Indent(2) << "\"float scale\" [ " << kLightScale << " ]\n";
     }
     for (const auto& sl : scene._spotLights) {
         const SpotLightData* d = sl._spotLightData;
@@ -593,6 +601,7 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
             << color.x * intensity << ' '
             << color.y * intensity << ' '
             << color.z * intensity << " ]\n";
+        out << Indent(2) << "\"float scale\" [ " << kLightScale << " ]\n";
     }
 }
 
