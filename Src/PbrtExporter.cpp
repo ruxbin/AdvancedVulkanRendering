@@ -529,8 +529,13 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
             out << '\n';
         }
         if (uvs) {
+            // pbrt uses (0,0)=bottom-left texture convention; mesh UVs use
+            // top-left. Flip V so texture orientation matches GPU rendering.
             out << Indent(2) << "\"point2 uv\" ";
-            WriteVec2Array(out, uvs + idxMin, rangeCount);
+            out << "[ ";
+            for (uint32_t i = 0; i < rangeCount; ++i)
+                out << uvs[idxMin + i].x << ' ' << (1.0f - uvs[idxMin + i].y) << ' ';
+            out << "]";
             out << '\n';
         }
         out << Indent(2) << "\"integer indices\" ";
