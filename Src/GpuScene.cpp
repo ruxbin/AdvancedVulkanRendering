@@ -104,7 +104,9 @@ void *uncompressData(void *data, size_t dataLength,
   void *dstBuffer = allocatorCallback(header->uncompressedSize);
 
   uncompressData(*header, (header + 1), dstBuffer);
-  return dstBuffer;
+  void *dstBuffer_cpu = malloc(header->uncompressedSize);
+  memcpy(dstBuffer_cpu, dstBuffer, header->uncompressedSize);
+  return dstBuffer_cpu;
 }
 
 VkShaderModule
