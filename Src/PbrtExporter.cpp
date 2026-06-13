@@ -539,6 +539,17 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
             WriteVec3Array(out, norms + idxMin, rangeCount);
             out << '\n';
         }
+        const vec4* tangs = static_cast<const vec4*>(mesh->_tangentData);
+        if (tangs) {
+            // Encode bitangent handedness: export S = T.xyz * T.w so that
+            // pbrt's B = cross(N, S) matches the engine's B = T.w * cross(N, T).
+            out << Indent(2) << "\"vector3 S\" [ ";
+            for (uint32_t i = 0; i < rangeCount; ++i) {
+                const vec4& t = tangs[idxMin + i];
+                out << (t.x * t.w) << ' ' << (t.y * t.w) << ' ' << (t.z * t.w) << ' ';
+            }
+            out << "]\n";
+        }
         if (uvs) {
             // pbrt uses (0,0)=bottom-left texture convention; mesh UVs use
             // top-left. Flip V so texture orientation matches GPU rendering.
@@ -655,13 +666,14 @@ bool PbrtExporter::Export(const GpuScene& scene,
                     if (!name.empty())
                         exportedRoughTexNames[hash] = name;
                 };
-                // Export normal maps with G-channel flipped to compensate for UV V-flip.
-                auto exportNormalTex = [&](uint32_t hash) {
+                // Export normal maps without G-flip — explicit tangent vectors below
+        // make UV-derivative-based tangent computation irrelevant.
+        auto exportNormalTex = [&](uint32_t hash) {
                     if (hash == 0 || exportedNormalTexNames.count(hash)) return;
                     std::string name = ExportTextureData(hash,
                         scene.streamingEntryMap, scene.streamingEntries,
                         scene.applMesh, outputDir, /*channel=*/-1, /*suffix=*/"_nm",
-                        /*flipGreen=*/true);
+                        /*flipGreen=*/false);
                     if (!name.empty())
                         exportedNormalTexNames[hash] = name;
                 };
