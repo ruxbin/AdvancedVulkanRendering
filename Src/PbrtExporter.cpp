@@ -283,6 +283,8 @@ bool WriteBMP(const std::filesystem::path& path,
 // directory) on success, empty string on failure.
 // channel: -1 = all channels (RGBA), 0/1/2 = extract R/G/B as greyscale.
 // suffix: appended before the ".bmp" extension (e.g. "_rough").
+// flipGreen: invert the G channel (needed for normal maps to compensate for UV V-flip
+//            which reverses the bitangent direction in pbrt's tangent frame computation).
 std::string ExportTextureData(
     uint32_t hash,
     const std::unordered_map<uint32_t, size_t>& streamingEntryMap,
@@ -290,7 +292,8 @@ std::string ExportTextureData(
     const AAPLMeshData* mesh,
     const std::filesystem::path& outputDir,
     int channel = -1,
-    const char* suffix = "")
+    const char* suffix = "",
+    bool flipGreen = false)
 {
     auto it = streamingEntryMap.find(hash);
     if (it == streamingEntryMap.end()) return {};
@@ -387,6 +390,13 @@ std::string ExportTextureData(
         }
     }
 
+    // Flip G channel for normal maps: UV V-flip inverts pbrt's bitangent (B = -B_original),
+    // so we negate the Y component here to restore the correct perturbation direction.
+    if (flipGreen) {
+        for (uint32_t i = 0; i < (uint32_t)rgba.size() / 4; ++i)
+            rgba[i * 4 + 1] = 255 - rgba[i * 4 + 1];
+    }
+
     if (!WriteBMP(outPath, w, h, rgba.data())) {
         spdlog::warn("PbrtExporter: failed to write texture {}", outPath.string());
         return {};
@@ -422,15 +432,16 @@ void PbrtExporter::WriteCamera(std::ofstream& out, const GpuScene& scene) {
 }
 
 void PbrtExporter::WriteFilm(std::ofstream& out, uint32_t width, uint32_t height) {
-    out << R"(Film "rgb" "integer xresolution" [)" << width
-        << R"(] "integer yresolution" [)" << height << "]\n";
+    out << R"(Film "gbuffer" "integer xresolution" [)" << width/2
+        << R"(] "integer yresolution" [)" << height/2 << "]\n";
     // EXR preserves full HDR range; avoids "out of gamut" clamp warnings on PNG.
     out << R"(    "string filename" "output.exr")" << '\n';
 }
 
 void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
     const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
-    const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames) {
+    const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames,
+    const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames) {
     if (!scene.cpuMaterials || scene.applMesh->_materialCount == 0) {
         spdlog::warn("PbrtExporter: no materials to export");
         return;
@@ -467,8 +478,8 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
             out << Indent(1) << "\"float vroughness\" [ " << roughness << " ]\n";
         }
         if (mat.hasNormalMap) {
-            auto it = exportedColorTexNames.find(mat.normalMapHash);
-            if (it != exportedColorTexNames.end())
+            auto it = exportedNormalTexNames.find(mat.normalMapHash);
+            if (it != exportedNormalTexNames.end())
                 out << Indent(1) << "\"string normalmap\" \"" << it->second << "\"\n";
         }
     }
@@ -618,14 +629,15 @@ bool PbrtExporter::Export(const GpuScene& scene,
         // Step 1: Export texture data to BMP files alongside the .pbrt file
         std::filesystem::path outputDir = outputPath.parent_path();
         if (outputDir.empty()) outputDir = ".";
-        std::unordered_map<uint32_t, std::string> exportedColorTexNames; // hash -> color/normalmap BMP filename
+        std::unordered_map<uint32_t, std::string> exportedColorTexNames; // hash -> color BMP filename
         std::unordered_map<uint32_t, std::string> exportedRoughTexNames; // hash -> roughness (G-channel) BMP filename
+        std::unordered_map<uint32_t, std::string> exportedNormalTexNames; // hash -> normal map BMP filename (G-flipped)
 
         if (scene.cpuMaterials && scene.applMesh->_textureData) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
-                // Export color and normal map textures with all channels.
+                // Export base color textures with all channels.
                 auto exportTex = [&](uint32_t hash) {
                     if (hash == 0 || exportedColorTexNames.count(hash)) return;
                     std::string name = ExportTextureData(hash,
@@ -643,9 +655,19 @@ bool PbrtExporter::Export(const GpuScene& scene,
                     if (!name.empty())
                         exportedRoughTexNames[hash] = name;
                 };
+                // Export normal maps with G-channel flipped to compensate for UV V-flip.
+                auto exportNormalTex = [&](uint32_t hash) {
+                    if (hash == 0 || exportedNormalTexNames.count(hash)) return;
+                    std::string name = ExportTextureData(hash,
+                        scene.streamingEntryMap, scene.streamingEntries,
+                        scene.applMesh, outputDir, /*channel=*/-1, /*suffix=*/"_nm",
+                        /*flipGreen=*/true);
+                    if (!name.empty())
+                        exportedNormalTexNames[hash] = name;
+                };
                 if (mat.hasBaseColorTexture)        exportTex(mat.baseColorTextureHash);
                 if (mat.hasMetallicRoughnessTexture) exportRoughTex(mat.metallicRoughnessHash);
-                if (mat.hasNormalMap)               exportTex(mat.normalMapHash);
+                if (mat.hasNormalMap)               exportNormalTex(mat.normalMapHash);
             }
         }
 
@@ -696,7 +718,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
             }
         }
 
-        WriteMaterials(out, scene, exportedColorTexNames, exportedRoughTexNames);
+        WriteMaterials(out, scene, exportedColorTexNames, exportedRoughTexNames, exportedNormalTexNames);
         WriteGeometry(out, scene);
         WriteLights(out, scene);
 
