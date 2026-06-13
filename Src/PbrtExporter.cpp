@@ -539,14 +539,15 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
             WriteVec3Array(out, norms + idxMin, rangeCount);
             out << '\n';
         }
-        const vec4* tangs = static_cast<const vec4*>(mesh->_tangentData);
+        const vec3* tangs = static_cast<const vec3*>(mesh->_tangentData);
         if (tangs) {
-            // Encode bitangent handedness: export S = T.xyz * T.w so that
-            // pbrt's B = cross(N, S) matches the engine's B = T.w * cross(N, T).
             out << Indent(2) << "\"vector3 S\" [ ";
             for (uint32_t i = 0; i < rangeCount; ++i) {
-                const vec4& t = tangs[idxMin + i];
-                out << (t.x * t.w) << ' ' << (t.y * t.w) << ' ' << (t.z * t.w) << ' ';
+                const vec3& t = tangs[idxMin + i];
+                float sx = (std::isnan(t.x) || std::isinf(t.x)) ? 0.0f : t.x;
+                float sy = (std::isnan(t.y) || std::isinf(t.y)) ? 0.0f : t.y;
+                float sz = (std::isnan(t.z) || std::isinf(t.z)) ? 0.0f : t.z;
+                out << sx << ' ' << sy << ' ' << sz << ' ';
             }
             out << "]\n";
         }
