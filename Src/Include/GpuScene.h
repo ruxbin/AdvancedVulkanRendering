@@ -420,6 +420,7 @@ private:
   bool _showSpotLightViz      = false;  // ImGui debug toggle: spot light cones
   bool _meshPickerActive      = false;
   std::string _pickedMeshName;
+  SDL_Window* _sdlWindow = nullptr;
 
   std::string queryMeshAtScreenPos(float mouseX, float mouseY);
 

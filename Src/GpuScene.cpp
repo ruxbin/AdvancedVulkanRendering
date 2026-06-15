@@ -12,6 +12,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_vulkan.h"
+#include <SDL.h>
 
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -8417,6 +8418,7 @@ void GpuScene::cycleDecalTexture() {
 // --- ImGui Integration ---
 
 void GpuScene::initImGui(SDL_Window *window) {
+  _sdlWindow = window;
   // Create descriptor pool for ImGui
   VkDescriptorPoolSize pool_sizes[] = {
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
@@ -8488,20 +8490,62 @@ std::string GpuScene::queryMeshAtScreenPos(float mouseX, float mouseY) {
   if (!m_SubMeshes || !applMesh || applMesh->_meshCount == 0)
     return "(no scene)";
 
-  vec3 worldPos = getWorldPosFromDepth(mouseX, mouseY);
+  Camera* cam = GetMainCamera();
+  if (!cam) return "(no camera)";
 
+  float w = (float)device.getSwapChainExtent().width;
+  float h = (float)device.getSwapChainExtent().height;
+
+  // Use ScreenToWorldPos which internally uses _invViewProj (correct matrix,
+  // avoids the A*B=B*A quirk). Reverse-Z: z=1=near, z=0=far.
+  vec3 nearPoint = cam->ScreenToWorldPos(mouseX, mouseY, w, h, 1.0f);
+  vec3 farPoint  = cam->ScreenToWorldPos(mouseX, mouseY, w, h, 0.0f);
+  vec3 rayDir = normalize(farPoint - nearPoint);
+
+  vec3 camPos = cam->GetOrigin();
+  spdlog::info("Picker: mouse=({:.0f},{:.0f}) cam=({:.2f},{:.2f},{:.2f})",
+               mouseX, mouseY, camPos.x, camPos.y, camPos.z);
+  spdlog::info("  near=({:.2f},{:.2f},{:.2f}) far=({:.2f},{:.2f},{:.2f}) "
+               "dir=({:.3f},{:.3f},{:.3f})",
+               nearPoint.x, nearPoint.y, nearPoint.z,
+               farPoint.x, farPoint.y, farPoint.z,
+               rayDir.x, rayDir.y, rayDir.z);
+
+  // Sample first 3 AABBs to sanity-check coordinate spaces
+  const int sampleCount = (std::min)(3, (int)applMesh->_meshCount);
+  for (int m = 0; m < sampleCount; ++m) {
+    const AAPLSubMesh& s = m_SubMeshes[m];
+    spdlog::info("  AABB[{}]: min=({:.2f},{:.2f},{:.2f}) max=({:.2f},{:.2f},{:.2f})",
+                 m, s.boundingBox.min.x,s.boundingBox.min.y,s.boundingBox.min.z,
+                 s.boundingBox.max.x,s.boundingBox.max.y,s.boundingBox.max.z);
+  }
+
+  // Slab-method ray–AABB intersection against each submesh.
   int bestMesh = -1;
-  float bestVolume = 1e30f;
+  float bestT = 1e30f;
   for (int m = 0; m < (int)applMesh->_meshCount; ++m) {
     const AAPLSubMesh& sub = m_SubMeshes[m];
-    const vec3& bmin = sub.boundingBox.min;
-    const vec3& bmax = sub.boundingBox.max;
-    if (worldPos.x < bmin.x || worldPos.x > bmax.x) continue;
-    if (worldPos.y < bmin.y || worldPos.y > bmax.y) continue;
-    if (worldPos.z < bmin.z || worldPos.z > bmax.z) continue;
-    vec3 d = bmax - bmin;
-    float vol = d.x * d.y * d.z;
-    if (vol < bestVolume) { bestVolume = vol; bestMesh = m; }
+    float tmin = -1e30f, tmax = 1e30f;
+    const float* bmin = &sub.boundingBox.min.x;
+    const float* bmax = &sub.boundingBox.max.x;
+    for (int a = 0; a < 3; ++a) {
+      float d = (&rayDir.x)[a];
+      if (std::fabsf(d) < 1e-8f) {
+        if ((&nearPoint.x)[a] < bmin[a] || (&nearPoint.x)[a] > bmax[a])
+          { tmin = 1e30f; break; }
+        continue;
+      }
+      float t1 = (bmin[a] - (&nearPoint.x)[a]) / d;
+      float t2 = (bmax[a] - (&nearPoint.x)[a]) / d;
+      if (t1 > t2) std::swap(t1, t2);
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) break;
+    }
+    if (tmin <= tmax && tmin > 0.0f && tmin < bestT) {
+      bestT = tmin;
+      bestMesh = m;
+    }
   }
   if (bestMesh < 0) return "(none)";
   return "mesh_" + std::to_string(bestMesh) + ".ply";
@@ -8565,10 +8609,14 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
 
   ImGui::Separator();
   ImGui::Checkbox("Mesh Picker", &_meshPickerActive);
-  if (_meshPickerActive) {
-      ImVec2 mp = ImGui::GetMousePos();
-      if (ImGui::IsMousePosValid(&mp))
-          _pickedMeshName = queryMeshAtScreenPos(mp.x, mp.y);
+  if (_meshPickerActive && _sdlWindow) {
+      int mx, my;
+      SDL_GetMouseState(&mx, &my);
+      static int lastMx = -999, lastMy = -999;
+      if (std::abs(mx - lastMx) > 3 || std::abs(my - lastMy) > 3) {
+          _pickedMeshName = queryMeshAtScreenPos((float)mx, (float)my);
+          lastMx = mx; lastMy = my;
+      }
       ImGui::Text("PLY: %s", _pickedMeshName.c_str());
   }
 
