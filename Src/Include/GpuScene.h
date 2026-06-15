@@ -415,9 +415,13 @@ private:
   LightCuller *_lightCuller = nullptr;
 
   bool useClusterLighting = true;
-  bool useRayTracing = true;     // ImGui toggle: switch to full RT path
+  bool useRayTracing = false;     // ImGui toggle: switch to full RT path
   bool _showOccluderWireframe = false;  // ImGui debug toggle
   bool _showSpotLightViz      = false;  // ImGui debug toggle: spot light cones
+  bool _meshPickerActive      = false;
+  std::string _pickedMeshName;
+
+  std::string queryMeshAtScreenPos(float mouseX, float mouseY);
 
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
@@ -654,6 +658,7 @@ public:
   void OnDecalCycleTexture() {
     if (_decalEditMode) cycleDecalTexture();
   }
+  void ToggleMeshPicker() { _meshPickerActive = !_meshPickerActive; }
   void OnDecalStartRotate() {
     if (_decalEditMode) { _isDraggingDecal = false; _isRotatingDecal = true; }
   }

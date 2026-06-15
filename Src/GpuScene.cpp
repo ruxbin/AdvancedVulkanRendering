@@ -8484,6 +8484,29 @@ void GpuScene::readbackCullingStats(uint32_t previousFrame) {
   }
 }
 
+std::string GpuScene::queryMeshAtScreenPos(float mouseX, float mouseY) {
+  if (!m_SubMeshes || !applMesh || applMesh->_meshCount == 0)
+    return "(no scene)";
+
+  vec3 worldPos = getWorldPosFromDepth(mouseX, mouseY);
+
+  int bestMesh = -1;
+  float bestVolume = 1e30f;
+  for (int m = 0; m < (int)applMesh->_meshCount; ++m) {
+    const AAPLSubMesh& sub = m_SubMeshes[m];
+    const vec3& bmin = sub.boundingBox.min;
+    const vec3& bmax = sub.boundingBox.max;
+    if (worldPos.x < bmin.x || worldPos.x > bmax.x) continue;
+    if (worldPos.y < bmin.y || worldPos.y > bmax.y) continue;
+    if (worldPos.z < bmin.z || worldPos.z > bmax.z) continue;
+    vec3 d = bmax - bmin;
+    float vol = d.x * d.y * d.z;
+    if (vol < bestVolume) { bestVolume = vol; bestMesh = m; }
+  }
+  if (bestMesh < 0) return "(none)";
+  return "mesh_" + std::to_string(bestMesh) + ".ply";
+}
+
 void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
   if (!_imguiInitialized) return;
 
@@ -8538,6 +8561,15 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
       } else {
           spdlog::error("PBRT export failed");
       }
+  }
+
+  ImGui::Separator();
+  ImGui::Checkbox("Mesh Picker", &_meshPickerActive);
+  if (_meshPickerActive) {
+      ImVec2 mp = ImGui::GetMousePos();
+      if (ImGui::IsMousePosValid(&mp))
+          _pickedMeshName = queryMeshAtScreenPos(mp.x, mp.y);
+      ImGui::Text("PLY: %s", _pickedMeshName.c_str());
   }
 
   ImGui::End();

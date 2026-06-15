@@ -410,6 +410,61 @@ std::string ExportTextureData(
     return outName;
 }
 
+// Write a binary little-endian PLY file for one submesh.
+// Returns the output filename (without directory) on success, empty on failure.
+std::string WritePLYMesh(
+    const std::filesystem::path& outputDir, int meshIndex,
+    const vec3* verts, const vec3* norms, const vec2* uvs,
+    uint32_t rangeCount, uint32_t idxMin,
+    const void* indices, bool is16bit,
+    uint32_t indexBegin, uint32_t indexCount)
+{
+    std::string outName = "mesh_" + std::to_string(meshIndex) + ".ply";
+    std::ofstream f(outputDir / outName, std::ios::binary);
+    if (!f.is_open()) return {};
+
+    uint32_t nTri = indexCount / 3;
+
+    f << "ply\nformat binary_little_endian 1.0\n";
+    f << "element vertex " << rangeCount << '\n';
+    f << "property float x\nproperty float y\nproperty float z\n";
+    if (norms) f << "property float nx\nproperty float ny\nproperty float nz\n";
+    if (uvs)   f << "property float u\nproperty float v\n";
+    f << "element face " << nTri << '\n';
+    f << "property list uchar int vertex_indices\n";
+    f << "end_header\n";
+
+    auto wf = [&](float v) {
+        if (std::isnan(v) || std::isinf(v)) v = 0.0f;
+        f.write(reinterpret_cast<const char*>(&v), 4);
+    };
+
+    for (uint32_t i = 0; i < rangeCount; ++i) {
+        const vec3& v = verts[idxMin + i];
+        wf(v.x); wf(v.y); wf(v.z);
+        if (norms) { const vec3& n = norms[idxMin + i]; wf(n.x); wf(n.y); wf(n.z); }
+        if (uvs)   { const vec2& uv = uvs[idxMin + i]; wf(uv.x); wf(1.0f - uv.y); }
+    }
+
+    const uint8_t three = 3;
+    for (uint32_t k = 0; k + 2 < indexCount; k += 3) {
+        int32_t i0, i1, i2;
+        if (is16bit) {
+            const uint16_t* idx = static_cast<const uint16_t*>(indices) + indexBegin;
+            i0 = idx[k] - idxMin; i1 = idx[k+1] - idxMin; i2 = idx[k+2] - idxMin;
+        } else {
+            const uint32_t* idx = static_cast<const uint32_t*>(indices) + indexBegin;
+            i0 = idx[k] - idxMin; i1 = idx[k+1] - idxMin; i2 = idx[k+2] - idxMin;
+        }
+        f.write(reinterpret_cast<const char*>(&three), 1);
+        f.write(reinterpret_cast<const char*>(&i0), 4);
+        f.write(reinterpret_cast<const char*>(&i1), 4);
+        f.write(reinterpret_cast<const char*>(&i2), 4);
+    }
+
+    return f.good() ? outName : "";
+}
+
 } // anonymous namespace
 
 // ---- PbrtExporter private helpers ----
@@ -485,7 +540,8 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
     }
 }
 
-void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
+void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
+                                  const std::filesystem::path& outputDir) {
     const AAPLMeshData* mesh = scene.applMesh;
     if (!mesh || !scene.m_SubMeshes) {
         spdlog::warn("PbrtExporter: no mesh data to export");
@@ -526,58 +582,19 @@ void PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene) {
 
         uint32_t rangeCount = idxMax - idxMin + 1;
 
+        std::string plyName = WritePLYMesh(outputDir, m, verts, norms, uvs,
+                                           rangeCount, idxMin, indices, is16bit,
+                                           submesh.indexBegin, submesh.indexCount);
+        if (plyName.empty()) {
+            spdlog::warn("PbrtExporter: failed to write PLY for submesh {}", m);
+            continue;
+        }
+
         out << '\n' << Indent(1) << "AttributeBegin\n";
         int matIndex = static_cast<int>(submesh.materialIndex);
         if (matIndex >= 0 && matIndex < static_cast<int>(mesh->_materialCount))
             out << Indent(2) << "NamedMaterial \"material_" << matIndex << "\"\n";
-        out << Indent(2) << R"(Shape "trianglemesh")" << '\n';
-        out << Indent(2) << "\"point3 P\" ";
-        WriteVec3Array(out, verts + idxMin, rangeCount);
-        out << '\n';
-        if (norms) {
-            out << Indent(2) << "\"normal N\" ";
-            WriteVec3Array(out, norms + idxMin, rangeCount);
-            out << '\n';
-        }
-        const vec3* tangs = static_cast<const vec3*>(mesh->_tangentData);
-        if (tangs) {
-            out << Indent(2) << "\"vector3 S\" [ ";
-            for (uint32_t i = 0; i < rangeCount; ++i) {
-                const vec3& t = tangs[idxMin + i];
-                float sx = (std::isnan(t.x) || std::isinf(t.x)) ? 0.0f : t.x;
-                float sy = (std::isnan(t.y) || std::isinf(t.y)) ? 0.0f : t.y;
-                float sz = (std::isnan(t.z) || std::isinf(t.z)) ? 0.0f : t.z;
-                out << sx << ' ' << sy << ' ' << sz << ' ';
-            }
-            out << "]\n";
-        }
-        if (uvs) {
-            // pbrt uses (0,0)=bottom-left texture convention; mesh UVs use
-            // top-left. Flip V so texture orientation matches GPU rendering.
-            out << Indent(2) << "\"point2 uv\" ";
-            out << "[ ";
-            for (uint32_t i = 0; i < rangeCount; ++i)
-                out << uvs[idxMin + i].x << ' ' << (1.0f - uvs[idxMin + i].y) << ' ';
-            out << "]";
-            out << '\n';
-        }
-        out << Indent(2) << "\"integer indices\" ";
-        out << "[ ";
-        uint32_t indexCountVal = submesh.indexCount;
-        if (is16bit) {
-            const uint16_t* idx = static_cast<const uint16_t*>(indices) + submesh.indexBegin;
-            for (uint32_t k = 0; k < indexCountVal; ++k) {
-                if (k > 0 && k % 30 == 0) out << "\n  ";
-                out << static_cast<uint32_t>(idx[k] - idxMin) << ' ';
-            }
-        } else {
-            const uint32_t* idx = static_cast<const uint32_t*>(indices) + submesh.indexBegin;
-            for (uint32_t k = 0; k < indexCountVal; ++k) {
-                if (k > 0 && k % 30 == 0) out << "\n  ";
-                out << (idx[k] - idxMin) << ' ';
-            }
-        }
-        out << "]\n";
+        out << Indent(2) << R"(Shape "plymesh" "string filename" ")" << plyName << "\"\n";
         out << Indent(1) << "AttributeEnd\n";
     }
 }
@@ -732,7 +749,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         }
 
         WriteMaterials(out, scene, exportedColorTexNames, exportedRoughTexNames, exportedNormalTexNames);
-        WriteGeometry(out, scene);
+        WriteGeometry(out, scene, outputDir);
         WriteLights(out, scene);
 
         spdlog::info("PbrtExporter: wrote scene to {}", outputPath.string());

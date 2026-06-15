@@ -24,6 +24,7 @@ private:
                                 const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
                                 const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames,
                                 const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames);
-    static void WriteGeometry(std::ofstream& out, const GpuScene& scene);
+    static void WriteGeometry(std::ofstream& out, const GpuScene& scene,
+                               const std::filesystem::path& outputDir);
     static void WriteLights(std::ofstream& out, const GpuScene& scene);
 };
