@@ -8496,33 +8496,15 @@ std::string GpuScene::queryMeshAtScreenPos(float mouseX, float mouseY) {
   float w = (float)device.getSwapChainExtent().width;
   float h = (float)device.getSwapChainExtent().height;
 
-  // Use ScreenToWorldPos which internally uses _invViewProj (correct matrix,
-  // avoids the A*B=B*A quirk). Reverse-Z: z=1=near, z=0=far.
   vec3 nearPoint = cam->ScreenToWorldPos(mouseX, mouseY, w, h, 1.0f);
   vec3 farPoint  = cam->ScreenToWorldPos(mouseX, mouseY, w, h, 0.0f);
   vec3 rayDir = normalize(farPoint - nearPoint);
 
-  vec3 camPos = cam->GetOrigin();
-  spdlog::info("Picker: mouse=({:.0f},{:.0f}) cam=({:.2f},{:.2f},{:.2f})",
-               mouseX, mouseY, camPos.x, camPos.y, camPos.z);
-  spdlog::info("  near=({:.2f},{:.2f},{:.2f}) far=({:.2f},{:.2f},{:.2f}) "
-               "dir=({:.3f},{:.3f},{:.3f})",
-               nearPoint.x, nearPoint.y, nearPoint.z,
-               farPoint.x, farPoint.y, farPoint.z,
-               rayDir.x, rayDir.y, rayDir.z);
-
-  // Sample first 3 AABBs to sanity-check coordinate spaces
-  const int sampleCount = (std::min)(3, (int)applMesh->_meshCount);
-  for (int m = 0; m < sampleCount; ++m) {
-    const AAPLSubMesh& s = m_SubMeshes[m];
-    spdlog::info("  AABB[{}]: min=({:.2f},{:.2f},{:.2f}) max=({:.2f},{:.2f},{:.2f})",
-                 m, s.boundingBox.min.x,s.boundingBox.min.y,s.boundingBox.min.z,
-                 s.boundingBox.max.x,s.boundingBox.max.y,s.boundingBox.max.z);
-  }
-
   // Slab-method ray–AABB intersection against each submesh.
   int bestMesh = -1;
   float bestT = 1e30f;
+  float bestVolumeFallback = 1e30f;
+  int fallbackMesh = -1;
   for (int m = 0; m < (int)applMesh->_meshCount; ++m) {
     const AAPLSubMesh& sub = m_SubMeshes[m];
     float tmin = -1e30f, tmax = 1e30f;
@@ -8542,11 +8524,17 @@ std::string GpuScene::queryMeshAtScreenPos(float mouseX, float mouseY) {
       if (t2 < tmax) tmax = t2;
       if (tmin > tmax) break;
     }
-    if (tmin <= tmax && tmin > 0.0f && tmin < bestT) {
-      bestT = tmin;
-      bestMesh = m;
+    if (tmin <= tmax && tmax > 0.0f) {
+      if (tmin > 0.0f && tmin < bestT) {
+        bestT = tmin; bestMesh = m;
+      } else if (tmin <= 0.0f) {
+        vec3 d = sub.boundingBox.max - sub.boundingBox.min;
+        float vol = d.x * d.y * d.z;
+        if (vol < bestVolumeFallback) { bestVolumeFallback = vol; fallbackMesh = m; }
+      }
     }
   }
+  if (bestMesh < 0) bestMesh = fallbackMesh;
   if (bestMesh < 0) return "(none)";
   return "mesh_" + std::to_string(bestMesh) + ".ply";
 }
