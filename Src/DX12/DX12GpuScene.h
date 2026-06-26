@@ -127,8 +127,9 @@ private:
   ComPtr<ID3D12RootSignature> _resolveRootSig;
   ComPtr<ID3D12PipelineState> _resolvePSO;
   bool _taaEnabled = true;
-  uint32_t SRV_HDR_BUFFER = 0;
-  uint32_t SRV_TAA_HISTORY = 0;
+  // Fixed static slots well above the bindless range (SRV_BINDLESS_START=15, up to 1000 textures = slot 1014)
+  static constexpr uint32_t SRV_HDR_BUFFER  = 2050;
+  static constexpr uint32_t SRV_TAA_HISTORY = 2051;
 
   // Pipeline states
   ComPtr<ID3D12PipelineState> _occluderPSO;

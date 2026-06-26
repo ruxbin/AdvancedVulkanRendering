@@ -1245,11 +1245,8 @@ void DX12GpuScene::CreateHDRResources() {
   dev->CreateRenderTargetView(_hdrBuffer.Get(), nullptr,
       _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart());
 
-  // SRV slots for resolve pass — placed just after the 1000-texture bindless range
-  SRV_HDR_BUFFER  = SRV_BINDLESS_START + 1000; // bindless can use up to slots 15..1014
-  SRV_TAA_HISTORY = SRV_HDR_BUFFER + 1;         // slot 1016
-  // (SRV_BINDLESS_START=15, so 15+1000=1015 is HDR, 1016 is history — well within 2100)
-
+  // SRV slots for the HDR buffer and initial TAA history are compile-time constants
+  // (SRV_HDR_BUFFER=2050, SRV_TAA_HISTORY=2051), well above the bindless range.
   D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
   srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
   srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -2738,7 +2735,6 @@ void DX12GpuScene::Draw() {
       DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
           D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-      // Update static SRV for HDR buffer (it's already created in CreateHDRResources)
       // TAA history read = _taaHistoryIndex ^ 1, write = _taaHistoryIndex
       uint32_t histRead  = _taaHistoryIndex ^ 1;
       uint32_t histWrite = _taaHistoryIndex;
@@ -2761,29 +2757,25 @@ void DX12GpuScene::Draw() {
       cmdList->SetGraphicsRootConstantBufferView(0,
           _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
 
-      // Update the TAA history SRV to point to the read buffer
+      // Allocate dynamic block for 3 SRVs: hdrBuffer, historyTex, depthTex
+      auto resolveDesc = _cbvSrvUavHeap.AllocateDynamic(3);
+      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+      auto* dev2 = _device.GetDevice();
+      // t0: HDR buffer (copy from static slot)
+      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_HDR_BUFFER),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      // t1: TAA history read — write directly into the dynamic slot to avoid
+      //     stomping a static heap slot while the GPU may still be reading it.
       {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Texture2D.MipLevels = 1;
-        _device.GetDevice()->CreateShaderResourceView(_taaHistory[histRead].Get(), &srvDesc,
-            _cbvSrvUavHeap.GetStaticCPU(SRV_TAA_HISTORY));
+        D3D12_CPU_DESCRIPTOR_HANDLE histDynSlot = { resolveDesc.cpu.ptr + ds };
+        dev2->CreateShaderResourceView(_taaHistory[histRead].Get(), &srvDesc, histDynSlot);
       }
-
-      // Allocate dynamic block for 3 SRVs: hdrBuffer, historyTex, depthTex
-      auto resolveDesc = _cbvSrvUavHeap.AllocateDynamic(3);
-      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
-      auto* dev2 = _device.GetDevice();
-      // t0: HDR buffer
-      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_HDR_BUFFER),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-      // t1: TAA history read
-      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr + ds},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_TAA_HISTORY),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
       // t2: scene depth
       dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr + 2u * ds},
           _cbvSrvUavHeap.GetStaticCPU(SRV_DEPTH),
