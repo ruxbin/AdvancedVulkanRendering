@@ -476,6 +476,17 @@ void DX12GpuScene::CreateTextures() {
         _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS));
   }
 
+  // Initialize texture streaming entries
+  _streamEntries.resize(_textures.size());
+  for (size_t k = 0; k < _textures.size(); ++k) {
+    _streamEntries[k].totalMips  = (uint32_t)_textures[k]->GetDesc().MipLevels;
+    _streamEntries[k].currentMip = 0;
+    _streamEntries[k].requiredMip = 0;
+  }
+  // Allocate staging buffer (stub — actual transfer via SRV MostDetailedMip, not copy)
+  _streamingStagingBuffer = DX12Util::CreateUploadBuffer(_device.GetDevice(),
+      STREAMING_STAGING_SIZE, &_streamingStagingMapped);
+
   spdlog::info("DX12: {} textures loaded into bindless heap", _textures.size());
 }
 
@@ -1623,6 +1634,41 @@ void DX12GpuScene::FlushCommandQueue() {
   _device.WaitForGpu();
 }
 
+// ---- Update Texture Streaming (mip LOD selection) ----
+void DX12GpuScene::UpdateTextureStreaming() {
+  if (_streamEntries.empty()) return;
+
+  auto* dev = _device.GetDevice();
+
+  // Distance heuristic: mip 0 when close, mip 2 at mid range, mip 4 at distance
+  float camDist = _mainCamera->GetOrigin().length();
+  uint32_t targetMip = (camDist > 60.0f) ? 4u : (camDist > 20.0f) ? 2u : 0u;
+
+  for (size_t k = 0; k < _textures.size(); ++k) {
+    auto& e = _streamEntries[k];
+    uint32_t newMip = std::min(targetMip, e.totalMips > 0 ? e.totalMips - 1 : 0u);
+    e.requiredMip = newMip;
+
+    if (e.requiredMip == e.currentMip) continue;
+
+    // Rewrite the static SRV with the new MostDetailedMip value.
+    // This is called before _device.BeginFrame(), so the GPU has already
+    // completed the previous frame (triple-buffering fence guarantees this).
+    auto texDesc = _textures[k]->GetDesc();
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MostDetailedMip = e.requiredMip;
+    srvDesc.Texture2D.MipLevels = texDesc.MipLevels - e.requiredMip;
+
+    dev->CreateShaderResourceView(_textures[k].Get(), &srvDesc,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_BINDLESS_START + (uint32_t)k));
+
+    e.currentMip = e.requiredMip;
+  }
+}
+
 // ---- Update Uniforms ----
 void DX12GpuScene::UpdateUniforms() {
   auto& frame = _frameResources[_currentFrame];
@@ -2162,6 +2208,7 @@ void DX12GpuScene::Draw() {
 
   UpdateUniforms();
   ReadbackCullingStats();
+  UpdateTextureStreaming();  // update SRV MostDetailedMip before GPU work begins
 
   _device.BeginFrame();
   _cbvSrvUavHeap.ResetFrame();
@@ -3442,6 +3489,18 @@ void DX12GpuScene::RenderImGuiOverlay() {
   ImGui::Separator();
   ImGui::Checkbox("TAA", &_taaEnabled);
   ImGui::SliderFloat("Scatter", &_frameConstants.scatterScale, 0.0f, 1.0f);
+
+  // Texture streaming stats
+  if (!_streamEntries.empty()) {
+    ImGui::Separator();
+    uint32_t fullRes = 0, halfRes = 0, qtrRes = 0;
+    for (auto& e : _streamEntries) {
+      if (e.currentMip == 0) fullRes++;
+      else if (e.currentMip <= 2) halfRes++;
+      else qtrRes++;
+    }
+    ImGui::Text("Textures: %u full | %u half | %u low", fullRes, halfRes, qtrRes);
+  }
 
   ImGui::End();
 

@@ -101,6 +101,17 @@ private:
   std::vector<ComPtr<ID3D12Resource>> _textures;
   std::unordered_map<uint32_t, size_t> _textureHashMap;
 
+  // Texture streaming state (parallel to _textures)
+  struct TextureStreamEntry {
+    uint32_t totalMips  = 1;  // total mip levels in the full texture
+    uint32_t currentMip = 0;  // lowest mip currently resident (0 = full res)
+    uint32_t requiredMip = 0; // mip requested by coverage computation
+  };
+  std::vector<TextureStreamEntry> _streamEntries;
+  ComPtr<ID3D12Resource> _streamingStagingBuffer; // large upload heap for mip streaming
+  void* _streamingStagingMapped = nullptr;
+  static constexpr uint32_t STREAMING_STAGING_SIZE = 32 * 1024 * 1024; // 32 MB staging
+
   // Occluder data
   ComPtr<ID3D12Resource> _occluderVertexBuffer;
   ComPtr<ID3D12Resource> _occluderIndexBuffer;
@@ -256,6 +267,7 @@ private:
 
   // Per-frame
   void UpdateUniforms();
+  void UpdateTextureStreaming();
   void RecordCommandBuffer();
   void ReadbackCullingStats();
   void RenderImGuiOverlay();
