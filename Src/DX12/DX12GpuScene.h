@@ -100,6 +100,7 @@ private:
 
   // Root signatures
   ComPtr<ID3D12RootSignature> _occluderRootSig;
+  ComPtr<ID3D12RootSignature> _shadowRootSig;  // like occluder but with root const for cascade index
   ComPtr<ID3D12RootSignature> _drawClusterRootSig;
   ComPtr<ID3D12RootSignature> _gpuCullRootSig;
   ComPtr<ID3D12RootSignature> _deferredLightingRootSig;

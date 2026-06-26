@@ -459,7 +459,29 @@ void DX12GpuScene::CreateRootSignatures() {
     _occluderRootSig = CreateRootSigFromDesc(dev, desc);
   }
 
-  // 2. DrawCluster root signature:
+  // 2. Shadow root signature: CBV for camera params (b0) + root constant for cascadeIndex (b1)
+  {
+    D3D12_ROOT_PARAMETER params[2] = {};
+    // [0] CBV for FrameData (shadow VP matrices live here)
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor.ShaderRegister = 0;
+    params[0].Descriptor.RegisterSpace = 0;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // [1] Root constant: cascadeIndex (b1, space0, 1 uint32)
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;
+    params[1].Constants.RegisterSpace = 0;
+    params[1].Constants.Num32BitValues = 1;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 2;
+    desc.pParameters = params;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    _shadowRootSig = CreateRootSigFromDesc(dev, desc);
+  }
+
+  // 3. DrawCluster root signature:
   //   [0] CBV b0 space0 (FrameData) - vertex
   //   [1] Descriptor table space1 (materials SRV, sampler, textures[], meshChunks, chunkIndex) - pixel
   //   [2] Root constants b1 (push constants: materialIndex) - pixel
@@ -1126,11 +1148,11 @@ void DX12GpuScene::CreateShadowResources() {
   spdlog::info("DX12: Shadow resources created ({}x{}, {} cascades)",
                SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, SHADOW_CASCADE_COUNT);
 
-  // Shadow depth PSO (reuses occluder root sig, occluder layout, depth-only)
+  // Shadow depth PSO (uses dedicated shadow root sig with cascade index constant)
   {
     auto vs = DX12Util::ReadShaderFile((_rootPath / "shaders/drawclusterShadow.vs.cso").generic_string());
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
-    desc.pRootSignature = _occluderRootSig.Get(); // just needs CBV for VP matrix
+    desc.pRootSignature = _shadowRootSig.Get(); // CBV for VP + root const for cascade index
     desc.VS = {vs.data(), vs.size()};
     D3D12_INPUT_ELEMENT_DESC layout[] = {
       {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -1331,10 +1353,12 @@ void DX12GpuScene::Draw() {
       cmdList->RSSetScissorRects(1, &shadowScissor);
 
       cmdList->SetPipelineState(_shadowPSO.Get());
-      cmdList->SetGraphicsRootSignature(_occluderRootSig.Get());
+      cmdList->SetGraphicsRootSignature(_shadowRootSig.Get());
       // Bind uniform buffer which contains shadow VP matrices
       cmdList->SetGraphicsRootConstantBufferView(0,
           _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
+      // Pass cascade index so the VS selects the correct shadow VP matrix
+      cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascade, 0);
       cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       cmdList->IASetVertexBuffers(0, 4, vbvs);
       cmdList->IASetIndexBuffer(&ibv);
