@@ -28,6 +28,7 @@ public:
   void Draw();
   void InitImGui(struct SDL_Window* window);
   void ProcessImGuiEvent(union SDL_Event* event);
+  void OnResize(uint32_t newWidth, uint32_t newHeight);
 
   Camera* GetMainCamera() { return _mainCamera; }
 

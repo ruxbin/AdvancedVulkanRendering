@@ -48,6 +48,8 @@ public:
   void BeginFrame();
   void EndFrameAndPresent();
 
+  void OnResize(uint32_t newWidth, uint32_t newHeight);
+
 private:
   void EnableDebugLayer();
   void CreateDevice();

@@ -148,6 +148,12 @@ int main(int nargs, char **args) {
           mouseDown = false;
           currentZDegree = 0;
           currentYDegree = 0;
+        } else if (e.type == SDL_WINDOWEVENT &&
+                   e.window.event == SDL_WINDOWEVENT_RESIZED) {
+          uint32_t newW = (uint32_t)e.window.data1;
+          uint32_t newH = (uint32_t)e.window.data2;
+          if (newW > 0 && newH > 0)
+            dx12Scene.OnResize(newW, newH);
         }
       }
       dx12Scene.Draw();

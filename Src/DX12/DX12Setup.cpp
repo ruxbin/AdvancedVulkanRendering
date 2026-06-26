@@ -283,4 +283,39 @@ void DX12Device::EndFrameAndPresent() {
   MoveToNextFrame();
 }
 
+void DX12Device::OnResize(uint32_t newWidth, uint32_t newHeight) {
+  if (newWidth == _width && newHeight == _height) return;
+  WaitForGpu();
+
+  // Release swapchain back buffers and depth buffer
+  for (uint32_t i = 0; i < FRAME_COUNT; ++i)
+    _swapChainBuffers[i].Reset();
+  _depthStencilBuffer.Reset();
+
+  // Resize the swapchain
+  ThrowIfFailed(
+      _swapChain->ResizeBuffers(FRAME_COUNT, newWidth, newHeight,
+                                _swapChainFormat, DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH),
+      "ResizeBuffers");
+
+  _width = newWidth;
+  _height = newHeight;
+  _frameIndex = _swapChain->GetCurrentBackBufferIndex();
+
+  // Re-create RTV descriptors for the resized buffers
+  D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = _rtvHeap->GetCPUDescriptorHandleForHeapStart();
+  for (uint32_t i = 0; i < FRAME_COUNT; ++i) {
+    ThrowIfFailed(
+        _swapChain->GetBuffer(i, IID_PPV_ARGS(&_swapChainBuffers[i])),
+        "GetBuffer after resize");
+    _device->CreateRenderTargetView(_swapChainBuffers[i].Get(), nullptr, rtvHandle);
+    rtvHandle.ptr += _rtvDescriptorSize;
+  }
+
+  // Re-create depth stencil buffer at new dimensions
+  CreateDepthStencilBuffer();
+
+  spdlog::info("DX12Device resized: {}x{}", _width, _height);
+}
+
 #endif // ENABLE_DX12

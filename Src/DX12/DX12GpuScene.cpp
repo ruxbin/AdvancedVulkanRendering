@@ -2738,4 +2738,76 @@ void DX12GpuScene::RenderImGuiOverlay() {
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), _device.GetCommandList());
 }
 
+// ---- OnResize: recreate all screen-size-dependent resources ----
+void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
+  // Wait for GPU to finish all in-flight work before releasing resources
+  _device.WaitForGpu();
+
+  // Resize the swapchain and device-level depth buffer
+  _device.OnResize(newWidth, newHeight);
+
+  // Release G-buffer resources
+  for (int k = 0; k < 4; ++k)
+    _gbuffers[k].Reset();
+  _depthTexture.Reset();
+  _aoTexture.Reset();
+
+  // Release HiZ / SAO pyramid resources
+  _hizTexture.Reset();
+  _saoDepthPyramid.Reset();
+
+  // Release light-tile resources (sized by tileW × tileH)
+  _lightIndicesBuffer.Reset();
+  _lightIndicesTransparentBuffer.Reset();
+  _spotLightIndicesBuffer.Reset();
+  _spotLightIndicesTransparentBuffer.Reset();
+  _lightXZRangeBuffer.Reset();
+  _spotXZRangeBuffer.Reset();
+  _lightDebugTexture.Reset();
+
+  // Recreate all screen-size resources
+  CreateGBuffers();
+  CreateHiZResources();
+
+  // Recreate light tile buffers at new tile resolution
+  {
+    auto* dev = _device.GetDevice();
+    uint32_t w = _device.GetWidth(), h = _device.GetHeight();
+    uint32_t tileW = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+    uint32_t tileH = (h + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+    uint32_t totalTiles = tileW * tileH;
+    uint32_t maxPL = (uint32_t)_pointLights.size();
+    uint32_t maxSL = (uint32_t)_spotLights.size();
+    if (maxSL == 0) maxSL = 1;
+
+    _lightXZRangeBuffer = DX12Util::CreateGPUBuffer(dev,
+        (UINT64)maxPL * 8,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+    _spotXZRangeBuffer = DX12Util::CreateGPUBuffer(dev,
+        (UINT64)maxSL * 8,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+    UINT64 idxBufSize = (UINT64)totalTiles * MAX_LIGHTS_PER_TILE_LC * sizeof(uint32_t);
+    _lightIndicesBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+    _lightIndicesTransparentBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+    _spotLightIndicesBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+    _spotLightIndicesTransparentBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+    _lightDebugTexture = DX12Util::CreateTexture2D(dev, tileW, tileH,
+        DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, 1, 1,
+        D3D12_RESOURCE_STATE_COMMON);
+
+    spdlog::info("DX12GpuScene: light tile buffers resized to {}x{} tiles", tileW, tileH);
+  }
+
+  // Re-create static SRV/UAV descriptors for changed resources
+  CreateStaticDescriptors();
+
+  spdlog::info("DX12GpuScene resized to {}x{}", newWidth, newHeight);
+}
+
 #endif // ENABLE_DX12
