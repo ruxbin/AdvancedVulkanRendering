@@ -63,9 +63,17 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
       vec3(0, 0, -1),
       vec3(1, 0, 0));
 
+  // Default frame constants
+  _frameConstants.sunDirection = vec3(0.3f, 1.0f, 0.5f); // reasonable default sun direction
+  _frameConstants.sunColor     = vec3(1.0f, 0.95f, 0.8f);
+  _frameConstants.skyColor     = vec3(0.2f, 0.3f, 0.5f);
+  _frameConstants.exposure     = 1.0f;
+  _frameConstants.emissiveScale     = 1.0f;
+  _frameConstants.localLightIntensity = 1.0f;
+
   // Init descriptor heaps
   _cbvSrvUavHeap.Init(_device.GetDevice(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                       2048, 4096, true);
+                       2100, 4096, true);
   _samplerHeap.Init(_device.GetDevice(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
                      16, 0, true);
 
@@ -139,6 +147,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   CreateRootSignatures();
   CreatePipelineStates();
   CreateGBuffers();
+  CreateHDRResources();
   CreateStaticDescriptors();
   CreateHiZResources();
   CreateShadowResources();
@@ -819,6 +828,54 @@ void DX12GpuScene::CreateRootSignatures() {
     _lightCullRootSig = CreateRootSigFromDesc(dev, desc);
   }
 
+  // 9. Resolve root signature:
+  // [0] CBV b0 space0 (FrameData: camera params + frame constants)
+  // [1] Descriptor table: SRV t0..t2 space1 (hdrBuffer, historyTex, depthTex)
+  // Static samplers: s3 space1 (nearest clamp), s4 space1 (linear clamp)
+  {
+    D3D12_ROOT_PARAMETER params[2] = {};
+    // [0] CBV
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor.ShaderRegister = 0;
+    params[0].Descriptor.RegisterSpace = 0;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // [1] Descriptor table: 3 SRVs (t0..t2, space1)
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 3;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 1;
+    srvRange.OffsetInDescriptorsFromTableStart = 0;
+
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Static samplers matching resolve.hlsl: s3 space1 = nearest clamp, s4 space1 = linear clamp
+    D3D12_STATIC_SAMPLER_DESC staticSamplers[2] = {};
+    // s3 space1: _NearestClampSampler
+    staticSamplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    staticSamplers[0].AddressU = staticSamplers[0].AddressV = staticSamplers[0].AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[0].ShaderRegister = 3;
+    staticSamplers[0].RegisterSpace = 1;
+    staticSamplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s4 space1: _LinearClampSampler
+    staticSamplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    staticSamplers[1].AddressU = staticSamplers[1].AddressV = staticSamplers[1].AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[1].ShaderRegister = 4;
+    staticSamplers[1].RegisterSpace = 1;
+    staticSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 2; desc.pParameters = params;
+    desc.NumStaticSamplers = 2; desc.pStaticSamplers = staticSamplers;
+    _resolveRootSig = CreateRootSigFromDesc(dev, desc);
+  }
+
   spdlog::info("DX12: All root signatures created");
 }
 
@@ -1061,6 +1118,30 @@ void DX12GpuScene::CreatePipelineStates() {
     free((void*)cs.pShaderBytecode);
   }
 
+  // 7. Resolve PSO (tone map + TAA): 2 render targets (swapchain + TAA history)
+  {
+    auto vs = loadShader("resolve.vs.cso");
+    auto ps = loadShader("resolve.ps.cso");
+    if (vs.pShaderBytecode && ps.pShaderBytecode) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+      d.pRootSignature = _resolveRootSig.Get();
+      d.VS = vs; d.PS = ps;
+      d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+      d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+      for (int i = 0; i < 2; ++i)
+        d.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+      d.SampleMask = UINT_MAX;
+      d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      d.NumRenderTargets = 2;
+      d.RTVFormats[0] = _device.GetSwapChainFormat(); // swapchain output
+      d.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT; // TAA history write
+      d.SampleDesc.Count = 1;
+      DX12Util::ThrowIfFailed(dev->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&_resolvePSO)), "resolve PSO");
+      free((void*)vs.pShaderBytecode);
+      free((void*)ps.pShaderBytecode);
+    }
+  }
+
   spdlog::info("DX12: All pipeline states created");
 }
 
@@ -1127,6 +1208,62 @@ void DX12GpuScene::CreateGBuffers() {
       D3D12_RESOURCE_STATE_COMMON);
 
   spdlog::info("DX12: G-buffers created ({}x{}) with RTV/DSV heaps", w, h);
+}
+
+// ---- Create HDR intermediate buffer + TAA history resources ----
+void DX12GpuScene::CreateHDRResources() {
+  auto* dev = _device.GetDevice();
+  uint32_t w = _device.GetWidth(), h = _device.GetHeight();
+
+  // HDR buffer: render target for deferred lighting output
+  {
+    D3D12_CLEAR_VALUE clearVal = {};
+    clearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    _hdrBuffer = DX12Util::CreateTexture2D(dev, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        1, 1, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearVal);
+  }
+
+  // TAA history ping-pong buffers (start as SRV so first resolve reads them as black)
+  for (int k = 0; k < 2; ++k) {
+    _taaHistory[k] = DX12Util::CreateTexture2D(dev, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+        1, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  }
+
+  // RTV heap: [0] = HDR buffer,  [1] = current TAA history write target
+  {
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
+    rtvDesc.NumDescriptors = 2;
+    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    DX12Util::ThrowIfFailed(dev->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&_hdrRtvHeap)), "HDR RTV heap");
+    _hdrRtvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+  }
+
+  // Create RTV for HDR buffer at slot [0]
+  dev->CreateRenderTargetView(_hdrBuffer.Get(), nullptr,
+      _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+  // SRV slots for resolve pass — placed just after the 1000-texture bindless range
+  SRV_HDR_BUFFER  = SRV_BINDLESS_START + 1000; // bindless can use up to slots 15..1014
+  SRV_TAA_HISTORY = SRV_HDR_BUFFER + 1;         // slot 1016
+  // (SRV_BINDLESS_START=15, so 15+1000=1015 is HDR, 1016 is history — well within 2100)
+
+  D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+  srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srvDesc.Texture2D.MipLevels = 1;
+
+  dev->CreateShaderResourceView(_hdrBuffer.Get(), &srvDesc,
+      _cbvSrvUavHeap.GetStaticCPU(SRV_HDR_BUFFER));
+
+  // TAA history SRV: points to the currently readable history buffer (_taaHistoryIndex ^ 1 is read, _taaHistoryIndex is write)
+  dev->CreateShaderResourceView(_taaHistory[_taaHistoryIndex ^ 1].Get(), &srvDesc,
+      _cbvSrvUavHeap.GetStaticCPU(SRV_TAA_HISTORY));
+
+  spdlog::info("DX12: HDR buffer + TAA history created ({}x{}), SRV_HDR={}, SRV_TAA={}", w, h, SRV_HDR_BUFFER, SRV_TAA_HISTORY);
 }
 
 // ---- Create Static Descriptors in shader-visible heap ----
@@ -1396,6 +1533,34 @@ void DX12GpuScene::UpdateUniforms() {
   frameData.camConstants.invViewMatrix = transpose(_mainCamera->getInvViewMatrix());
   frameData.camConstants.invViewProjectionMatrix = transpose(_mainCamera->getInvViewProjectionMatrix());
   frameData.camConstants.invProjectionMatrix = transpose(inverse(_mainCamera->getProjectMatrix()));
+
+  // prevViewProjectionMatrix for TAA reprojection:
+  // With mat4 quirk (A*B = math B*A), view*proj gives the mathematical VP.
+  // Must be transposed before uploading (HLSL row-major convention).
+  {
+    static mat4 sPrevVP = mat4(1.0f);
+    frameData.camConstants.prevViewProjectionMatrix = transpose(sPrevVP);
+    // Save current VP for next frame: view * proj = mathematical VP (due to quirk)
+    mat4 curVP = _mainCamera->getObjectToCamera() * _mainCamera->getProjectMatrix();
+    sPrevVP = curVP;
+  }
+
+  // Halton jitter for TAA (base 2 and base 3)
+  {
+    static auto halton = [](uint32_t i, uint32_t base) -> float {
+      float f = 1.0f, r = 0.0f;
+      while (i > 0) { f /= base; r += f * (i % base); i /= base; }
+      return r;
+    };
+    uint32_t jitterIdx = (_frameConstants.frameCounter % 16) + 1;
+    _frameConstants.taaJitter = vec2(
+        (halton(jitterIdx, 2) - 0.5f) / (float)_device.GetWidth(),
+        (halton(jitterIdx, 3) - 0.5f) / (float)_device.GetHeight());
+    _frameConstants.taaEnabled = _taaEnabled ? 1u : 0u;
+    _frameConstants.invPhysicalSize = vec2(1.0f / (float)_device.GetWidth(),
+                                           1.0f / (float)_device.GetHeight());
+  }
+
   frameData.frameConstants = _frameConstants;
 
   memcpy(frame.uniformMapped, &frameData, sizeof(FrameData));
@@ -2443,13 +2608,15 @@ void DX12GpuScene::Draw() {
   // === Light Culling (CoarseCull + TraditionalCull, after SAO, before deferred) ===
   DispatchLightCulling(cmdList);
 
-  // === Deferred Lighting (full-screen triangle into swap chain) ===
+  // === Deferred Lighting (full-screen triangle into HDR buffer) ===
   {
     // Transition window depth to SRV for deferred lighting read
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
         D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_READ);
 
-    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    // Redirect deferred lighting output to HDR buffer (not swapchain)
+    auto hdrRtv = _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    cmdList->OMSetRenderTargets(1, &hdrRtv, FALSE, nullptr);
     cmdList->SetPipelineState(_deferredLightingPSO.Get());
     cmdList->SetGraphicsRootSignature(_deferredLightingRootSig.Get());
     cmdList->SetGraphicsRootConstantBufferView(0,
@@ -2564,6 +2731,79 @@ void DX12GpuScene::Draw() {
 
     // Draw fullscreen triangle (3 vertices, no VB)
     cmdList->DrawInstanced(3, 1, 0, 0);
+
+    // === Resolve: HDR + TAA history → swapchain + new history ===
+    if (_resolvePSO && _resolveRootSig) {
+      // HDR buffer: RENDER_TARGET → PIXEL_SHADER_RESOURCE
+      DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
+          D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+      // Update static SRV for HDR buffer (it's already created in CreateHDRResources)
+      // TAA history read = _taaHistoryIndex ^ 1, write = _taaHistoryIndex
+      uint32_t histRead  = _taaHistoryIndex ^ 1;
+      uint32_t histWrite = _taaHistoryIndex;
+
+      // Ensure write target is in RENDER_TARGET state
+      DX12Util::TransitionBarrier(cmdList, _taaHistory[histWrite].Get(),
+          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+      // Build the history-write RTV at slot [1] of _hdrRtvHeap
+      D3D12_CPU_DESCRIPTOR_HANDLE histWriteRtv = _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+      histWriteRtv.ptr += _hdrRtvSize;
+      _device.GetDevice()->CreateRenderTargetView(_taaHistory[histWrite].Get(), nullptr, histWriteRtv);
+
+      // Two RTVs: [0] swapchain, [1] TAA history write
+      D3D12_CPU_DESCRIPTOR_HANDLE resolveRtvs[2] = { rtvHandle, histWriteRtv };
+      cmdList->OMSetRenderTargets(2, resolveRtvs, FALSE, nullptr);
+
+      cmdList->SetPipelineState(_resolvePSO.Get());
+      cmdList->SetGraphicsRootSignature(_resolveRootSig.Get());
+      cmdList->SetGraphicsRootConstantBufferView(0,
+          _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
+
+      // Update the TAA history SRV to point to the read buffer
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        _device.GetDevice()->CreateShaderResourceView(_taaHistory[histRead].Get(), &srvDesc,
+            _cbvSrvUavHeap.GetStaticCPU(SRV_TAA_HISTORY));
+      }
+
+      // Allocate dynamic block for 3 SRVs: hdrBuffer, historyTex, depthTex
+      auto resolveDesc = _cbvSrvUavHeap.AllocateDynamic(3);
+      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+      auto* dev2 = _device.GetDevice();
+      // t0: HDR buffer
+      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_HDR_BUFFER),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      // t1: TAA history read
+      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr + ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_TAA_HISTORY),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      // t2: scene depth
+      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr + 2u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_DEPTH),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+      cmdList->SetGraphicsRootDescriptorTable(1, resolveDesc.gpu);
+      cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      cmdList->DrawInstanced(3, 1, 0, 0);
+
+      // Transition HDR buffer back to RENDER_TARGET for next frame
+      DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
+          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+      // Transition the history-write target back to SRV (it's the new read buffer next frame)
+      DX12Util::TransitionBarrier(cmdList, _taaHistory[histWrite].Get(),
+          D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+      // Ping-pong
+      _taaHistoryIndex ^= 1;
+    }
 
     // Transition window depth back to write
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
@@ -2731,6 +2971,8 @@ void DX12GpuScene::RenderImGuiOverlay() {
   ImGui::Text("Opaque:    %u / %u", _cullingStats.visibleOpaque, _cullingStats.totalOpaque);
   ImGui::Text("AlphaMask: %u / %u", _cullingStats.visibleAlphaMask, _cullingStats.totalAlphaMask);
   ImGui::Text("Transp:    %u / %u", _cullingStats.visibleTransparent, _cullingStats.totalTransparent);
+  ImGui::Separator();
+  ImGui::Checkbox("TAA", &_taaEnabled);
 
   ImGui::End();
 
@@ -2752,6 +2994,13 @@ void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
   _depthTexture.Reset();
   _aoTexture.Reset();
 
+  // Release HDR + TAA history resources
+  _hdrBuffer.Reset();
+  for (int k = 0; k < 2; ++k)
+    _taaHistory[k].Reset();
+  _hdrRtvHeap.Reset();
+  _taaHistoryIndex = 0;
+
   // Release HiZ / SAO pyramid resources
   _hizTexture.Reset();
   _saoDepthPyramid.Reset();
@@ -2767,6 +3016,7 @@ void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
 
   // Recreate all screen-size resources
   CreateGBuffers();
+  CreateHDRResources();
   CreateHiZResources();
 
   // Recreate light tile buffers at new tile resolution

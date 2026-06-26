@@ -118,6 +118,18 @@ private:
   ComPtr<ID3D12RootSignature> _shadowCullRootSig;
   ComPtr<ID3D12RootSignature> _lightCullRootSig;
 
+  // HDR intermediate + TAA
+  ComPtr<ID3D12Resource> _hdrBuffer;        // R16G16B16A16_FLOAT, same size as swapchain
+  ComPtr<ID3D12Resource> _taaHistory[2];    // ping-pong TAA history
+  uint32_t _taaHistoryIndex = 0;
+  ComPtr<ID3D12DescriptorHeap> _hdrRtvHeap; // 2 RTVs: [0]=HDR buffer, [1]=TAA history write target
+  uint32_t _hdrRtvSize = 0;
+  ComPtr<ID3D12RootSignature> _resolveRootSig;
+  ComPtr<ID3D12PipelineState> _resolvePSO;
+  bool _taaEnabled = true;
+  uint32_t SRV_HDR_BUFFER = 0;
+  uint32_t SRV_TAA_HISTORY = 0;
+
   // Pipeline states
   ComPtr<ID3D12PipelineState> _occluderPSO;
   ComPtr<ID3D12PipelineState> _basePassPSO;
@@ -222,6 +234,7 @@ private:
   void CreateShadowResources();
   void CreateCommandSignature();
   void CreateStaticDescriptors();
+  void CreateHDRResources();
   void CreateLights();
   void CreateLightCullPipelines();
   void FlushCommandQueue();

@@ -1,19 +1,20 @@
+#include "shadercompat.hlsl"
 #include "commonstruct.hlsl"
 
 // Set 0: global uniform buffer
-[[vk::binding(0,0)]]
-cbuffer cam
+VK_BINDING(0,0)
+cbuffer cam REGISTER_CBV(0,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 };
 
 // Set 1: resolve pass textures and samplers
-[[vk::binding(0,1)]] Texture2D<float4> hdrBuffer;
-[[vk::binding(1,1)]] Texture2D<float4> historyTex;
-[[vk::binding(2,1)]] Texture2D<float> depthTex;
-[[vk::binding(3,1)]] SamplerState _NearestClampSampler;
-[[vk::binding(4,1)]] SamplerState _LinearClampSampler;
+VK_BINDING(0,1) Texture2D<float4> hdrBuffer     REGISTER_SRV(0,1);
+VK_BINDING(1,1) Texture2D<float4> historyTex    REGISTER_SRV(1,1);
+VK_BINDING(2,1) Texture2D<float>  depthTex      REGISTER_SRV(2,1);
+VK_BINDING(3,1) SamplerState _NearestClampSampler REGISTER_SAMPLER(3,1);
+VK_BINDING(4,1) SamplerState _LinearClampSampler  REGISTER_SAMPLER(4,1);
 
 struct VSOutput
 {

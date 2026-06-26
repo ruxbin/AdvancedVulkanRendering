@@ -42,6 +42,10 @@ REM === Hi-Z Pyramid ===
 REM === SAO ===
 %DXC% %DXFLAGS% -T cs_6_2 sao.hlsl -E ScalableAmbientObscurance -Fo sao.cs.cso
 
+REM === Resolve (tone map + TAA) ===
+%DXC% %DXFLAGS% -T vs_6_0 resolve.hlsl -E ResolveVS -Fo resolve.vs.cso
+%DXC% %DXFLAGS% -T ps_6_0 resolve.hlsl -E ResolvePS -Fo resolve.ps.cso
+
 REM === Occluders ===
 %DXC% %DXFLAGS% -T vs_6_0 drawoccluders.hlsl -E RenderSceneVS -Fo occluders.vs.cso
 %DXC% %DXFLAGS% -T ps_6_0 drawoccluders.hlsl -E WireframePS -Fo occluders.wireframe.ps.cso
