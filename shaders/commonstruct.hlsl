@@ -25,6 +25,7 @@ struct AAPLMeshChunk
     unsigned int materialIndex;
     unsigned int indexBegin;
     unsigned int indexCount;
+    uint   _padEnd;   // alignas(16) in C++ pads struct to 96 bytes
 };
 
 //keep it the same as VkDrawIndexedIndirectCommand
