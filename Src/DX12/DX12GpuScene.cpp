@@ -2719,6 +2719,12 @@ void DX12GpuScene::Draw() {
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     DX12Util::TransitionBarrier(cmdList, fr.chunkIndicesBuffer.Get(),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
+    // HiZ was left in NON_PIXEL_SHADER_RESOURCE for cull; transition back so
+    // next frame's HiZ generation can start from COMMON.
+    if (_hizTexture) {
+      DX12Util::TransitionBarrier(cmdList, _hizTexture.Get(),
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+    }
   }
 
   // === Base Pass (G-buffers) with ExecuteIndirect ===
@@ -2764,9 +2770,13 @@ void DX12GpuScene::Draw() {
       auto tableDesc = _cbvSrvUavHeap.AllocateDynamic(3);
       auto ds = _cbvSrvUavHeap.GetDescriptorSize();
       auto* dev = _device.GetDevice();
-      // t0,space1: materials — copy from pre-built static descriptor
-      dev->CopyDescriptorsSimple(1, tableDesc.cpu, _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      // t0,space1: materials
+      { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_applMesh->_materialCount;
+        d.Buffer.StructureByteStride = sizeof(AAPLShaderMaterial);
+        dev->CreateShaderResourceView(_materialBuffer.Get(), &d, tableDesc.cpu); }
       // t3,space1: meshChunks
       { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
         d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -3224,9 +3234,13 @@ void DX12GpuScene::Draw() {
         auto tableDesc = _cbvSrvUavHeap.AllocateDynamic(3);
         auto dds = _cbvSrvUavHeap.GetDescriptorSize();
         auto* ddev = _device.GetDevice();
-        // t0,space1: materials — copy from pre-built static descriptor
-        ddev->CopyDescriptorsSimple(1, tableDesc.cpu, _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS),
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        // t0,space1: materials
+        { D3D12_SHADER_RESOURCE_VIEW_DESC dm = {}; dm.Format = DXGI_FORMAT_UNKNOWN;
+          dm.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+          dm.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+          dm.Buffer.NumElements = (UINT)_applMesh->_materialCount;
+          dm.Buffer.StructureByteStride = sizeof(AAPLShaderMaterial);
+          ddev->CreateShaderResourceView(_materialBuffer.Get(), &dm, tableDesc.cpu); }
         { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
           d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
           d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
