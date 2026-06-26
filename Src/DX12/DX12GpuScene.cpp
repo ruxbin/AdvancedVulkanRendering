@@ -170,11 +170,11 @@ DX12GpuScene::~DX12GpuScene() {
 
 // ---- Load Mesh Data ----
 void DX12GpuScene::LoadMeshData() {
-  std::string meshPath = (_rootPath / "debug1.bin").generic_string();
+  std::string meshPath = (_rootPath / "bistro.dxt.bin").generic_string();
   _applMesh = new AAPLMeshData(meshPath.c_str());
 
   // Load scene file for occluder data
-  std::string scenePath = (_rootPath / "debug1.bin.json").generic_string();
+  std::string scenePath = (_rootPath / "bistro.dxt.bin.json").generic_string();
   std::ifstream sceneFileStream(scenePath);
   if (sceneFileStream.is_open()) {
     sceneFileStream >> _sceneFile;
@@ -339,7 +339,21 @@ void DX12GpuScene::CreateTextures() {
     uint32_t h = (uint32_t)texData._height;
     uint32_t mipCount = (uint32_t)texData._mipmapLevelCount;
 
-    // Create texture resource
+    // Auto-detect BC format from compressed mip 0 size before creating resource
+    {
+      size_t dataOffset0 = texData._mipOffsets.size() > 0 ? texData._mipOffsets[0] : 0;
+      size_t dataLen0 = texData._mipLengths.size() > 0 ? texData._mipLengths[0] : 0;
+      if (dataLen0 > 0) {
+        uint8_t* cs = (uint8_t*)_applMesh->_textureData + texData._pixelDataOffset + dataOffset0;
+        auto [mip0, mip0Size] = decompressToHeap(cs, dataLen0);
+        uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+        if (mip0Size == bw * bh * 8)       format = DXGI_FORMAT_BC1_UNORM_SRGB;
+        else if (mip0Size == bw * bh * 16) format = DXGI_FORMAT_BC3_UNORM_SRGB;
+        free(mip0);
+      }
+    }
+
+    // Create texture resource (now with auto-corrected format)
     auto tex = DX12Util::CreateTexture2D(dev, w, h, format,
         D3D12_RESOURCE_FLAG_NONE, mipCount, 1, D3D12_RESOURCE_STATE_COPY_DEST);
 
@@ -528,9 +542,9 @@ void DX12GpuScene::CreateRootSignatures() {
     _occluderRootSig = CreateRootSigFromDesc(dev, desc);
   }
 
-  // 2. Shadow root signature: CBV for camera params (b0) + root constant for cascadeIndex (b1)
+  // 2. Shadow root signature: CBV (b0) + root constant (b1=cascadeIndex) + SRV chunkIndex (t4,space1)
   {
-    D3D12_ROOT_PARAMETER params[2] = {};
+    D3D12_ROOT_PARAMETER params[3] = {};
     // [0] CBV for FrameData (shadow VP matrices live here)
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[0].Descriptor.ShaderRegister = 0;
@@ -542,9 +556,19 @@ void DX12GpuScene::CreateRootSignatures() {
     params[1].Constants.RegisterSpace = 0;
     params[1].Constants.Num32BitValues = 1;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // [2] Descriptor table: chunkIndex SRV at t4, space1
+    D3D12_DESCRIPTOR_RANGE chunkRange = {};
+    chunkRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    chunkRange.NumDescriptors = 1;
+    chunkRange.BaseShaderRegister = 4;
+    chunkRange.RegisterSpace = 1;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &chunkRange;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     D3D12_ROOT_SIGNATURE_DESC desc = {};
-    desc.NumParameters = 2;
+    desc.NumParameters = 3;
     desc.pParameters = params;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     _shadowRootSig = CreateRootSigFromDesc(dev, desc);
@@ -619,24 +643,29 @@ void DX12GpuScene::CreateRootSignatures() {
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // [1] Descriptor table: UAVs + SRVs
-    D3D12_DESCRIPTOR_RANGE ranges[3] = {};
+    D3D12_DESCRIPTOR_RANGE ranges[4] = {};
     ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    ranges[0].NumDescriptors = 5; // u0-u4
+    ranges[0].NumDescriptors = 1; // u0 drawParams
     ranges[0].BaseShaderRegister = 0;
     ranges[0].RegisterSpace = 0;
-    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    ranges[1].NumDescriptors = 3; // t2, t6 (meshChunks, hizTexture)
-    ranges[1].BaseShaderRegister = 2;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[1].NumDescriptors = 2; // u3 writeIndex, u4 chunkIndices
+    ranges[1].BaseShaderRegister = 3;
     ranges[1].RegisterSpace = 0;
     ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-    ranges[2].NumDescriptors = 1;
-    ranges[2].BaseShaderRegister = 7;
+    ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[2].NumDescriptors = 1; // t2 meshChunks
+    ranges[2].BaseShaderRegister = 2;
     ranges[2].RegisterSpace = 0;
     ranges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[3].NumDescriptors = 1; // t6 hizTexture
+    ranges[3].BaseShaderRegister = 6;
+    ranges[3].RegisterSpace = 0;
+    ranges[3].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 2; // UAV + SRV only (sampler via static)
+    params[1].DescriptorTable.NumDescriptorRanges = 4;
     params[1].DescriptorTable.pDescriptorRanges = ranges;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
@@ -2396,6 +2425,19 @@ void DX12GpuScene::Draw() {
       cmdList->SetGraphicsRootConstantBufferView(0,
           fr.uniformBuffer->GetGPUVirtualAddress());
       cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascade, 0);
+
+      // Bind chunkIndex SRV (t4,space1) for shadow VS instancing
+      {
+        auto ciDesc = _cbvSrvUavHeap.AllocateDynamic(1);
+        D3D12_SHADER_RESOURCE_VIEW_DESC ciSrv = {};
+        ciSrv.Format = DXGI_FORMAT_R32_UINT;
+        ciSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        ciSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        ciSrv.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT;
+        _device.GetDevice()->CreateShaderResourceView(fr.shadowChunkIndicesBuffer.Get(), &ciSrv, ciDesc.cpu);
+        cmdList->SetGraphicsRootDescriptorTable(2, ciDesc.gpu);
+      }
+
       cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       cmdList->IASetVertexBuffers(0, 4, vbvs);
       cmdList->IASetIndexBuffer(&ibv);
@@ -3058,276 +3100,21 @@ void DX12GpuScene::Draw() {
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
         D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_READ);
 
-    // Redirect deferred lighting output to HDR buffer (not swapchain)
-    auto hdrRtv = _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    cmdList->OMSetRenderTargets(1, &hdrRtv, FALSE, nullptr);
+    // Output directly to swapchain
+    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
     cmdList->SetPipelineState(_deferredLightingPSO.Get());
     cmdList->SetGraphicsRootSignature(_deferredLightingRootSig.Get());
     cmdList->SetGraphicsRootConstantBufferView(0,
         _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // Build contiguous 18-SRV block for deferred lighting (t0..t17, space1).
-    // Layout:
-    //   t0=albedo, t1=normal, t2=emissive, t3=F0R, t4=depth,
-    //   t5=null (sampler slot s5), t6=shadowMaps, t7=null (sampler slot s7),
-    //   t8=pointLightCullingData, t9=lightIndices, t10=aoTexture,
-    //   t11=spotLightCullingData, t12=spotLightIndices,
-    //   t13=spotShadowMaps, t14=null (sampler slot s14), t15=spotViewProjMatrices,
-    //   t16=scatterAccumVolume (3D SRV), t17=null (sampler slot s17)
-    {
-      auto dlDesc = _cbvSrvUavHeap.AllocateDynamic(18);
-      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
-      auto* dev = _device.GetDevice();
-
-      // t0–t3: G-buffer SRVs (albedo, normal, emissive, F0Roughness)
-      for (int k = 0; k < 4; ++k) {
-        dev->CopyDescriptorsSimple(1,
-            {dlDesc.cpu.ptr + (UINT64)k * ds},
-            _cbvSrvUavHeap.GetStaticCPU(SRV_GBUFFER_START + k),
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-      }
-
-      // t4: window depth SRV
-      dev->CopyDescriptorsSimple(1,
-          {dlDesc.cpu.ptr + 4u * ds},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_DEPTH),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-      // t5: null SRV (gap — static sampler s5 covers sampling, but slot must be populated)
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R8_UNORM;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 5u * ds});
-      }
-
-      // t6: shadow map array SRV
-      dev->CopyDescriptorsSimple(1,
-          {dlDesc.cpu.ptr + 6u * ds},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_SHADOW_MAPS),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-      // t7: null SRV (shadowSampler slot)
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R8_UNORM;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 7u * ds});
-      }
-
-      // t8: pointLightCullingData SRV (or null if no lights)
-      if (_pointLightBuffer && !_pointLights.empty()) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Format = DXGI_FORMAT_UNKNOWN;
-        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Buffer.NumElements = (UINT)_pointLights.size();
-        d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
-        dev->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 8u * ds});
-      } else {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R32_FLOAT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 8u * ds});
-      }
-
-      // t9: lightIndices SRV (already transitioned to GENERIC_READ by DispatchLightCulling)
-      if (_lightIndicesBuffer && !_pointLights.empty()) {
-        uint32_t w2 = _device.GetWidth(), h2 = _device.GetHeight();
-        uint32_t tW = (w2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
-        uint32_t tH = (h2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Format = DXGI_FORMAT_R32_UINT;
-        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Buffer.NumElements = tW * tH * MAX_LIGHTS_PER_TILE_LC;
-        dev->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 9u * ds});
-      } else {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R32_FLOAT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 9u * ds});
-      }
-
-      // t10: AO texture SRV
-      dev->CopyDescriptorsSimple(1,
-          {dlDesc.cpu.ptr + 10u * ds},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_AO),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-      // t11: spotLightCullingData SRV
-      if (_spotLightBuffer && !_spotLights.empty()) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Format = DXGI_FORMAT_UNKNOWN;
-        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Buffer.NumElements = (UINT)_spotLights.size();
-        d.Buffer.StructureByteStride = sizeof(AAPLSpotLightCullingData);
-        dev->CreateShaderResourceView(_spotLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 11u * ds});
-      } else {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R32_FLOAT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 11u * ds});
-      }
-
-      // t12: spotLightIndices SRV
-      if (_spotLightIndicesBuffer && !_spotLights.empty()) {
-        uint32_t w2 = _device.GetWidth(), h2 = _device.GetHeight();
-        uint32_t tW = (w2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
-        uint32_t tH = (h2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Format = DXGI_FORMAT_R32_UINT;
-        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Buffer.NumElements = tW * tH * MAX_LIGHTS_PER_TILE_LC;
-        dev->CreateShaderResourceView(_spotLightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 12u * ds});
-      } else {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R32_UINT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 12u * ds});
-      }
-
-      // t13: spotShadowMaps SRV (null — not yet implemented for deferred)
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R8_UNORM;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture2DArray.MipLevels = 1;
-        nd.Texture2DArray.ArraySize = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 13u * ds});
-      }
-
-      // t14: null SRV (spotShadowSampler — static sampler s14 covers this slot)
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R8_UNORM;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 14u * ds});
-      }
-
-      // t15: spotViewProjMatrices SRV (null — no spot shadow matrices yet)
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R32_FLOAT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 15u * ds});
-      }
-
-      // t16: scatterAccumVolume 3D SRV (copy from static slot if scatter was active)
-      if (_scatterAccumVolume && _frameConstants.scatterScale > 0.0f && _scatterAccumIsInPSR) {
-        dev->CopyDescriptorsSimple(1,
-            {dlDesc.cpu.ptr + 16u * ds},
-            _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM),
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-      } else {
-        // Null 3D SRV (scatter disabled)
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture3D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 16u * ds});
-      }
-
-      // t17: null SRV (linearClampSampler — static sampler s17 covers this slot)
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R8_UNORM;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 17u * ds});
-      }
-
-      cmdList->SetGraphicsRootDescriptorTable(1, dlDesc.gpu);
-    }
+    // Use static heap binding for deferred lighting (simplified path)
+    cmdList->SetGraphicsRootDescriptorTable(1, _cbvSrvUavHeap.GetStaticGPU(SRV_GBUFFER_START));
 
     // Draw fullscreen triangle (3 vertices, no VB)
     cmdList->DrawInstanced(3, 1, 0, 0);
 
-    // === Resolve: HDR + TAA history → swapchain + new history ===
-    if (_resolvePSO && _resolveRootSig) {
-      // HDR buffer: RENDER_TARGET → PIXEL_SHADER_RESOURCE
-      DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
-          D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-      // TAA history read = _taaHistoryIndex ^ 1, write = _taaHistoryIndex
-      uint32_t histRead  = _taaHistoryIndex ^ 1;
-      uint32_t histWrite = _taaHistoryIndex;
-
-      // Ensure write target is in RENDER_TARGET state
-      DX12Util::TransitionBarrier(cmdList, _taaHistory[histWrite].Get(),
-          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-      // Build the history-write RTV at slot [1] of _hdrRtvHeap
-      D3D12_CPU_DESCRIPTOR_HANDLE histWriteRtv = _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
-      histWriteRtv.ptr += _hdrRtvSize;
-      _device.GetDevice()->CreateRenderTargetView(_taaHistory[histWrite].Get(), nullptr, histWriteRtv);
-
-      // Two RTVs: [0] swapchain, [1] TAA history write
-      D3D12_CPU_DESCRIPTOR_HANDLE resolveRtvs[2] = { rtvHandle, histWriteRtv };
-      cmdList->OMSetRenderTargets(2, resolveRtvs, FALSE, nullptr);
-
-      cmdList->SetPipelineState(_resolvePSO.Get());
-      cmdList->SetGraphicsRootSignature(_resolveRootSig.Get());
-      cmdList->SetGraphicsRootConstantBufferView(0,
-          _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
-
-      // Allocate dynamic block for 3 SRVs: hdrBuffer, historyTex, depthTex
-      auto resolveDesc = _cbvSrvUavHeap.AllocateDynamic(3);
-      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
-      auto* dev2 = _device.GetDevice();
-      // t0: HDR buffer (copy from static slot)
-      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_HDR_BUFFER),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-      // t1: TAA history read — write directly into the dynamic slot to avoid
-      //     stomping a static heap slot while the GPU may still be reading it.
-      {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
-        D3D12_CPU_DESCRIPTOR_HANDLE histDynSlot = { resolveDesc.cpu.ptr + ds };
-        dev2->CreateShaderResourceView(_taaHistory[histRead].Get(), &srvDesc, histDynSlot);
-      }
-      // t2: scene depth
-      dev2->CopyDescriptorsSimple(1, {resolveDesc.cpu.ptr + 2u * ds},
-          _cbvSrvUavHeap.GetStaticCPU(SRV_DEPTH),
-          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-      cmdList->SetGraphicsRootDescriptorTable(1, resolveDesc.gpu);
-      cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-      cmdList->DrawInstanced(3, 1, 0, 0);
-
-      // Transition HDR buffer back to RENDER_TARGET for next frame
-      DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
-          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-      // Transition the history-write target back to SRV (it's the new read buffer next frame)
-      DX12Util::TransitionBarrier(cmdList, _taaHistory[histWrite].Get(),
-          D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-      // Ping-pong
-      _taaHistoryIndex ^= 1;
-    }
-
+    // === Resolve: HDR + TAA history DISABLED ===
     // Transition window depth back to write
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
         D3D12_RESOURCE_STATE_DEPTH_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE);
