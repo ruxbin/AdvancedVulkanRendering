@@ -1,8 +1,9 @@
 // Shadow Cascade Culling Compute Shader
 #include "commonstruct.hlsl"
+#include "shadercompat.hlsl"
 
-[[vk::binding(0,0)]] RWStructuredBuffer<DrawIndexedIndirectCommand> shadowDrawParams;
-[[vk::binding(1,0)]] cbuffer shadowCullParams {
+VK_BINDING(0,0) RWStructuredBuffer<DrawIndexedIndirectCommand> shadowDrawParams REGISTER_UAV(0,0);
+VK_BINDING(1,0) cbuffer shadowCullParams REGISTER_CBV(1,0) {
     uint opaqueChunkCount;
     uint alphaMaskedChunkCount;
     uint cascadeMaxChunks; // max chunks per category per cascade
@@ -12,11 +13,11 @@
     float4 cascadeCullThreshold[SHADOW_CASCADE_COUNT];
     Frustum cascadeFrustum[SHADOW_CASCADE_COUNT];
 };
-[[vk::binding(2,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks;
-[[vk::binding(3,0)]] RWStructuredBuffer<uint> shadowWriteIndex;
+VK_BINDING(2,0) StructuredBuffer<AAPLMeshChunk> meshChunks REGISTER_SRV(2,0);
+VK_BINDING(3,0) RWStructuredBuffer<uint> shadowWriteIndex REGISTER_UAV(3,0);
 // shadowWriteIndex[cascadeIndex * 2 + 0] = opaque count for this cascade
 // shadowWriteIndex[cascadeIndex * 2 + 1] = alpha-masked count for this cascade
-[[vk::binding(4,0)]] RWStructuredBuffer<uint> shadowChunkIndices;
+VK_BINDING(4,0) RWStructuredBuffer<uint> shadowChunkIndices REGISTER_UAV(4,0);
 
 #define SHADOW_CULL_TG_SIZE 128
 #define SHADOW_BUCKETS_PER_CASCADE 2   // 0 = opaque, 1 = alpha-masked

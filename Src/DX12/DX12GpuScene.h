@@ -62,6 +62,14 @@ private:
     ComPtr<ID3D12Resource> chunkIndicesBuffer;     // visible chunk indices (default heap, UAV)
     ComPtr<ID3D12Resource> cullParamsBuffer;        // GPU cull params (upload)
     void* cullParamsMapped = nullptr;
+    // Shadow cull resources (per cascade × 2 buckets)
+    ComPtr<ID3D12Resource> shadowDrawParams;         // DrawIndexedIndirectCommand × (CASCADE * maxChunks)
+    ComPtr<ID3D12Resource> shadowWriteIndex;          // uint × (CASCADE * 2): [c*2+0]=opaque, [c*2+1]=alpha
+    ComPtr<ID3D12Resource> shadowWriteIndexUpload;   // for zeroing (upload)
+    void* shadowWriteIndexUploadMapped = nullptr;
+    ComPtr<ID3D12Resource> shadowCullParams;          // upload, ShadowCullParams cbuffer
+    void* shadowCullParamsMapped = nullptr;
+    ComPtr<ID3D12Resource> shadowChunkIndicesBuffer;  // shadow chunk indices (UAV)
   };
   std::vector<PerFrameResources> _frameResources;
 
@@ -106,6 +114,7 @@ private:
   ComPtr<ID3D12RootSignature> _deferredLightingRootSig;
   ComPtr<ID3D12RootSignature> _hizRootSig;
   ComPtr<ID3D12RootSignature> _saoRootSig;
+  ComPtr<ID3D12RootSignature> _shadowCullRootSig;
 
   // Pipeline states
   ComPtr<ID3D12PipelineState> _occluderPSO;
@@ -117,9 +126,11 @@ private:
   ComPtr<ID3D12PipelineState> _hizCopyPSO;
   ComPtr<ID3D12PipelineState> _hizDownsamplePSO;
   ComPtr<ID3D12PipelineState> _saoPSO;
+  ComPtr<ID3D12PipelineState> _shadowCullPSO;
 
   // Command signature for ExecuteIndirect
   ComPtr<ID3D12CommandSignature> _drawIndexedCmdSig;
+  ComPtr<ID3D12CommandSignature> _shadowDrawCmdSig;
 
   // G-Buffers
   ComPtr<ID3D12Resource> _gbuffers[4]; // albedo, normals, emissive, F0Roughness

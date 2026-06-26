@@ -16,6 +16,25 @@
 // Reuse readFile from GpuScene linkage
 extern std::vector<char> readFile(const std::string& filename);
 
+// Shadow cull params - POD structs mirroring shadowcull.hlsl cbuffer layout.
+// Kept here (not in header) so buildFrustumFromMatrix can access them as file-scope types.
+struct ShadowPlane {
+  vec3 normal;
+  float w;
+};
+struct ShadowFrustum {
+  ShadowPlane borders[6];
+};
+static constexpr uint32_t SHADOW_CULL_CASCADE_COUNT = 3; // matches DX12GpuScene::SHADOW_CASCADE_COUNT
+struct ShadowCullParams {
+  uint32_t opaqueChunkCount;
+  uint32_t alphaMaskedChunkCount;
+  uint32_t cascadeMaxChunks;
+  uint32_t cascadeCount;
+  vec4 cascadeCullThreshold[SHADOW_CULL_CASCADE_COUNT];
+  ShadowFrustum cascadeFrustum[SHADOW_CULL_CASCADE_COUNT];
+};
+
 // Decompress LZFSE data to malloc'd buffer. Returns {ptr, size}.
 struct AAPLCompressionHeader {
   uint32_t compressionMode;
@@ -50,8 +69,12 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   _samplerHeap.Init(_device.GetDevice(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
                      16, 0, true);
 
+  // Load mesh data first so per-frame resources can use chunk counts
+  LoadMeshData();
+
   // Create per-frame resources
   _frameResources.resize(_device.GetFrameCount());
+  uint32_t maxShadowDraws = (uint32_t)(_applMesh->_opaqueChunkCount + _applMesh->_alphaMaskedChunkCount);
   for (uint32_t i = 0; i < _device.GetFrameCount(); ++i) {
     // Uniform buffer (persistently mapped)
     _frameResources[i].uniformBuffer = DX12Util::CreateUploadBuffer(
@@ -85,9 +108,32 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     // Cull params (upload buffer)
     _frameResources[i].cullParamsBuffer = DX12Util::CreateUploadBuffer(
         _device.GetDevice(), 512, &_frameResources[i].cullParamsMapped);
+
+    // Shadow cull resources
+    _frameResources[i].shadowDrawParams = DX12Util::CreateGPUBuffer(
+        _device.GetDevice(),
+        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+    _frameResources[i].shadowWriteIndexUpload = DX12Util::CreateUploadBuffer(
+        _device.GetDevice(), SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t),
+        &_frameResources[i].shadowWriteIndexUploadMapped);
+    memset(_frameResources[i].shadowWriteIndexUploadMapped, 0,
+           SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t));
+
+    _frameResources[i].shadowWriteIndex = DX12Util::CreateGPUBuffer(
+        _device.GetDevice(), SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t),
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+    _frameResources[i].shadowCullParams = DX12Util::CreateUploadBuffer(
+        _device.GetDevice(), 512, &_frameResources[i].shadowCullParamsMapped);
+
+    _frameResources[i].shadowChunkIndicesBuffer = DX12Util::CreateGPUBuffer(
+        _device.GetDevice(),
+        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * sizeof(uint32_t),
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
   }
 
-  LoadMeshData();
   CreateBuffers();
   CreateTextures();
   CreateRootSignatures();
@@ -697,6 +743,39 @@ void DX12GpuScene::CreateRootSignatures() {
     _saoRootSig = CreateRootSigFromDesc(dev, desc);
   }
 
+  // 7. Shadow Cull compute root signature:
+  // [0] CBV b1 (ShadowCullParams cbuffer)
+  // [1] Descriptor table: u0..u4 (UAVs), t2..t4 (SRVs)
+  {
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor.ShaderRegister = 1;
+    params[0].Descriptor.RegisterSpace = 0;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[0].NumDescriptors = 5; // u0..u4
+    ranges[0].BaseShaderRegister = 0;
+    ranges[0].RegisterSpace = 0;
+    ranges[0].OffsetInDescriptorsFromTableStart = 0;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[1].NumDescriptors = 3; // t2..t4
+    ranges[1].BaseShaderRegister = 2;
+    ranges[1].RegisterSpace = 0;
+    ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 2;
+    params[1].DescriptorTable.pDescriptorRanges = ranges;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 2;
+    desc.pParameters = params;
+    _shadowCullRootSig = CreateRootSigFromDesc(dev, desc);
+  }
+
   spdlog::info("DX12: All root signatures created");
 }
 
@@ -1182,6 +1261,30 @@ void DX12GpuScene::CreateShadowResources() {
         dev->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&_shadowPSO)),
         "Failed to create shadow PSO");
   }
+
+  // Shadow cull compute PSO
+  {
+    auto cs = DX12Util::ReadShaderFile((_rootPath / "shaders/shadowcull.cs.cso").generic_string());
+    D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+    desc.pRootSignature = _shadowCullRootSig.Get();
+    desc.CS = {cs.data(), cs.size()};
+    DX12Util::ThrowIfFailed(
+        dev->CreateComputePipelineState(&desc, IID_PPV_ARGS(&_shadowCullPSO)),
+        "Failed to create shadow cull PSO");
+  }
+
+  // Shadow ExecuteIndirect command signature (DrawIndexed, same stride as _drawIndexedCmdSig)
+  {
+    D3D12_INDIRECT_ARGUMENT_DESC argDesc = {};
+    argDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+    sigDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+    sigDesc.NumArgumentDescs = 1;
+    sigDesc.pArgumentDescs = &argDesc;
+    DX12Util::ThrowIfFailed(
+        dev->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&_shadowDrawCmdSig)),
+        "Failed to create shadow draw command signature");
+  }
 }
 
 // ---- Create Command Signature for ExecuteIndirect ----
@@ -1280,6 +1383,39 @@ void DX12GpuScene::ReadbackCullingStats() {
   }
 }
 
+// Helper: extract frustum planes from a combined shadow VP matrix.
+// Pass: vp = _shadowProjectionMatrices[c] * _shadowViewMatrices[c]
+// (with the mat4 quirk, A*B = B*A, this equals view_cpp * proj_cpp_actual)
+// The HLSL clip matrix is transpose(vp), so Gribb-Hartmann plane extraction
+// uses columns of vp as the effective rows of the HLSL matrix.
+static ShadowFrustum buildFrustumFromMatrix(const mat4& vp) {
+  // Columns of vp == rows of HLSL VP matrix
+  auto col = [&](int ci) -> vec4 {
+    return vp[ci]; // mat4::operator[] returns the ci-th column vec4
+  };
+  vec4 c0 = col(0), c1 = col(1), c2 = col(2), c3 = col(3);
+
+  auto makePlane = [](vec4 p) -> ShadowPlane {
+    float len = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+    if (len < 1e-8f) len = 1.0f;
+    ShadowPlane pl;
+    pl.normal = vec3(p.x, p.y, p.z) / len;
+    pl.w = p.w / len;
+    return pl;
+  };
+
+  ShadowFrustum f;
+  // Gribb-Hartmann: left, right, bottom, top, near, far
+  // Using columns of C++ matrix (= rows of HLSL row-major VP)
+  f.borders[0] = makePlane(c3 + c0); // left
+  f.borders[1] = makePlane(c3 - c0); // right
+  f.borders[2] = makePlane(c3 + c1); // bottom
+  f.borders[3] = makePlane(c3 - c1); // top
+  f.borders[4] = makePlane(c3 + c2); // near
+  f.borders[5] = makePlane(c3 - c2); // far
+  return f;
+}
+
 // ---- Draw (main frame) ----
 void DX12GpuScene::Draw() {
   _currentFrame = _device.GetFrameIndex();
@@ -1316,27 +1452,127 @@ void DX12GpuScene::Draw() {
   cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
   cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr);
 
-  // === Shadow Pass (3 cascades) ===
-  if (_shadowPSO && _vertexBuffer && _shadowMapArray) {
-    uint32_t dsvSize = _device.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+  // === Shadow Cull + Draw (per cascade, GPU-culled) ===
+  if (_shadowCullPSO && _shadowPSO && _shadowMapArray) {
+    auto& fr = _frameResources[_currentFrame];
+    uint32_t totalShadowChunks = (uint32_t)(_applMesh->_opaqueChunkCount +
+                                              _applMesh->_alphaMaskedChunkCount);
+    auto* dev = _device.GetDevice();
+    auto ds = _cbvSrvUavHeap.GetDescriptorSize();
 
-    D3D12_VIEWPORT shadowViewport = {};
-    shadowViewport.Width = (float)SHADOW_MAP_SIZE;
-    shadowViewport.Height = (float)SHADOW_MAP_SIZE;
-    shadowViewport.MinDepth = 0.0f;
-    shadowViewport.MaxDepth = 1.0f;
-    D3D12_RECT shadowScissor = {};
-    shadowScissor.right = SHADOW_MAP_SIZE;
-    shadowScissor.bottom = SHADOW_MAP_SIZE;
+    // --- Zero shadow write indices ---
+    memset(fr.shadowWriteIndexUploadMapped, 0, SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t));
+    DX12Util::TransitionBarrier(cmdList, fr.shadowWriteIndex.Get(),
+        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    cmdList->CopyBufferRegion(fr.shadowWriteIndex.Get(), 0,
+        fr.shadowWriteIndexUpload.Get(), 0, SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t));
 
-    // Bind mesh VBs/IB
+    // --- Transition resources to UAV ---
+    DX12Util::TransitionBarrier(cmdList, fr.shadowDrawParams.Get(),
+        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    DX12Util::TransitionBarrier(cmdList, fr.shadowWriteIndex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    DX12Util::TransitionBarrier(cmdList, fr.shadowChunkIndicesBuffer.Get(),
+        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    // --- Upload ShadowCullParams ---
+    ShadowCullParams scp = {};
+    scp.opaqueChunkCount = (uint32_t)_applMesh->_opaqueChunkCount;
+    scp.alphaMaskedChunkCount = (uint32_t)_applMesh->_alphaMaskedChunkCount;
+    scp.cascadeMaxChunks = totalShadowChunks;
+    scp.cascadeCount = SHADOW_CASCADE_COUNT;
+    for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
+      scp.cascadeCullThreshold[c] = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+      mat4 shadowVP = _shadowProjectionMatrices[c] * _shadowViewMatrices[c];
+      scp.cascadeFrustum[c] = buildFrustumFromMatrix(shadowVP);
+    }
+    memcpy(fr.shadowCullParamsMapped, &scp, sizeof(ShadowCullParams));
+
+    // --- Allocate 8 descriptors: u0..u4 (5 UAVs) + t2..t4 (3 SRVs) ---
+    auto cullDesc = _cbvSrvUavHeap.AllocateDynamic(8);
+    // u0: shadowDrawParams
+    {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+      d.Format = DXGI_FORMAT_UNKNOWN;
+      d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+      d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT;
+      d.Buffer.StructureByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+      dev->CreateUnorderedAccessView(fr.shadowDrawParams.Get(), nullptr, &d,
+          {cullDesc.cpu.ptr + 0 * ds});
+    }
+    // u1, u2: null UAV pads (format-only, no resource)
+    for (int k = 1; k <= 2; ++k) {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC nd = {};
+      nd.Format = DXGI_FORMAT_R32_UINT;
+      nd.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+      dev->CreateUnorderedAccessView(nullptr, nullptr, &nd,
+          {cullDesc.cpu.ptr + (SIZE_T)k * ds});
+    }
+    // u3: shadowWriteIndex
+    {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+      d.Format = DXGI_FORMAT_R32_UINT;
+      d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+      d.Buffer.NumElements = SHADOW_CASCADE_COUNT * 2;
+      dev->CreateUnorderedAccessView(fr.shadowWriteIndex.Get(), nullptr, &d,
+          {cullDesc.cpu.ptr + 3 * ds});
+    }
+    // u4: shadowChunkIndices
+    {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+      d.Format = DXGI_FORMAT_R32_UINT;
+      d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+      d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT;
+      dev->CreateUnorderedAccessView(fr.shadowChunkIndicesBuffer.Get(), nullptr, &d,
+          {cullDesc.cpu.ptr + 4 * ds});
+    }
+    // t2: meshChunks SRV
+    {
+      D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+      d.Format = DXGI_FORMAT_UNKNOWN;
+      d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+      d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      d.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
+      d.Buffer.StructureByteStride = 80; // sizeof(AAPLMeshChunk)
+      dev->CreateShaderResourceView(_meshChunksBuffer.Get(), &d,
+          {cullDesc.cpu.ptr + 5 * ds});
+    }
+    // t3, t4: null SRV pads
+    for (int k = 6; k <= 7; ++k) {
+      D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+      nd.Format = DXGI_FORMAT_R32_FLOAT;
+      nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+      nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      dev->CreateShaderResourceView(nullptr, &nd, {cullDesc.cpu.ptr + (SIZE_T)k * ds});
+    }
+
+    // --- Dispatch shadow cull compute (all cascades in one pass) ---
+    cmdList->SetPipelineState(_shadowCullPSO.Get());
+    cmdList->SetComputeRootSignature(_shadowCullRootSig.Get());
+    cmdList->SetComputeRootConstantBufferView(0, fr.shadowCullParams->GetGPUVirtualAddress());
+    cmdList->SetComputeRootDescriptorTable(1, cullDesc.gpu);
+    cmdList->Dispatch((totalShadowChunks + 127) / 128, 1, 1);
+
+    // --- UAV barriers then transition to indirect arg ---
+    DX12Util::UAVBarrier(cmdList, fr.shadowDrawParams.Get());
+    DX12Util::UAVBarrier(cmdList, fr.shadowWriteIndex.Get());
+    DX12Util::TransitionBarrier(cmdList, fr.shadowDrawParams.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    DX12Util::TransitionBarrier(cmdList, fr.shadowWriteIndex.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+
+    // --- Per-cascade shadow draw via ExecuteIndirect ---
+    uint32_t dsvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    D3D12_VIEWPORT shadowViewport = {0, 0, (float)SHADOW_MAP_SIZE, (float)SHADOW_MAP_SIZE, 0.0f, 1.0f};
+    D3D12_RECT shadowScissor = {0, 0, (LONG)SHADOW_MAP_SIZE, (LONG)SHADOW_MAP_SIZE};
+
     D3D12_VERTEX_BUFFER_VIEW vbvs[4] = {};
     ID3D12Resource* vbs[] = {_vertexBuffer.Get(), _normalBuffer.Get(), _tangentBuffer.Get(), _uvBuffer.Get()};
     uint32_t strides[] = {sizeof(float)*3, sizeof(float)*3, sizeof(float)*3, sizeof(float)*2};
-    for (int i = 0; i < 4; ++i) {
-      vbvs[i].BufferLocation = vbs[i]->GetGPUVirtualAddress();
-      vbvs[i].SizeInBytes = (UINT)vbs[i]->GetDesc().Width;
-      vbvs[i].StrideInBytes = strides[i];
+    for (int k = 0; k < 4; ++k) {
+      vbvs[k].BufferLocation = vbs[k]->GetGPUVirtualAddress();
+      vbvs[k].SizeInBytes = (UINT)vbs[k]->GetDesc().Width;
+      vbvs[k].StrideInBytes = strides[k];
     }
     D3D12_INDEX_BUFFER_VIEW ibv = {};
     ibv.BufferLocation = _indexBuffer->GetGPUVirtualAddress();
@@ -1347,35 +1583,49 @@ void DX12GpuScene::Draw() {
       D3D12_CPU_DESCRIPTOR_HANDLE cascadeDsv = _shadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
       cascadeDsv.ptr += (SIZE_T)cascade * dsvSize;
       cmdList->ClearDepthStencilView(cascadeDsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr);
-
       cmdList->OMSetRenderTargets(0, nullptr, FALSE, &cascadeDsv);
       cmdList->RSSetViewports(1, &shadowViewport);
       cmdList->RSSetScissorRects(1, &shadowScissor);
 
       cmdList->SetPipelineState(_shadowPSO.Get());
       cmdList->SetGraphicsRootSignature(_shadowRootSig.Get());
-      // Bind uniform buffer which contains shadow VP matrices
       cmdList->SetGraphicsRootConstantBufferView(0,
-          _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
-      // Pass cascade index so the VS selects the correct shadow VP matrix
+          fr.uniformBuffer->GetGPUVirtualAddress());
       cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascade, 0);
       cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       cmdList->IASetVertexBuffers(0, 4, vbvs);
       cmdList->IASetIndexBuffer(&ibv);
 
-      // Draw all opaque chunks for this cascade (CPU-driven for shadow)
-      // TODO: Use shadow cull compute + ExecuteIndirect for shadows
-      // For now draw all opaque chunks directly
-      uint32_t opaqueCount = (uint32_t)_applMesh->_opaqueChunkCount;
-      cmdList->DrawIndexedInstanced(
-          (UINT)(_applMesh->_indexCount), 1, 0, 0, 0);
+      uint32_t cascadeBase = cascade * totalShadowChunks;
+      uint32_t writeIdxOffset = cascade * 2 * sizeof(uint32_t);
+
+      // Opaque draws
+      cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
+          (uint32_t)_applMesh->_opaqueChunkCount,
+          fr.shadowDrawParams.Get(),
+          (UINT64)cascadeBase * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          fr.shadowWriteIndex.Get(), writeIdxOffset);
+
+      // Alpha-masked draws
+      cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
+          (uint32_t)_applMesh->_alphaMaskedChunkCount,
+          fr.shadowDrawParams.Get(),
+          (UINT64)(cascadeBase + _applMesh->_opaqueChunkCount) * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          fr.shadowWriteIndex.Get(), writeIdxOffset + sizeof(uint32_t));
     }
+
+    // --- Restore resource states ---
+    DX12Util::TransitionBarrier(cmdList, fr.shadowDrawParams.Get(),
+        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COMMON);
+    DX12Util::TransitionBarrier(cmdList, fr.shadowWriteIndex.Get(),
+        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COMMON);
+    DX12Util::TransitionBarrier(cmdList, fr.shadowChunkIndicesBuffer.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 
     // Transition shadow maps to SRV for deferred lighting
     DX12Util::TransitionBarrier(cmdList, _shadowMapArray.Get(),
         D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    // Reset viewport/scissor to main
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissor);
   }
