@@ -1638,22 +1638,39 @@ void DX12GpuScene::FlushCommandQueue() {
 void DX12GpuScene::UpdateTextureStreaming() {
   if (_streamEntries.empty()) return;
 
-  auto* dev = _device.GetDevice();
-
   // Distance heuristic: mip 0 when close, mip 2 at mid range, mip 4 at distance
   float camDist = _mainCamera->GetOrigin().length();
   uint32_t targetMip = (camDist > 60.0f) ? 4u : (camDist > 20.0f) ? 2u : 0u;
 
-  for (size_t k = 0; k < _textures.size(); ++k) {
+  // --- Pass 1: scan all entries to detect if any mip change is needed ---
+  // We must NOT write descriptors into a static (shader-visible) heap while
+  // earlier in-flight frames may still be sampling those same slots. Scanning
+  // first lets us avoid a GPU stall when nothing changed.
+  bool anyChange = false;
+  for (size_t k = 0; k < _streamEntries.size(); ++k) {
     auto& e = _streamEntries[k];
     uint32_t newMip = std::min(targetMip, e.totalMips > 0 ? e.totalMips - 1 : 0u);
     e.requiredMip = newMip;
+    if (e.requiredMip != e.currentMip) {
+      anyChange = true;
+      // Don't break — we still need to write requiredMip for every entry.
+    }
+  }
 
+  if (!anyChange) return;
+
+  // --- Stall: wait for all in-flight GPU work to finish ---
+  // Only stall when we actually need to rewrite descriptor slots. With
+  // triple-buffering, frames N-1 and N-2 may still reference the current
+  // SRV descriptors; writing them now would be a D3D12 spec violation.
+  _device.WaitForGpu();
+
+  // --- Pass 2: rewrite SRV descriptors for every entry whose mip changed ---
+  auto* dev = _device.GetDevice();
+  for (size_t k = 0; k < _streamEntries.size(); ++k) {
+    auto& e = _streamEntries[k];
     if (e.requiredMip == e.currentMip) continue;
 
-    // Rewrite the static SRV with the new MostDetailedMip value.
-    // This is called before _device.BeginFrame(), so the GPU has already
-    // completed the previous frame (triple-buffering fence guarantees this).
     auto texDesc = _textures[k]->GetDesc();
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = texDesc.Format;
@@ -3585,7 +3602,10 @@ void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
   // Re-create static SRV/UAV descriptors for changed resources
   CreateStaticDescriptors();
 
-  // Reset scatter accumulation state since froxel volume was recreated at new resolution
+  // Reset scatter accumulation state.
+  // NOTE: froxel volumes (scatter) are intentionally NOT recreated on resize
+  // because SCATTER_FROXEL_W, SCATTER_FROXEL_H, and SCATTER_FROXEL_D are
+  // compile-time constants independent of screen resolution.
   _scatterAccumIsInPSR = false;
 
   spdlog::info("DX12GpuScene resized to {}x{}", newWidth, newHeight);
