@@ -78,7 +78,7 @@ private:
   // [10] materials SRV
   // [11] meshChunks SRV
   // [12] chunkIndex SRV (per-frame, but we use dynamic for that)
-  // [100..1099] bindless textures
+  // [15..1014] bindless textures
   static constexpr uint32_t SRV_GBUFFER_START = 1;   // 4 slots
   static constexpr uint32_t SRV_DEPTH = 5;
   static constexpr uint32_t SRV_AO = 6;
@@ -86,7 +86,7 @@ private:
   static constexpr uint32_t SRV_MATERIALS = 10;
   static constexpr uint32_t SRV_MESH_CHUNKS = 11;
   static constexpr uint32_t SRV_CHUNK_INDEX = 12;
-  static constexpr uint32_t SRV_BINDLESS_START = 100;
+  static constexpr uint32_t SRV_BINDLESS_START = 15;
 
   // Textures
   std::vector<ComPtr<ID3D12Resource>> _textures;
