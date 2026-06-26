@@ -2060,11 +2060,65 @@ void DX12GpuScene::Draw() {
         _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // Bind G-buffer SRVs at root param [1] — static descriptors [1..6]
-    // The deferred lighting shader expects SRVs t0-t10 in space1
-    // We map: static[1]=albedo(t0), [2]=normal(t1), [3]=emissive(t2), [4]=F0R(t3), [5]=depth(t4), [6]=AO(t6→mapped to t10)
-    // For now bind starting from SRV_GBUFFER_START which has contiguous G-buffer+depth+AO
-    cmdList->SetGraphicsRootDescriptorTable(1, _cbvSrvUavHeap.GetStaticGPU(SRV_GBUFFER_START));
+    // Build contiguous 11-SRV block for deferred lighting (t0..t10, space1).
+    // Static heap layout does NOT match shader layout directly (AO is at slot 6, shadow at 7),
+    // so we allocate a fresh dynamic block each frame and copy the correct descriptors in order:
+    //   t0=albedo, t1=normal, t2=emissive, t3=F0R, t4=depth,
+    //   t5=null (static sampler s5 handles this slot, but slot must exist),
+    //   t6=shadowMaps (Texture2DArray), t7-t9=null, t10=aoTexture
+    {
+      auto dlDesc = _cbvSrvUavHeap.AllocateDynamic(11);
+      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+      auto* dev = _device.GetDevice();
+
+      // t0–t3: G-buffer SRVs (albedo, normal, emissive, F0Roughness)
+      for (int k = 0; k < 4; ++k) {
+        dev->CopyDescriptorsSimple(1,
+            {dlDesc.cpu.ptr + (UINT64)k * ds},
+            _cbvSrvUavHeap.GetStaticCPU(SRV_GBUFFER_START + k),
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      }
+
+      // t4: window depth SRV
+      dev->CopyDescriptorsSimple(1,
+          {dlDesc.cpu.ptr + 4u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_DEPTH),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+      // t5: null SRV (gap — static sampler s5 covers sampling, but slot must be populated)
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R8_UNORM;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 5u * ds});
+      }
+
+      // t6: shadow map array SRV
+      dev->CopyDescriptorsSimple(1,
+          {dlDesc.cpu.ptr + 6u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_SHADOW_MAPS),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+      // t7–t9: null SRVs (unused gap slots)
+      for (int k = 7; k <= 9; ++k) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R8_UNORM;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + (UINT64)k * ds});
+      }
+
+      // t10: AO texture SRV
+      dev->CopyDescriptorsSimple(1,
+          {dlDesc.cpu.ptr + 10u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_AO),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+      cmdList->SetGraphicsRootDescriptorTable(1, dlDesc.gpu);
+    }
 
     // Draw fullscreen triangle (3 vertices, no VB)
     cmdList->DrawInstanced(3, 1, 0, 0);
