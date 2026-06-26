@@ -154,6 +154,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   CreateCommandSignature();
   CreateLights();
   CreateLightCullPipelines();
+  CreateScatterResources();
 
   spdlog::info("DX12GpuScene initialized");
 }
@@ -667,7 +668,7 @@ void DX12GpuScene::CreateRootSignatures() {
     params[1].DescriptorTable.pDescriptorRanges = &range;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    D3D12_STATIC_SAMPLER_DESC samplers[4] = {};
     // Nearest clamp (s5, space1)
     samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -685,11 +686,28 @@ void DX12GpuScene::CreateRootSignatures() {
     samplers[1].ShaderRegister = 7;
     samplers[1].RegisterSpace = 1;
     samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // Spot shadow comparison (s14, space1)
+    samplers[2].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    samplers[2].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[2].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[2].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[2].ShaderRegister = 14;
+    samplers[2].RegisterSpace = 1;
+    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // Linear clamp for scatter volume (s17, space1)
+    samplers[3].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[3].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[3].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[3].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[3].ShaderRegister = 17;
+    samplers[3].RegisterSpace = 1;
+    samplers[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc = {};
     desc.NumParameters = 2;
     desc.pParameters = params;
-    desc.NumStaticSamplers = 2;
+    desc.NumStaticSamplers = 4;
     desc.pStaticSamplers = samplers;
     _deferredLightingRootSig = CreateRootSigFromDesc(dev, desc);
   }
@@ -874,6 +892,104 @@ void DX12GpuScene::CreateRootSignatures() {
     desc.NumParameters = 2; desc.pParameters = params;
     desc.NumStaticSamplers = 2; desc.pStaticSamplers = staticSamplers;
     _resolveRootSig = CreateRootSigFromDesc(dev, desc);
+  }
+
+  // 10. Scatter volume root signature (ScatterVolume kernel)
+  // [0] Root constants (b0): PushConstants { volumeWidth, volumeHeight, screenWidth, screenHeight, resetHistory }
+  // [1] CBV (b1): ScatterUBO (CameraParamsBufferFull + AAPLFrameConstants)
+  // [2] Descriptor table: UAV u0 + SRVs t2..t14 in space0
+  // Static samplers: s3=shadowSampler (cmp), s11=spotShadowSampler (cmp), s14=linearSampler
+  {
+    D3D12_ROOT_PARAMETER params[3] = {};
+    // [0] Root constants for PushConstants at b0 space0
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;
+    params[0].Constants.RegisterSpace = 0;
+    params[0].Constants.Num32BitValues = 5; // volumeWidth, volumeHeight, screenWidth, screenHeight, resetHistory
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // [1] CBV at b1 space0
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[1].Descriptor.ShaderRegister = 1;
+    params[1].Descriptor.RegisterSpace = 0;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // [2] Descriptor table: u0 (scatterOut UAV) + t2..t13 SRVs (12 slots)
+    // Layout: slot 0 = u0, slot 1 = t2, slot 2 = t3, ..., slot 12 = t13
+    D3D12_DESCRIPTOR_RANGE scatterRanges[2] = {};
+    scatterRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    scatterRanges[0].NumDescriptors = 1; // u0 scatterOut
+    scatterRanges[0].BaseShaderRegister = 0;
+    scatterRanges[0].RegisterSpace = 0;
+    scatterRanges[0].OffsetInDescriptorsFromTableStart = 0;
+    scatterRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    scatterRanges[1].NumDescriptors = 12; // t2..t13 (12 slots: shadowMaps, null, scatterPrev, blueNoise, pointLightData, pointLightIndices, spotLightData, spotLightIndices, spotShadowMaps, null, spotViewProjMatrices, perlinNoise)
+    scatterRanges[1].BaseShaderRegister = 2;
+    scatterRanges[1].RegisterSpace = 0;
+    scatterRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 2;
+    params[2].DescriptorTable.pDescriptorRanges = scatterRanges;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Static samplers
+    D3D12_STATIC_SAMPLER_DESC scatterSamplers[3] = {};
+    // s3 space0: shadowSampler (comparison, for cascade shadows)
+    scatterSamplers[0].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    scatterSamplers[0].AddressU = scatterSamplers[0].AddressV = scatterSamplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    scatterSamplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    scatterSamplers[0].ShaderRegister = 3;
+    scatterSamplers[0].RegisterSpace = 0;
+    scatterSamplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // s11 space0: spotShadowSampler (comparison)
+    scatterSamplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    scatterSamplers[1].AddressU = scatterSamplers[1].AddressV = scatterSamplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    scatterSamplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    scatterSamplers[1].ShaderRegister = 11;
+    scatterSamplers[1].RegisterSpace = 0;
+    scatterSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // s14 space0: linearSampler (trilinear clamp)
+    scatterSamplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    scatterSamplers[2].AddressU = scatterSamplers[2].AddressV = scatterSamplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    scatterSamplers[2].ShaderRegister = 14;
+    scatterSamplers[2].RegisterSpace = 0;
+    scatterSamplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC scatterSigDesc = {};
+    scatterSigDesc.NumParameters = 3;
+    scatterSigDesc.pParameters = params;
+    scatterSigDesc.NumStaticSamplers = 3;
+    scatterSigDesc.pStaticSamplers = scatterSamplers;
+    _scatterRootSig = CreateRootSigFromDesc(dev, scatterSigDesc);
+  }
+
+  // 11. Accumulate scatter root signature (AccumulateScattering kernel)
+  // [0] Root constants (b0): PushConstants { volumeWidth, volumeHeight, ... }
+  // [1] Descriptor table: SRV t0 (scatterIn) + UAV u1 (accumOut) in space0
+  {
+    D3D12_ROOT_PARAMETER params[2] = {};
+    // [0] Root constants for PushConstants at b0 space0
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;
+    params[0].Constants.RegisterSpace = 0;
+    params[0].Constants.Num32BitValues = 5;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // [1] Descriptor table: t0 (SRV) + u1 (UAV)
+    D3D12_DESCRIPTOR_RANGE accumRanges[2] = {};
+    accumRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    accumRanges[0].NumDescriptors = 1; // t0 scatterIn
+    accumRanges[0].BaseShaderRegister = 0;
+    accumRanges[0].RegisterSpace = 0;
+    accumRanges[0].OffsetInDescriptorsFromTableStart = 0;
+    accumRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    accumRanges[1].NumDescriptors = 1; // u1 accumOut
+    accumRanges[1].BaseShaderRegister = 1;
+    accumRanges[1].RegisterSpace = 0;
+    accumRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 2;
+    params[1].DescriptorTable.pDescriptorRanges = accumRanges;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC accumSigDesc = {};
+    accumSigDesc.NumParameters = 2;
+    accumSigDesc.pParameters = params;
+    _accumRootSig = CreateRootSigFromDesc(dev, accumSigDesc);
   }
 
   spdlog::info("DX12: All root signatures created");
@@ -1139,6 +1255,28 @@ void DX12GpuScene::CreatePipelineStates() {
       DX12Util::ThrowIfFailed(dev->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&_resolvePSO)), "resolve PSO");
       free((void*)vs.pShaderBytecode);
       free((void*)ps.pShaderBytecode);
+    }
+  }
+
+  // === Scatter volume PSOs ===
+  {
+    auto scatterCS = loadShader("scattervolume.cs.cso");
+    if (scatterCS.pShaderBytecode) {
+      D3D12_COMPUTE_PIPELINE_STATE_DESC d = {};
+      d.pRootSignature = _scatterRootSig.Get();
+      d.CS = scatterCS;
+      DX12Util::ThrowIfFailed(dev->CreateComputePipelineState(&d, IID_PPV_ARGS(&_scatterVolumePSO)), "scatterVolume PSO");
+      free((void*)scatterCS.pShaderBytecode);
+    }
+  }
+  {
+    auto accumCS = loadShader("accumulatescatter.cs.cso");
+    if (accumCS.pShaderBytecode) {
+      D3D12_COMPUTE_PIPELINE_STATE_DESC d = {};
+      d.pRootSignature = _accumRootSig.Get();
+      d.CS = accumCS;
+      DX12Util::ThrowIfFailed(dev->CreateComputePipelineState(&d, IID_PPV_ARGS(&_accumulatePSO)), "accumulateScatter PSO");
+      free((void*)accumCS.pShaderBytecode);
     }
   }
 
@@ -1652,6 +1790,54 @@ void DX12GpuScene::CreateLightCullPipelines() {
   loadCS("CoarseCull.cs.cso",    _coarseCullPSO);
   loadCS("TraditionalCull.cs.cso", _traditionalCullPSO);
   loadCS("ClearIndices.cs.cso",  _clearIndicesPSO);
+}
+
+// ---- Create Scatter Volume Resources ----
+void DX12GpuScene::CreateScatterResources() {
+  if (!_scatterRootSig || !_accumulatePSO) {
+    spdlog::warn("DX12: Scatter PSOs/RootSig not ready — skipping CreateScatterResources");
+    return;
+  }
+  auto* dev = _device.GetDevice();
+
+  auto makeVol = [&](ComPtr<ID3D12Resource>& res, const char* name) {
+    D3D12_RESOURCE_DESC d = {};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    d.Width = SCATTER_FROXEL_W;
+    d.Height = SCATTER_FROXEL_H;
+    d.DepthOrArraySize = (UINT16)SCATTER_FROXEL_D;
+    d.MipLevels = 1;
+    d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    d.SampleDesc.Count = 1;
+    d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    HRESULT hr = dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res));
+    if (FAILED(hr)) {
+      spdlog::error("DX12: Failed to create scatter volume resource: {}", name);
+    } else {
+      spdlog::info("DX12: Created scatter volume resource: {} ({}x{}x{})", name,
+                   SCATTER_FROXEL_W, SCATTER_FROXEL_H, SCATTER_FROXEL_D);
+    }
+  };
+  makeVol(_scatterVolume,     "scatterVolume");
+  makeVol(_scatterAccumVolume, "scatterAccumVolume");
+
+  // Create static SRV for scatterAccumVolume at SRV_SCATTER_ACCUM
+  D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+  srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+  srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srvDesc.Texture3D.MipLevels = 1;
+  dev->CreateShaderResourceView(_scatterAccumVolume.Get(), &srvDesc,
+      _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM));
+
+  _scatterFirstFrame = true;
+  _scatterAccumIsInPSR = false;
+  spdlog::info("DX12: Scatter resources created (froxel: {}x{}x{})",
+               SCATTER_FROXEL_W, SCATTER_FROXEL_H, SCATTER_FROXEL_D);
 }
 
 // ---- Dispatch Light Culling (CoarseCull + ClearIndices + TraditionalCull) ----
@@ -2605,6 +2791,205 @@ void DX12GpuScene::Draw() {
   // === Light Culling (CoarseCull + TraditionalCull, after SAO, before deferred) ===
   DispatchLightCulling(cmdList);
 
+  // === Scatter Volume (froxel volumetrics, after light culling, before deferred) ===
+  if (_scatterVolumePSO && _accumulatePSO && _scatterRootSig && _accumRootSig
+      && _scatterVolume && _scatterAccumVolume
+      && _frameConstants.scatterScale > 0.0f) {
+    auto* dev = _device.GetDevice();
+    uint32_t w = _device.GetWidth(), h = _device.GetHeight();
+
+    // PushConstants layout: volumeWidth, volumeHeight, screenWidth, screenHeight, resetHistory
+    float sw = (float)w, sh = (float)h;
+    uint32_t pcData[5] = {
+      SCATTER_FROXEL_W, SCATTER_FROXEL_H,
+      *reinterpret_cast<const uint32_t*>(&sw),
+      *reinterpret_cast<const uint32_t*>(&sh),
+      (!_scatterAccumIsInPSR) ? 1u : 0u  // resetHistory = 1 if no valid history (first frame or gap)
+    };
+
+    // --- ScatterVolume pass ---
+    cmdList->SetPipelineState(_scatterVolumePSO.Get());
+    cmdList->SetComputeRootSignature(_scatterRootSig.Get());
+
+    // [0] Root constants: PushConstants (5 x uint32)
+    cmdList->SetComputeRoot32BitConstants(0, 5, pcData, 0);
+
+    // [1] CBV: uniform buffer (CameraParamsBufferFull + AAPLFrameConstants at b1 space0)
+    cmdList->SetComputeRootConstantBufferView(1,
+        _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
+
+    // [2] Descriptor table: u0 (scatterOut UAV) + t2..t13 SRVs
+    // Slot layout (13 descriptors total):
+    //   slot0 = u0 scatterOut UAV
+    //   slot1 = t2 shadowMaps SRV
+    //   slot2 = t3 (null — s3 is static sampler shadowSampler)
+    //   slot3 = t4 scatterPrev SRV (or null if first frame)
+    //   slot4 = t5 blueNoiseTex SRV (null — no blue noise tex)
+    //   slot5 = t6 pointLightData SRV
+    //   slot6 = t7 pointLightIndices SRV
+    //   slot7 = t8 spotLightData SRV
+    //   slot8 = t9 spotLightIndices SRV
+    //   slot9 = t10 spotShadowMaps SRV (null)
+    //   slot10 = t11 (null — s11 is static sampler spotShadowSampler)
+    //   slot11 = t12 spotViewProjMatrices SRV (null)
+    //   slot12 = t13 perlinNoiseTex SRV (null)
+    // Total: 1 UAV + 12 SRVs = 13 descriptors
+    {
+      auto scDesc = _cbvSrvUavHeap.AllocateDynamic(13);
+      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+
+      // slot0: u0 scatterOut UAV
+      {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavD = {};
+        uavD.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        uavD.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+        uavD.Texture3D.WSize = SCATTER_FROXEL_D;
+        dev->CreateUnorderedAccessView(_scatterVolume.Get(), nullptr, &uavD,
+            {scDesc.cpu.ptr});
+      }
+
+      // slot1: t2 shadowMaps SRV
+      dev->CopyDescriptorsSimple(1, {scDesc.cpu.ptr + 1u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_SHADOW_MAPS),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+      // slot2: t3 (shadowSampler static — fill with null SRV to satisfy range)
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R8_UNORM;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {scDesc.cpu.ptr + 2u * ds});
+      }
+
+      // slot3: t4 scatterPrev SRV (use scatterAccumVolume as history, or null on first frame / gap)
+      if (!_scatterAccumIsInPSR) {
+        // No valid history — bind null 3D SRV
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture3D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {scDesc.cpu.ptr + 3u * ds});
+      } else {
+        // scatterAccumVolume is in PIXEL_SHADER_RESOURCE — transition to NPSR for compute read
+        DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        dev->CopyDescriptorsSimple(1, {scDesc.cpu.ptr + 3u * ds},
+            _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM),
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      }
+
+      // slots 4-12: t5..t13 — null SRVs for blueNoise, lights, spot shadows, perlinNoise
+      // (no real data available yet for these; light data would come from light cull buffers)
+      // Bind point light data where available
+      for (int k = 4; k <= 12; ++k) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R32_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dev->CreateShaderResourceView(nullptr, &nd, {scDesc.cpu.ptr + (UINT64)k * ds});
+      }
+      // slot5 (t6): pointLightData
+      if (_pointLightBuffer && !_pointLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_pointLights.size();
+        d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
+        dev->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {scDesc.cpu.ptr + 5u * ds});
+      }
+      // slot6 (t7): pointLightIndices (from light cull — transition to read)
+      if (_lightIndicesBuffer && !_pointLights.empty()) {
+        uint32_t tW2 = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        uint32_t tH2 = (h + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_UINT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = tW2 * tH2 * MAX_LIGHTS_PER_TILE_LC;
+        dev->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {scDesc.cpu.ptr + 6u * ds});
+      }
+
+      cmdList->SetComputeRootDescriptorTable(2, scDesc.gpu);
+    }
+
+    cmdList->Dispatch(
+        (SCATTER_FROXEL_W + 7) / 8,
+        (SCATTER_FROXEL_H + 7) / 8,
+        SCATTER_FROXEL_D);
+    DX12Util::UAVBarrier(cmdList, _scatterVolume.Get());
+
+    // Transition scatterAccumVolume to UAV for the accumulate write
+    // (if history was used, it's in NPSR; if no history, it's still UAV)
+    if (_scatterAccumIsInPSR) {
+      DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+
+    // --- AccumulateScattering pass ---
+    cmdList->SetPipelineState(_accumulatePSO.Get());
+    cmdList->SetComputeRootSignature(_accumRootSig.Get());
+
+    // [0] Root constants: PushConstants
+    cmdList->SetComputeRoot32BitConstants(0, 5, pcData, 0);
+
+    // [1] Descriptor table: t0 (scatterIn) + u1 (accumOut)
+    {
+      auto acDesc = _cbvSrvUavHeap.AllocateDynamic(2);
+      auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+
+      // slot0: t0 scatterIn SRV (read from scatterVolume)
+      // Transition scatterVolume UAV → SRV
+      DX12Util::TransitionBarrier(cmdList, _scatterVolume.Get(),
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvD = {};
+        srvD.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        srvD.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+        srvD.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvD.Texture3D.MipLevels = 1;
+        dev->CreateShaderResourceView(_scatterVolume.Get(), &srvD, {acDesc.cpu.ptr});
+      }
+
+      // slot1: u1 accumOut UAV (scatterAccumVolume)
+      {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavD = {};
+        uavD.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        uavD.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+        uavD.Texture3D.WSize = SCATTER_FROXEL_D;
+        dev->CreateUnorderedAccessView(_scatterAccumVolume.Get(), nullptr, &uavD,
+            {acDesc.cpu.ptr + ds});
+      }
+
+      cmdList->SetComputeRootDescriptorTable(1, acDesc.gpu);
+    }
+
+    cmdList->Dispatch(
+        (SCATTER_FROXEL_W + 7) / 8,
+        (SCATTER_FROXEL_H + 7) / 8, 1);
+    DX12Util::UAVBarrier(cmdList, _scatterAccumVolume.Get());
+
+    // Transition scatterVolume back to UAV for next frame
+    DX12Util::TransitionBarrier(cmdList, _scatterVolume.Get(),
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    // Transition scatterAccumVolume → PIXEL_SHADER_RESOURCE for deferred lighting
+    DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    _scatterAccumIsInPSR = true; // will be in PIXEL_SHADER_RESOURCE for deferred lighting to read
+    _scatterFirstFrame = false;
+  }
+
+
   // === Deferred Lighting (full-screen triangle into HDR buffer) ===
   {
     // Transition window depth to SRV for deferred lighting read
@@ -2623,9 +3008,11 @@ void DX12GpuScene::Draw() {
     // Build contiguous 18-SRV block for deferred lighting (t0..t17, space1).
     // Layout:
     //   t0=albedo, t1=normal, t2=emissive, t3=F0R, t4=depth,
-    //   t5=null (sampler slot), t6=shadowMaps, t7=null (sampler slot),
+    //   t5=null (sampler slot s5), t6=shadowMaps, t7=null (sampler slot s7),
     //   t8=pointLightCullingData, t9=lightIndices, t10=aoTexture,
-    //   t11-t17=null (spot lights / scatter volume, not yet bound)
+    //   t11=spotLightCullingData, t12=spotLightIndices,
+    //   t13=spotShadowMaps, t14=null (sampler slot s14), t15=spotViewProjMatrices,
+    //   t16=scatterAccumVolume (3D SRV), t17=null (sampler slot s17)
     {
       auto dlDesc = _cbvSrvUavHeap.AllocateDynamic(18);
       auto ds = _cbvSrvUavHeap.GetDescriptorSize();
@@ -2713,14 +3100,96 @@ void DX12GpuScene::Draw() {
           _cbvSrvUavHeap.GetStaticCPU(SRV_AO),
           D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-      // t11-t17: null SRVs (spot lights / scatter volume not yet active)
-      for (int k = 11; k <= 17; ++k) {
+      // t11: spotLightCullingData SRV
+      if (_spotLightBuffer && !_spotLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_spotLights.size();
+        d.Buffer.StructureByteStride = sizeof(AAPLSpotLightCullingData);
+        dev->CreateShaderResourceView(_spotLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 11u * ds});
+      } else {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R32_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 11u * ds});
+      }
+
+      // t12: spotLightIndices SRV
+      if (_spotLightIndicesBuffer && !_spotLights.empty()) {
+        uint32_t w2 = _device.GetWidth(), h2 = _device.GetHeight();
+        uint32_t tW = (w2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        uint32_t tH = (h2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_UINT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = tW * tH * MAX_LIGHTS_PER_TILE_LC;
+        dev->CreateShaderResourceView(_spotLightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 12u * ds});
+      } else {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R32_UINT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 12u * ds});
+      }
+
+      // t13: spotShadowMaps SRV (null — not yet implemented for deferred)
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R8_UNORM;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture2DArray.MipLevels = 1;
+        nd.Texture2DArray.ArraySize = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 13u * ds});
+      }
+
+      // t14: null SRV (spotShadowSampler — static sampler s14 covers this slot)
+      {
         D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
         nd.Format = DXGI_FORMAT_R8_UNORM;
         nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         nd.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + (UINT64)k * ds});
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 14u * ds});
+      }
+
+      // t15: spotViewProjMatrices SRV (null — no spot shadow matrices yet)
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R32_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 15u * ds});
+      }
+
+      // t16: scatterAccumVolume 3D SRV (copy from static slot if scatter was active)
+      if (_scatterAccumVolume && _frameConstants.scatterScale > 0.0f && _scatterAccumIsInPSR) {
+        dev->CopyDescriptorsSimple(1,
+            {dlDesc.cpu.ptr + 16u * ds},
+            _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM),
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      } else {
+        // Null 3D SRV (scatter disabled)
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture3D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 16u * ds});
+      }
+
+      // t17: null SRV (linearClampSampler — static sampler s17 covers this slot)
+      {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R8_UNORM;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 17u * ds});
       }
 
       cmdList->SetGraphicsRootDescriptorTable(1, dlDesc.gpu);
@@ -2902,6 +3371,15 @@ void DX12GpuScene::Draw() {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
   }
 
+  // If scatter was active last frame but is disabled now, transition scatterAccumVolume
+  // back to UAV so it starts in a known state when scatter is re-enabled.
+  if (_scatterAccumIsInPSR && _frameConstants.scatterScale <= 0.0f && _scatterAccumVolume) {
+    DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    _scatterAccumIsInPSR = false;
+  }
+
   // ImGui overlay
   RenderImGuiOverlay();
 
@@ -2965,6 +3443,7 @@ void DX12GpuScene::RenderImGuiOverlay() {
   ImGui::Text("Transp:    %u / %u", _cullingStats.visibleTransparent, _cullingStats.totalTransparent);
   ImGui::Separator();
   ImGui::Checkbox("TAA", &_taaEnabled);
+  ImGui::SliderFloat("Scatter", &_frameConstants.scatterScale, 0.0f, 1.0f);
 
   ImGui::End();
 

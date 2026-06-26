@@ -42,6 +42,10 @@ REM === Hi-Z Pyramid ===
 REM === SAO ===
 %DXC% %DXFLAGS% -T cs_6_2 sao.hlsl -E ScalableAmbientObscurance -Fo sao.cs.cso
 
+REM === Scatter Volume (froxel volumetrics) ===
+%DXC% %DXFLAGS%             -T cs_6_2 scattervolume.hlsl -E ScatterVolume       -Fo scattervolume.cs.cso
+%DXC% %DXFLAGS% -D ACCUM_PASS -T cs_6_2 scattervolume.hlsl -E AccumulateScattering -Fo accumulatescatter.cs.cso
+
 REM === Resolve (tone map + TAA) ===
 %DXC% %DXFLAGS% -T vs_6_0 resolve.hlsl -E ResolveVS -Fo resolve.vs.cso
 %DXC% %DXFLAGS% -T ps_6_0 resolve.hlsl -E ResolvePS -Fo resolve.ps.cso

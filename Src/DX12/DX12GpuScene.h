@@ -131,6 +131,20 @@ private:
   static constexpr uint32_t SRV_HDR_BUFFER  = 2050;
   static constexpr uint32_t SRV_TAA_HISTORY = 2051;
 
+  // Scatter volume (froxel-based volumetrics)
+  static constexpr uint32_t SCATTER_FROXEL_W = 160;
+  static constexpr uint32_t SCATTER_FROXEL_H = 90;
+  static constexpr uint32_t SCATTER_FROXEL_D = 64;
+  static constexpr uint32_t SRV_SCATTER_ACCUM = 2052; // just after SRV_TAA_HISTORY
+  ComPtr<ID3D12Resource> _scatterVolume;        // R16G16B16A16_FLOAT 3D UAV (scatter result)
+  ComPtr<ID3D12Resource> _scatterAccumVolume;   // R16G16B16A16_FLOAT 3D SRV for deferred lighting
+  ComPtr<ID3D12RootSignature> _scatterRootSig;
+  ComPtr<ID3D12RootSignature> _accumRootSig;
+  ComPtr<ID3D12PipelineState> _scatterVolumePSO;
+  ComPtr<ID3D12PipelineState> _accumulatePSO;
+  bool _scatterFirstFrame = true;
+  bool _scatterAccumIsInPSR = false; // tracks whether _scatterAccumVolume is in PSR vs UAV state
+
   // Pipeline states
   ComPtr<ID3D12PipelineState> _occluderPSO;
   ComPtr<ID3D12PipelineState> _basePassPSO;
@@ -238,6 +252,7 @@ private:
   void CreateHDRResources();
   void CreateLights();
   void CreateLightCullPipelines();
+  void CreateScatterResources();
   void FlushCommandQueue();
 
   // Per-frame

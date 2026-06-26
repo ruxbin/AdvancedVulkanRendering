@@ -1,9 +1,13 @@
 // scattervolume.hlsl  –  Froxel-based volumetric scattering
 // Reference: ModernRenderingWithMetal / AAPLScatterVolume.metal
 //
-// Compiled TWICE:
+// Compiled TWICE (Vulkan):
 //   dxc -enable-16bit-types -spirv -T cs_6_2 scattervolume.hlsl -E ScatterVolume       -Fo scattervolume.cs.spv
 //   dxc -enable-16bit-types -spirv -T cs_6_2 scattervolume.hlsl -E AccumulateScattering -Fo accumscatter.cs.spv
+//
+// Compiled TWICE (DX12):
+//   dxc -D DX12_BACKEND -T cs_6_2 scattervolume.hlsl -E ScatterVolume       -Fo scattervolume.cs.cso
+//   dxc -D DX12_BACKEND -T cs_6_2 scattervolume.hlsl -E AccumulateScattering -Fo accumulatescatter.cs.cso
 //
 // ScatterVolume kernel  (set 0, bindings 0-14):
 //   0: RWTexture3D scatterOut,  1: UBO,  2: shadowMaps,  3: shadowSampler
@@ -16,6 +20,7 @@
 // AccumulateScattering kernel  (set 0, bindings 0-1):
 //   0: Texture3D scatterIn,  1: RWTexture3D accumOut
 
+#include "shadercompat.hlsl"
 #include "commonstruct.hlsl"
 
 // ---- compile-time constants ------------------------------------------------
@@ -25,31 +30,37 @@
 
 // ============================================================
 //  ScatterVolume bindings  (set 0)
+//  Only included when NOT compiling the AccumulateScattering entry point
 // ============================================================
-[[vk::binding( 0,0)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> scatterOut;
-[[vk::binding( 1,0)]] cbuffer ScatterUBO {
+#ifndef ACCUM_PASS
+VK_BINDING( 0,0) [[vk::image_format("rgba16f")]] RWTexture3D<float4> scatterOut REGISTER_UAV(0,0);
+VK_BINDING( 1,0) cbuffer ScatterUBO REGISTER_CBV(1,0) {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants     frameConstants;
 }
-[[vk::binding( 2,0)]] Texture2DArray<float>                  shadowMaps;
-[[vk::binding( 3,0)]] SamplerComparisonState                 shadowSampler;
-[[vk::binding( 4,0)]] Texture3D<float4>                      scatterPrev;   // history
-[[vk::binding( 5,0)]] Texture2D<float>                       blueNoiseTex;
-[[vk::binding( 6,0)]] StructuredBuffer<AAPLPointLightCullingData> pointLightData;
-[[vk::binding( 7,0)]] StructuredBuffer<uint>                 pointLightIndices;
-[[vk::binding( 8,0)]] StructuredBuffer<AAPLSpotLightCullingData>  spotLightData;
-[[vk::binding( 9,0)]] StructuredBuffer<uint>                 spotLightIndices;
-[[vk::binding(10,0)]] Texture2DArray<float>                  spotShadowMaps;
-[[vk::binding(11,0)]] SamplerComparisonState                 spotShadowSampler;
-[[vk::binding(12,0)]] StructuredBuffer<float4x4>             spotViewProjMatrices;
-[[vk::binding(13,0)]] Texture3D<float>                       perlinNoiseTex;
-[[vk::binding(14,0)]] SamplerState                          linearSampler;
+VK_BINDING( 2,0) Texture2DArray<float>                  shadowMaps           REGISTER_SRV(2,0);
+VK_BINDING( 3,0) SamplerComparisonState                 shadowSampler        REGISTER_SAMPLER_CMP(3,0);
+VK_BINDING( 4,0) Texture3D<float4>                      scatterPrev          REGISTER_SRV(4,0);   // history
+VK_BINDING( 5,0) Texture2D<float>                       blueNoiseTex         REGISTER_SRV(5,0);
+VK_BINDING( 6,0) StructuredBuffer<AAPLPointLightCullingData> pointLightData  REGISTER_SRV(6,0);
+VK_BINDING( 7,0) StructuredBuffer<uint>                 pointLightIndices    REGISTER_SRV(7,0);
+VK_BINDING( 8,0) StructuredBuffer<AAPLSpotLightCullingData>  spotLightData   REGISTER_SRV(8,0);
+VK_BINDING( 9,0) StructuredBuffer<uint>                 spotLightIndices     REGISTER_SRV(9,0);
+VK_BINDING(10,0) Texture2DArray<float>                  spotShadowMaps       REGISTER_SRV(10,0);
+VK_BINDING(11,0) SamplerComparisonState                 spotShadowSampler    REGISTER_SAMPLER_CMP(11,0);
+VK_BINDING(12,0) StructuredBuffer<float4x4>             spotViewProjMatrices REGISTER_SRV(12,0);
+VK_BINDING(13,0) Texture3D<float>                       perlinNoiseTex       REGISTER_SRV(13,0);
+VK_BINDING(14,0) SamplerState                           linearSampler        REGISTER_SAMPLER(14,0);
+#endif // !ACCUM_PASS
 
 // ============================================================
 //  AccumulateScattering bindings  (set 0, separate compilation)
+//  Only included when compiling the AccumulateScattering entry point
 // ============================================================
-[[vk::binding(0,0)]] Texture3D<float4>   scatterIn;
-[[vk::binding(1,0)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> accumOut;
+#ifdef ACCUM_PASS
+VK_BINDING(0,0) Texture3D<float4>   scatterIn  REGISTER_SRV(0,0);
+VK_BINDING(1,0) [[vk::image_format("rgba16f")]] RWTexture3D<float4> accumOut REGISTER_UAV(1,0);
+#endif // ACCUM_PASS
 
 // ============================================================
 //  Shared push constants
@@ -61,7 +72,7 @@ struct PushConstants {
     float screenHeight;
     uint  resetHistory; // 1 = first frame, skip history blend
 };
-[[vk::push_constant]] PushConstants pc;
+DECLARE_PUSH_CONSTANTS(PushConstants, pc, 0);
 
 // Light culling constants (match Light.h / commonstruct.hlsl)
 #define SCATTER_LIGHT_TILE_SIZE 32
@@ -102,6 +113,7 @@ float heightFogDensity(float worldY, float offset, float falloff) {
 }
 
 // Reconstruct world-space position of a froxel at the given view-space depth
+#ifndef ACCUM_PASS
 float3 froxelToWorldPos(uint3 coord, float viewZ) {
     float2 uv = (float2(coord.xy) + 0.5f) / float2(pc.volumeWidth, pc.volumeHeight);
     float4 ndcRay = float4(uv * 2.0f - 1.0f, 0.0f, 1.0f);
@@ -304,10 +316,12 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
 
     scatterOut[DTid] = current;
 }
+#endif // !ACCUM_PASS
 
 // ============================================================
 //  AccumulateScattering kernel  (unchanged from original)
 // ============================================================
+#ifdef ACCUM_PASS
 [numthreads(8, 8, 1)]
 void AccumulateScattering(uint3 DTid : SV_DispatchThreadID) {
     if (DTid.x >= pc.volumeWidth || DTid.y >= pc.volumeHeight)
@@ -331,3 +345,4 @@ void AccumulateScattering(uint3 DTid : SV_DispatchThreadID) {
         accumOut[uint3(DTid.xy, z)] = accum;
     }
 }
+#endif // ACCUM_PASS
