@@ -96,6 +96,8 @@ private:
   static constexpr uint32_t SRV_MESH_CHUNKS = 11;
   static constexpr uint32_t SRV_CHUNK_INDEX = 12;
   static constexpr uint32_t SRV_BINDLESS_START = 15;
+  // sizeof(AAPLMeshChunk) in HLSL — must stay in sync with _padEnd in commonstruct.hlsl
+  static constexpr uint32_t MESH_CHUNK_STRIDE = 96;
 
   // Textures
   std::vector<ComPtr<ID3D12Resource>> _textures;

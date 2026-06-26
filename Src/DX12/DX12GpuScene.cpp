@@ -575,11 +575,12 @@ void DX12GpuScene::CreateRootSignatures() {
   }
 
   // 3. DrawCluster root signature:
-  //   [0] CBV b0 space0 (FrameData) - vertex
-  //   [1] Descriptor table space1 (materials SRV, sampler, textures[], meshChunks, chunkIndex) - pixel
-  //   [2] Root constants b1 (push constants: materialIndex) - pixel
+  //   [0] CBV b0 space0 (FrameData) - all stages
+  //   [1] Descriptor table: t0/t3/t4 space1 (materials, meshChunks, chunkIndex) - all stages
+  //   [2] Descriptor table: t0+ space2 (bindless textures, unbounded) - pixel only
+  //   [3] Root constants b1 space0 (push constants: materialIndex/shadowIndex) - all stages
   {
-    D3D12_ROOT_PARAMETER params[3] = {};
+    D3D12_ROOT_PARAMETER params[4] = {};
 
     // [0] CBV
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -587,15 +588,14 @@ void DX12GpuScene::CreateRootSignatures() {
     params[0].Descriptor.RegisterSpace = 0;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // [1] Descriptor table: discrete ranges to match shader registers exactly
-    // t0=space1(materials), t3=space1(meshChunks), t4=space1(chunkIndex), t0=space2(bindless)
-    D3D12_DESCRIPTOR_RANGE ranges[4] = {};
+    // [1] Descriptor table: discrete ranges for non-bindless SRVs in space1
+    D3D12_DESCRIPTOR_RANGE ranges[3] = {};
     // t0,space1: materials
     ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     ranges[0].NumDescriptors = 1;
     ranges[0].BaseShaderRegister = 0;
     ranges[0].RegisterSpace = 1;
-    // t3,space1: meshChunks (gap t1-t2 skipped)
+    // t3,space1: meshChunks (gap t1-t2 skipped via explicit offset)
     ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     ranges[1].NumDescriptors = 1;
     ranges[1].BaseShaderRegister = 3;
@@ -607,24 +607,32 @@ void DX12GpuScene::CreateRootSignatures() {
     ranges[2].BaseShaderRegister = 4;
     ranges[2].RegisterSpace = 1;
     ranges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    // t0,space2: unbounded bindless textures
-    ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    ranges[3].NumDescriptors = UINT_MAX;
-    ranges[3].BaseShaderRegister = 0;
-    ranges[3].RegisterSpace = 2;
-    ranges[3].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 4;
+    params[1].DescriptorTable.NumDescriptorRanges = 3;
     params[1].DescriptorTable.pDescriptorRanges = ranges;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // [2] Root constants (push constants)
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;
-    params[2].Constants.RegisterSpace = 0;
-    params[2].Constants.Num32BitValues = 2;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // [2] Descriptor table: unbounded bindless textures in space2 (own param so it can
+    // point to the fixed static region rather than being contiguous with the dynamic table)
+    D3D12_DESCRIPTOR_RANGE bindlessRange = {};
+    bindlessRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    bindlessRange.NumDescriptors = UINT_MAX;
+    bindlessRange.BaseShaderRegister = 0;
+    bindlessRange.RegisterSpace = 2;
+    bindlessRange.OffsetInDescriptorsFromTableStart = 0;
+
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &bindlessRange;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // [3] Root constants (push constants)
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[3].Constants.ShaderRegister = 1;
+    params[3].Constants.RegisterSpace = 0;
+    params[3].Constants.Num32BitValues = 2;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Static sampler for linear repeat
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -637,7 +645,7 @@ void DX12GpuScene::CreateRootSignatures() {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc = {};
-    desc.NumParameters = 3;
+    desc.NumParameters = 4;
     desc.pParameters = params;
     desc.NumStaticSamplers = 1;
     desc.pStaticSamplers = &sampler;
@@ -1517,7 +1525,7 @@ void DX12GpuScene::CreateStaticDescriptors() {
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
-    srvDesc.Buffer.StructureByteStride = 96; // sizeof(AAPLMeshChunk) in shader (must match)
+    srvDesc.Buffer.StructureByteStride = MESH_CHUNK_STRIDE;
     dev->CreateShaderResourceView(_meshChunksBuffer.Get(), &srvDesc,
         _cbvSrvUavHeap.GetStaticCPU(SRV_MESH_CHUNKS));
   }
@@ -2379,7 +2387,7 @@ void DX12GpuScene::Draw() {
       d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
       d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       d.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
-      d.Buffer.StructureByteStride = 96; // sizeof(AAPLMeshChunk)
+      d.Buffer.StructureByteStride = MESH_CHUNK_STRIDE; // sizeof(AAPLMeshChunk)
       dev->CreateShaderResourceView(_meshChunksBuffer.Get(), &d,
           {cullDesc.cpu.ptr + 5 * ds});
     }
@@ -2677,7 +2685,7 @@ void DX12GpuScene::Draw() {
       srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
       srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       srvDesc.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
-      srvDesc.Buffer.StructureByteStride = 96;
+      srvDesc.Buffer.StructureByteStride = MESH_CHUNK_STRIDE;
       _device.GetDevice()->CreateShaderResourceView(_meshChunksBuffer.Get(), &srvDesc,
           {cullDescs.cpu.ptr + 3 * descSize});
     }
@@ -2751,25 +2759,20 @@ void DX12GpuScene::Draw() {
     ibv.Format = DXGI_FORMAT_R32_UINT;
     cmdList->IASetIndexBuffer(&ibv);
 
-    // Build dynamic descriptor table: t0=materials, t3=meshChunks, t4=chunkIndex, t0space2=bindless
+    // Build dynamic descriptor table: t0=materials, t3=meshChunks, t4=chunkIndex
     {
       auto tableDesc = _cbvSrvUavHeap.AllocateDynamic(3);
       auto ds = _cbvSrvUavHeap.GetDescriptorSize();
       auto* dev = _device.GetDevice();
-      // t0,space1: materials
-      { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
-        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Buffer.NumElements = (UINT)_applMesh->_materialCount;
-        d.Buffer.StructureByteStride = sizeof(AAPLShaderMaterial);
-        D3D12_CPU_DESCRIPTOR_HANDLE dst = { tableDesc.cpu.ptr };
-        dev->CreateShaderResourceView(_materialBuffer.Get(), &d, dst); }
+      // t0,space1: materials — copy from pre-built static descriptor
+      dev->CopyDescriptorsSimple(1, tableDesc.cpu, _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
       // t3,space1: meshChunks
       { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
         d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         d.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
-        d.Buffer.StructureByteStride = 96;
+        d.Buffer.StructureByteStride = MESH_CHUNK_STRIDE;
         D3D12_CPU_DESCRIPTOR_HANDLE dst = { tableDesc.cpu.ptr + ds };
         dev->CreateShaderResourceView(_meshChunksBuffer.Get(), &d, dst); }
       // t4,space1: chunkIndex (per-frame)
@@ -2780,6 +2783,7 @@ void DX12GpuScene::Draw() {
         D3D12_CPU_DESCRIPTOR_HANDLE dst = { tableDesc.cpu.ptr + 2 * ds };
         dev->CreateShaderResourceView(_frameResources[_currentFrame].chunkIndicesBuffer.Get(), &d, dst); }
       cmdList->SetGraphicsRootDescriptorTable(1, tableDesc.gpu);
+      cmdList->SetGraphicsRootDescriptorTable(2, _cbvSrvUavHeap.GetStaticGPU(SRV_BINDLESS_START));
     }
 
     auto& fr = _frameResources[_currentFrame];
@@ -3215,19 +3219,19 @@ void DX12GpuScene::Draw() {
       ibv.Format = DXGI_FORMAT_R32_UINT;
       cmdList->IASetIndexBuffer(&ibv);
 
-      // Build dynamic descriptor table for forward pass
+      // Build dynamic descriptor table: t0=materials, t3=meshChunks, t4=chunkIndex
       {
         auto tableDesc = _cbvSrvUavHeap.AllocateDynamic(3);
         auto dds = _cbvSrvUavHeap.GetDescriptorSize();
         auto* ddev = _device.GetDevice();
-        D3D12_CPU_DESCRIPTOR_HANDLE d0 = { tableDesc.cpu.ptr };
-        D3D12_CPU_DESCRIPTOR_HANDLE s0 = _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS);
-        ddev->CopyDescriptorsSimple(1, d0, s0, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        // t0,space1: materials — copy from pre-built static descriptor
+        ddev->CopyDescriptorsSimple(1, tableDesc.cpu, _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS),
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
           d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
           d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
           d.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
-          d.Buffer.StructureByteStride = 96;
+          d.Buffer.StructureByteStride = MESH_CHUNK_STRIDE;
           D3D12_CPU_DESCRIPTOR_HANDLE dd = { tableDesc.cpu.ptr + dds };
           ddev->CreateShaderResourceView(_meshChunksBuffer.Get(), &d, dd); }
         { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_R32_UINT;
@@ -3237,6 +3241,7 @@ void DX12GpuScene::Draw() {
           D3D12_CPU_DESCRIPTOR_HANDLE dd = { tableDesc.cpu.ptr + 2 * dds };
           ddev->CreateShaderResourceView(fr.chunkIndicesBuffer.Get(), &d, dd); }
         cmdList->SetGraphicsRootDescriptorTable(1, tableDesc.gpu);
+        cmdList->SetGraphicsRootDescriptorTable(2, _cbvSrvUavHeap.GetStaticGPU(SRV_BINDLESS_START));
       }
 
       // Transition drawParams/writeIndex back to readable for forward indirect
