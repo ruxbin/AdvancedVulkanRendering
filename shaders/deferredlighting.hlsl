@@ -47,7 +47,11 @@ struct VSOutput
 };
 
 
+#ifdef DX12_BACKEND
+static const bool useClusterLighting = true;
+#else
 [[vk::constant_id(0)]] const bool  useClusterLighting  = false;
+#endif
 
 
 
