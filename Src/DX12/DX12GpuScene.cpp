@@ -2756,10 +2756,14 @@ void DX12GpuScene::Draw() {
       auto tableDesc = _cbvSrvUavHeap.AllocateDynamic(3);
       auto ds = _cbvSrvUavHeap.GetDescriptorSize();
       auto* dev = _device.GetDevice();
-      // t0,space1: materials (copy from static)
-      D3D12_CPU_DESCRIPTOR_HANDLE dst0 = { tableDesc.cpu.ptr };
-      D3D12_CPU_DESCRIPTOR_HANDLE src0 = _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS);
-      dev->CopyDescriptorsSimple(1, dst0, src0, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      // t0,space1: materials
+      { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_applMesh->_materialCount;
+        d.Buffer.StructureByteStride = sizeof(AAPLShaderMaterial);
+        D3D12_CPU_DESCRIPTOR_HANDLE dst = { tableDesc.cpu.ptr };
+        dev->CreateShaderResourceView(_materialBuffer.Get(), &d, dst); }
       // t3,space1: meshChunks
       { D3D12_SHADER_RESOURCE_VIEW_DESC d = {}; d.Format = DXGI_FORMAT_UNKNOWN;
         d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
