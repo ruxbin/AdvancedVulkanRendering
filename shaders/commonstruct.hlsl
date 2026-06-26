@@ -2,7 +2,9 @@
 struct AAPLBoundingBox3
 {
     float3 min;
+    uint   _padMin;   // alignas(16) in C++ pads vec3 to 16 bytes
     float3 max;
+    uint   _padMax;   // alignas(16) in C++ pads vec3 to 16 bytes
 };
 
 struct AAPLSphere
