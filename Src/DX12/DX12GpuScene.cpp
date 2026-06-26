@@ -1834,7 +1834,6 @@ void DX12GpuScene::CreateScatterResources() {
   dev->CreateShaderResourceView(_scatterAccumVolume.Get(), &srvDesc,
       _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM));
 
-  _scatterFirstFrame = true;
   _scatterAccumIsInPSR = false;
   spdlog::info("DX12: Scatter resources created (froxel: {}x{}x{})",
                SCATTER_FROXEL_W, SCATTER_FROXEL_H, SCATTER_FROXEL_D);
@@ -2986,7 +2985,6 @@ void DX12GpuScene::Draw() {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     _scatterAccumIsInPSR = true; // will be in PIXEL_SHADER_RESOURCE for deferred lighting to read
-    _scatterFirstFrame = false;
   }
 
 
@@ -3527,6 +3525,9 @@ void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
 
   // Re-create static SRV/UAV descriptors for changed resources
   CreateStaticDescriptors();
+
+  // Reset scatter accumulation state since froxel volume was recreated at new resolution
+  _scatterAccumIsInPSR = false;
 
   spdlog::info("DX12GpuScene resized to {}x{}", newWidth, newHeight);
 }

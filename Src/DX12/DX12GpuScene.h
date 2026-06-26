@@ -142,7 +142,6 @@ private:
   ComPtr<ID3D12RootSignature> _accumRootSig;
   ComPtr<ID3D12PipelineState> _scatterVolumePSO;
   ComPtr<ID3D12PipelineState> _accumulatePSO;
-  bool _scatterFirstFrame = true;
   bool _scatterAccumIsInPSR = false; // tracks whether _scatterAccumVolume is in PSR vs UAV state
 
   // Pipeline states
