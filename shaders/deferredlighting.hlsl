@@ -1,42 +1,43 @@
+#include "shadercompat.hlsl"
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
 
 
 
-[[vk::binding(0,0)]]
-cbuffer cam
+VK_BINDING(0,0)
+cbuffer cam REGISTER_CBV(0,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(0,1)]] Texture2D<float4> albedoeTex;
-[[vk::binding(1,1)]] Texture2D<float4> normalTex;
-[[vk::binding(2,1)]] Texture2D<float4> emissiveTex;
-[[vk::binding(3,1)]] Texture2D<float4> F0RoughnessTex;
-[[vk::binding(4,1)]] Texture2D<float> inDepth;
-[[vk::binding(5,1)]] SamplerState _NearestClampSampler;
+VK_BINDING(0,1) Texture2D<float4> albedoeTex REGISTER_SRV(0,1);
+VK_BINDING(1,1) Texture2D<float4> normalTex REGISTER_SRV(1,1);
+VK_BINDING(2,1) Texture2D<float4> emissiveTex REGISTER_SRV(2,1);
+VK_BINDING(3,1) Texture2D<float4> F0RoughnessTex REGISTER_SRV(3,1);
+VK_BINDING(4,1) Texture2D<float> inDepth REGISTER_SRV(4,1);
+VK_BINDING(5,1) SamplerState _NearestClampSampler REGISTER_SAMPLER(5,1);
 
-[[vk::binding(6,1)]] Texture2DArray<float> shadowMaps;
-[[vk::binding(7,1)]] SamplerComparisonState shadowSampler;
-[[vk::binding(10,1)]] Texture2D<float> aoTexture;
-[[vk::binding(8,1)]] StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;
-[[vk::binding(9,1)]] StructuredBuffer<uint> lightIndices;
+VK_BINDING(6,1) Texture2DArray<float> shadowMaps REGISTER_SRV(6,1);
+VK_BINDING(7,1) SamplerComparisonState shadowSampler REGISTER_SAMPLER_CMP(7,1);
+VK_BINDING(10,1) Texture2D<float> aoTexture REGISTER_SRV(10,1);
+VK_BINDING(8,1) StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData REGISTER_SRV(8,1);
+VK_BINDING(9,1) StructuredBuffer<uint> lightIndices REGISTER_SRV(9,1);
 
 // Spot light bindings.
-[[vk::binding(11,1)]] StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData;
-[[vk::binding(12,1)]] StructuredBuffer<uint> spotLightIndices;
+VK_BINDING(11,1) StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData REGISTER_SRV(11,1);
+VK_BINDING(12,1) StructuredBuffer<uint> spotLightIndices REGISTER_SRV(12,1);
 
 // Spot shadow resources.
 #define SPOT_SHADOW_MAX_COUNT 32
 #define SPOT_SHADOW_DEPTH_BIAS 0.001f
-[[vk::binding(13,1)]] Texture2DArray<float> spotShadowMaps;
-[[vk::binding(14,1)]] SamplerComparisonState spotShadowSampler;
-[[vk::binding(15,1)]] StructuredBuffer<float4x4> spotViewProjMatrices;
+VK_BINDING(13,1) Texture2DArray<float> spotShadowMaps REGISTER_SRV(13,1);
+VK_BINDING(14,1) SamplerComparisonState spotShadowSampler REGISTER_SAMPLER_CMP(14,1);
+VK_BINDING(15,1) StructuredBuffer<float4x4> spotViewProjMatrices REGISTER_SRV(15,1);
 
 // Scatter volume (froxel volumetrics, bound after spot shadow slots).
-[[vk::binding(16,1)]] Texture3D<float4> scatterAccumVolume;
-[[vk::binding(17,1)]] SamplerState linearClampSampler;
+VK_BINDING(16,1) Texture3D<float4> scatterAccumVolume REGISTER_SRV(16,1);
+VK_BINDING(17,1) SamplerState linearClampSampler REGISTER_SAMPLER(17,1);
 
 struct VSOutput
 {

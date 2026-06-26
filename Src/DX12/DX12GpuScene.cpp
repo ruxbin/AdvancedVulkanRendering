@@ -143,6 +143,8 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   CreateHiZResources();
   CreateShadowResources();
   CreateCommandSignature();
+  CreateLights();
+  CreateLightCullPipelines();
 
   spdlog::info("DX12GpuScene initialized");
 }
@@ -643,10 +645,11 @@ void DX12GpuScene::CreateRootSignatures() {
     params[0].Descriptor.RegisterSpace = 0;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // [1] Descriptor table: SRVs (G-buffers, depth, shadow, AO)
+    // [1] Descriptor table: SRVs (G-buffers, depth, shadow, AO, lights)
+    // t0-t17 in space1: covers all deferredlighting.hlsl bindings
     D3D12_DESCRIPTOR_RANGE range = {};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 11; // t0-t10 in space1
+    range.NumDescriptors = 18; // t0-t17 in space1
     range.BaseShaderRegister = 0;
     range.RegisterSpace = 1;
 
@@ -774,6 +777,46 @@ void DX12GpuScene::CreateRootSignatures() {
     desc.NumParameters = 2;
     desc.pParameters = params;
     _shadowCullRootSig = CreateRootSigFromDesc(dev, desc);
+  }
+
+  // 8. Light Cull root signature:
+  // [0] CBV b0 space0 (frameData — camera params)
+  // [1] CBV b1 space0 (cullParams — light counts, screen size, VP matrix, frustum)
+  // [2] Descriptor table:
+  //     SRVs: t1,t2 (pointLight, depth) and t8 (spotLight) in space1
+  //     UAVs: u3..u11 in space1
+  {
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor.ShaderRegister = 0; params[0].Descriptor.RegisterSpace = 0;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[1].Descriptor.ShaderRegister = 1; params[1].Descriptor.RegisterSpace = 0;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // Descriptor table: SRV range (t1..t8, space1) + UAV range (u3..u11, space1)
+    D3D12_DESCRIPTOR_RANGE lcRanges[2] = {};
+    // SRVs: t1 and t2 (pointLight, depth) and t8 (spotLight) — cover t1..t8 contiguously
+    lcRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    lcRanges[0].NumDescriptors = 8;  // t1..t8 space1
+    lcRanges[0].BaseShaderRegister = 1;
+    lcRanges[0].RegisterSpace = 1;
+    lcRanges[0].OffsetInDescriptorsFromTableStart = 0;
+    // UAVs: u3..u11 (9 slots)
+    lcRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    lcRanges[1].NumDescriptors = 9;  // u3..u11 space1
+    lcRanges[1].BaseShaderRegister = 3;
+    lcRanges[1].RegisterSpace = 1;
+    lcRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 2;
+    params[2].DescriptorTable.pDescriptorRanges = lcRanges;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 3; desc.pParameters = params;
+    _lightCullRootSig = CreateRootSigFromDesc(dev, desc);
   }
 
   spdlog::info("DX12: All root signatures created");
@@ -1356,6 +1399,356 @@ void DX12GpuScene::UpdateUniforms() {
   frameData.frameConstants = _frameConstants;
 
   memcpy(frame.uniformMapped, &frameData, sizeof(FrameData));
+}
+
+// ---- Create Lights (place default point lights + alloc GPU buffers) ----
+void DX12GpuScene::CreateLights() {
+  auto* dev = _device.GetDevice();
+  auto* cmdList = _device.GetCommandList();
+
+  // Place a small grid of point lights around the scene
+  float positions[][3] = {{2,1,0},{-2,1,0},{0,1,3},{0,1,-3}};
+  float colors[][3] = {{1,.8f,.6f},{.6f,.8f,1.f},{1,1,.8f},{.8f,1,.9f}};
+  for (int k = 0; k < 4; ++k) {
+    AAPLPointLightCullingData pl;
+    pl.posRadius = vec4(positions[k][0], positions[k][1], positions[k][2], 5.0f);
+    pl.color = vec4(colors[k][0]*3.f, colors[k][1]*3.f, colors[k][2]*3.f, 0.f);
+    _pointLights.push_back(pl);
+  }
+
+  // Upload point light data to GPU
+  size_t plSize = _pointLights.size() * sizeof(AAPLPointLightCullingData);
+  {
+    ComPtr<ID3D12Resource> uploadBuf;
+    _device.GetCommandAllocator(_currentFrame)->Reset();
+    cmdList->Reset(_device.GetCommandAllocator(_currentFrame), nullptr);
+    _pointLightBuffer = DX12Util::CreateDefaultBuffer(dev, cmdList,
+        _pointLights.data(), (UINT64)plSize, uploadBuf);
+    cmdList->Close();
+    ID3D12CommandList* lists[] = { cmdList };
+    _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
+    // uploadBuf stays alive until FlushCommandQueue returns
+  }
+
+  // Allocate per-tile light output buffers
+  uint32_t w = _device.GetWidth(), h = _device.GetHeight();
+  uint32_t tileW = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+  uint32_t tileH = (h + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+  uint32_t totalTiles = tileW * tileH;
+  uint32_t maxPL = (uint32_t)_pointLights.size();
+  uint32_t maxSL = (uint32_t)_spotLights.size();
+  if (maxSL == 0) maxSL = 1;
+  _lightXZRangeBuffer = DX12Util::CreateGPUBuffer(dev,
+      (UINT64)maxPL * 8, // sizeof(uint16_t4) = 8
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  _spotXZRangeBuffer = DX12Util::CreateGPUBuffer(dev,
+      (UINT64)maxSL * 8,
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+  // Light index buffers: [count, idx0, idx1, ...] per tile × MAX_LIGHTS_PER_TILE
+  UINT64 idxBufSize = (UINT64)totalTiles * MAX_LIGHTS_PER_TILE_LC * sizeof(uint32_t);
+  _lightIndicesBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  _lightIndicesTransparentBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  _spotLightIndicesBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  _spotLightIndicesTransparentBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
+      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+  // Debug texture: RWTexture2D<uint> at tile resolution
+  _lightDebugTexture = DX12Util::CreateTexture2D(dev, tileW, tileH,
+      DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, 1, 1,
+      D3D12_RESOURCE_STATE_COMMON);
+
+  // Persistently mapped upload buffer for LightCullParams cbuffer
+  _lightCullParamsBuffer = DX12Util::CreateUploadBuffer(dev,
+      512, &_lightCullParamsMapped);
+
+  spdlog::info("DX12: CreateLights — {} point lights, tileGrid {}x{}", maxPL, tileW, tileH);
+}
+
+// ---- Create Light Cull Pipelines ----
+void DX12GpuScene::CreateLightCullPipelines() {
+  if (!_lightCullRootSig) return;
+  auto* dev = _device.GetDevice();
+
+  auto loadCS = [&](const char* name, ComPtr<ID3D12PipelineState>& pso) {
+    auto cs = DX12Util::ReadShaderFile((_rootPath / "shaders" / name).generic_string());
+    if (cs.empty()) {
+      spdlog::warn("DX12: Missing light cull shader: {}", name);
+      return;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC d = {};
+    d.pRootSignature = _lightCullRootSig.Get();
+    d.CS = {cs.data(), cs.size()};
+    DX12Util::ThrowIfFailed(dev->CreateComputePipelineState(&d, IID_PPV_ARGS(&pso)), name);
+    spdlog::info("DX12: Created light cull PSO: {}", name);
+  };
+
+  loadCS("CoarseCull.cs.cso",    _coarseCullPSO);
+  loadCS("TraditionalCull.cs.cso", _traditionalCullPSO);
+  loadCS("ClearIndices.cs.cso",  _clearIndicesPSO);
+}
+
+// ---- Dispatch Light Culling (CoarseCull + ClearIndices + TraditionalCull) ----
+void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
+  if (_pointLights.empty()) return;
+  if (!_coarseCullPSO || !_lightCullRootSig) return;
+
+  auto* dev = _device.GetDevice();
+  uint32_t w = _device.GetWidth(), h = _device.GetHeight();
+  uint32_t tileW = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+  uint32_t tileH = (h + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+  uint32_t maxPL = (uint32_t)_pointLights.size();
+  uint32_t maxSL = (uint32_t)_spotLights.size();
+  if (maxSL == 0) maxSL = 1;
+  auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+
+  // --- Upload LightCullParams cbuffer ---
+  // Must match lightculling.hlsl cbuffer cullParams at b1 space0 layout:
+  //   uint opaqueChunkCount, alphaMaskedChunkCount, transparentChunkCount;
+  //   uint totalPointLights, totalSpotLights, hizMipLevels;
+  //   float2 screenSize; float4x4 viewProjMatrix; Frustum frustum;
+  // We pack it as raw bytes with correct alignment.
+  struct LightCullCBData {
+    uint32_t opaqueChunkCount;
+    uint32_t alphaMaskedChunkCount;
+    uint32_t transparentChunkCount;
+    uint32_t totalPointLights;
+    uint32_t totalSpotLights;
+    uint32_t hizMipLevels;
+    float    screenWidth;
+    float    screenHeight;
+    float    vpMatrix[16]; // float4x4 at 16-byte aligned offset
+    // Frustum: 6 planes × (vec3 normal + float w) = 6 × 16 = 96 bytes
+    struct {
+      struct { float x, y, z, w; } normal_w;
+    } frustumPlanes[6];
+  };
+  static_assert(sizeof(LightCullCBData) <= 512, "LightCullCBData too large");
+
+  LightCullCBData lcp = {};
+  if (_applMesh) {
+    lcp.opaqueChunkCount      = (uint32_t)_applMesh->_opaqueChunkCount;
+    lcp.alphaMaskedChunkCount = (uint32_t)_applMesh->_alphaMaskedChunkCount;
+    lcp.transparentChunkCount = (uint32_t)_applMesh->_transparentChunkCount;
+  }
+  lcp.totalPointLights = maxPL;
+  lcp.totalSpotLights  = (uint32_t)_spotLights.size();
+  lcp.hizMipLevels     = _hizMipLevels;
+  lcp.screenWidth      = (float)w;
+  lcp.screenHeight     = (float)h;
+  // mat4 quirk: A*B = B*A, same as GPUCull path
+  mat4 vp = transpose(_mainCamera->getProjectMatrix() * _mainCamera->getObjectToCamera());
+  memcpy(lcp.vpMatrix, vp.value_ptr(), sizeof(float) * 16);
+  // Build frustum planes from camera frustum (layout-compatible with HLSL Frustum)
+  const Frustum& camFrustum = _mainCamera->getFrustum();
+  memcpy(lcp.frustumPlanes, &camFrustum, sizeof(lcp.frustumPlanes));
+  memcpy(_lightCullParamsMapped, &lcp, sizeof(lcp));
+
+  // --- Transition output buffers to UAV ---
+  // Also transition window depth to SRV for TraditionalCull (reads inDepth)
+  DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
+      D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  DX12Util::TransitionBarrier(cmdList, _lightXZRangeBuffer.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  DX12Util::TransitionBarrier(cmdList, _lightIndicesBuffer.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  DX12Util::TransitionBarrier(cmdList, _lightIndicesTransparentBuffer.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  DX12Util::TransitionBarrier(cmdList, _lightDebugTexture.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  DX12Util::TransitionBarrier(cmdList, _spotXZRangeBuffer.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  DX12Util::TransitionBarrier(cmdList, _spotLightIndicesBuffer.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  DX12Util::TransitionBarrier(cmdList, _spotLightIndicesTransparentBuffer.Get(),
+      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+  // --- Build descriptor table: 8 SRVs (t1-t8) + 9 UAVs (u3-u11) = 17 slots ---
+  // Slot layout (matches lcRanges[] in root sig):
+  //   [0-7]  SRVs for t1..t8 space1:
+  //          slot0=t1 pointLightCullingData
+  //          slot1=t2 inDepth (window depth)
+  //          slot2-6 = null (t3-t7)
+  //          slot7=t8 spotLightCullingData
+  //   [8-16] UAVs for u3..u11 space1:
+  //          slot8=u3 lightXZRange
+  //          slot9=u4 lightDebug
+  //          slot10=u5 lightIndices
+  //          slot11=u6 null (tradtionDebug Texture2D — skip)
+  //          slot12=u7 lightIndicesTransparent
+  //          slot13=u8 null
+  //          slot14=u9 spotXZRange
+  //          slot15=u10 spotLightIndices
+  //          slot16=u11 spotLightIndicesTransparent
+  auto lcDesc = _cbvSrvUavHeap.AllocateDynamic(17);
+
+  // SRV t1: pointLightCullingData
+  {
+    D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_UNKNOWN;
+    d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    d.Buffer.NumElements = maxPL;
+    d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
+    dev->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {lcDesc.cpu.ptr + 0 * ds});
+  }
+  // SRV t2: inDepth (window depth buffer as SRV)
+  {
+    D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_FLOAT;
+    d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    d.Texture2D.MipLevels = 1;
+    dev->CreateShaderResourceView(_device.GetDepthStencilBuffer(), &d, {lcDesc.cpu.ptr + 1 * ds});
+  }
+  // SRV t3-t7: null pads
+  for (int k = 2; k <= 6; ++k) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+    nd.Format = DXGI_FORMAT_R32_FLOAT;
+    nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    dev->CreateShaderResourceView(nullptr, &nd, {lcDesc.cpu.ptr + (SIZE_T)k * ds});
+  }
+  // SRV t8: spotLightCullingData (null if no spot lights)
+  {
+    D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_FLOAT;
+    d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    if (_spotLightBuffer && !_spotLights.empty()) {
+      d.Format = DXGI_FORMAT_UNKNOWN;
+      d.Buffer.NumElements = (UINT)_spotLights.size();
+      d.Buffer.StructureByteStride = sizeof(AAPLSpotLightCullingData);
+      dev->CreateShaderResourceView(_spotLightBuffer.Get(), &d, {lcDesc.cpu.ptr + 7 * ds});
+    } else {
+      dev->CreateShaderResourceView(nullptr, &d, {lcDesc.cpu.ptr + 7 * ds});
+    }
+  }
+
+  // UAV u3: lightXZRange (RWStructuredBuffer<uint16_t4>)
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_UNKNOWN;
+    d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    d.Buffer.NumElements = maxPL;
+    d.Buffer.StructureByteStride = 8; // sizeof(uint16_t4)
+    dev->CreateUnorderedAccessView(_lightXZRangeBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 8 * ds});
+  }
+  // UAV u4: lightDebug (RWTexture2D<uint>)
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    dev->CreateUnorderedAccessView(_lightDebugTexture.Get(), nullptr, &d, {lcDesc.cpu.ptr + 9 * ds});
+  }
+  // UAV u5: lightIndices
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    dev->CreateUnorderedAccessView(_lightIndicesBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 10 * ds});
+  }
+  // UAV u6: tradtionDebug — null Texture2D (RWTexture2D<float4> in shader, unused/commented)
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC nd = {};
+    nd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    nd.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    dev->CreateUnorderedAccessView(nullptr, nullptr, &nd, {lcDesc.cpu.ptr + 11 * ds});
+  }
+  // UAV u7: lightIndicesTransparent
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    dev->CreateUnorderedAccessView(_lightIndicesTransparentBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 12 * ds});
+  }
+  // UAV u8: null (padding slot between u7 and u9)
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC nd = {};
+    nd.Format = DXGI_FORMAT_R32_UINT;
+    nd.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    dev->CreateUnorderedAccessView(nullptr, nullptr, &nd, {lcDesc.cpu.ptr + 13 * ds});
+  }
+  // UAV u9: spotXZRange
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_UNKNOWN;
+    d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    d.Buffer.NumElements = maxSL;
+    d.Buffer.StructureByteStride = 8;
+    dev->CreateUnorderedAccessView(_spotXZRangeBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 14 * ds});
+  }
+  // UAV u10: spotLightIndices
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    dev->CreateUnorderedAccessView(_spotLightIndicesBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 15 * ds});
+  }
+  // UAV u11: spotLightIndicesTransparent
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    dev->CreateUnorderedAccessView(_spotLightIndicesTransparentBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 16 * ds});
+  }
+
+  // --- Set shared state ---
+  cmdList->SetComputeRootSignature(_lightCullRootSig.Get());
+  cmdList->SetComputeRootConstantBufferView(0,
+      _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
+  cmdList->SetComputeRootConstantBufferView(1,
+      _lightCullParamsBuffer->GetGPUVirtualAddress());
+  cmdList->SetComputeRootDescriptorTable(2, lcDesc.gpu);
+
+  // --- ClearIndices: zero lightIndices counts ---
+  if (_clearIndicesPSO) {
+    cmdList->SetPipelineState(_clearIndicesPSO.Get());
+    cmdList->Dispatch(tileW, tileH, 1);
+    DX12Util::UAVBarrier(cmdList, _lightIndicesBuffer.Get());
+  }
+
+  // --- CoarseCull: one thread per light ---
+  {
+    cmdList->SetPipelineState(_coarseCullPSO.Get());
+    cmdList->Dispatch((maxPL + 127) / 128, 1, 1);
+    DX12Util::UAVBarrier(cmdList, _lightXZRangeBuffer.Get());
+    DX12Util::UAVBarrier(cmdList, _lightDebugTexture.Get());
+  }
+
+  // --- TraditionalCull: tileW × tileH thread groups (16×16 each) ---
+  if (_traditionalCullPSO) {
+    cmdList->SetPipelineState(_traditionalCullPSO.Get());
+    cmdList->Dispatch(tileW, tileH, 1);
+    DX12Util::UAVBarrier(cmdList, _lightIndicesBuffer.Get());
+  }
+
+  // --- Transition lightIndices to SRV for deferred lighting ---
+  DX12Util::TransitionBarrier(cmdList, _lightIndicesBuffer.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
+  DX12Util::TransitionBarrier(cmdList, _lightXZRangeBuffer.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  DX12Util::TransitionBarrier(cmdList, _lightIndicesTransparentBuffer.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  DX12Util::TransitionBarrier(cmdList, _lightDebugTexture.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  DX12Util::TransitionBarrier(cmdList, _spotXZRangeBuffer.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  DX12Util::TransitionBarrier(cmdList, _spotLightIndicesBuffer.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  DX12Util::TransitionBarrier(cmdList, _spotLightIndicesTransparentBuffer.Get(),
+      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  // Restore depth to DEPTH_WRITE for deferred lighting depth-read transition
+  DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
+      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 }
 
 // ---- Readback Culling Stats ----
@@ -2047,6 +2440,9 @@ void DX12GpuScene::Draw() {
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
   }
 
+  // === Light Culling (CoarseCull + TraditionalCull, after SAO, before deferred) ===
+  DispatchLightCulling(cmdList);
+
   // === Deferred Lighting (full-screen triangle into swap chain) ===
   {
     // Transition window depth to SRV for deferred lighting read
@@ -2060,14 +2456,14 @@ void DX12GpuScene::Draw() {
         _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // Build contiguous 11-SRV block for deferred lighting (t0..t10, space1).
-    // Static heap layout does NOT match shader layout directly (AO is at slot 6, shadow at 7),
-    // so we allocate a fresh dynamic block each frame and copy the correct descriptors in order:
+    // Build contiguous 18-SRV block for deferred lighting (t0..t17, space1).
+    // Layout:
     //   t0=albedo, t1=normal, t2=emissive, t3=F0R, t4=depth,
-    //   t5=null (static sampler s5 handles this slot, but slot must exist),
-    //   t6=shadowMaps (Texture2DArray), t7-t9=null, t10=aoTexture
+    //   t5=null (sampler slot), t6=shadowMaps, t7=null (sampler slot),
+    //   t8=pointLightCullingData, t9=lightIndices, t10=aoTexture,
+    //   t11-t17=null (spot lights / scatter volume, not yet bound)
     {
-      auto dlDesc = _cbvSrvUavHeap.AllocateDynamic(11);
+      auto dlDesc = _cbvSrvUavHeap.AllocateDynamic(18);
       auto ds = _cbvSrvUavHeap.GetDescriptorSize();
       auto* dev = _device.GetDevice();
 
@@ -2101,14 +2497,50 @@ void DX12GpuScene::Draw() {
           _cbvSrvUavHeap.GetStaticCPU(SRV_SHADOW_MAPS),
           D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-      // t7–t9: null SRVs (unused gap slots)
-      for (int k = 7; k <= 9; ++k) {
+      // t7: null SRV (shadowSampler slot)
+      {
         D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
         nd.Format = DXGI_FORMAT_R8_UNORM;
         nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         nd.Texture2D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + (UINT64)k * ds});
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 7u * ds});
+      }
+
+      // t8: pointLightCullingData SRV (or null if no lights)
+      if (_pointLightBuffer && !_pointLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_pointLights.size();
+        d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
+        dev->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 8u * ds});
+      } else {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R32_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 8u * ds});
+      }
+
+      // t9: lightIndices SRV (already transitioned to GENERIC_READ by DispatchLightCulling)
+      if (_lightIndicesBuffer && !_pointLights.empty()) {
+        uint32_t w2 = _device.GetWidth(), h2 = _device.GetHeight();
+        uint32_t tW = (w2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        uint32_t tH = (h2 + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_UINT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = tW * tH * MAX_LIGHTS_PER_TILE_LC;
+        dev->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 9u * ds});
+      } else {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R32_FLOAT;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + 9u * ds});
       }
 
       // t10: AO texture SRV
@@ -2116,6 +2548,16 @@ void DX12GpuScene::Draw() {
           {dlDesc.cpu.ptr + 10u * ds},
           _cbvSrvUavHeap.GetStaticCPU(SRV_AO),
           D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+      // t11-t17: null SRVs (spot lights / scatter volume not yet active)
+      for (int k = 11; k <= 17; ++k) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
+        nd.Format = DXGI_FORMAT_R8_UNORM;
+        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nd.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(nullptr, &nd, {dlDesc.cpu.ptr + (UINT64)k * ds});
+      }
 
       cmdList->SetGraphicsRootDescriptorTable(1, dlDesc.gpu);
     }
@@ -2126,6 +2568,12 @@ void DX12GpuScene::Draw() {
     // Transition window depth back to write
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
         D3D12_RESOURCE_STATE_DEPTH_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    // Restore lightIndices back to COMMON for next frame
+    if (_lightIndicesBuffer && !_pointLights.empty()) {
+      DX12Util::TransitionBarrier(cmdList, _lightIndicesBuffer.Get(),
+          D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COMMON);
+    }
   }
 
   // === Copy writeIndex GPU → readback buffer for CPU stats ===

@@ -153,3 +153,21 @@ struct alignas(64) SpotLightData {
       : boundingSphere(bs), posAndHeight(ph), colorAndInnerAngle(ci),
         dirAndOuterAngle(da), flags(f) {}
 };
+
+// Cluster culling structs — mirrors commonstruct.hlsl layout exactly (used by lightculling.hlsl).
+// posRadius: xyz = world position, w = sphere radius.
+// color:     xyz = RGB intensity, w = sign(transparent flag).
+struct AAPLPointLightCullingData {
+  vec4 posRadius;
+  vec4 color;
+};
+
+// Spot light culling data — mirrors commonstruct.hlsl AAPLSpotLightCullingData.
+struct AAPLSpotLightCullingData {
+  vec4 posRadius;          // xyz = bounding sphere center (world), w = sphere radius
+  vec4 posAndHeight;       // xyz = spot position (world), w = height (linear distance cutoff)
+  vec4 dirAndOuterAngle;   // xyz = light direction (world, unit), w = cos(outerAngle)
+  vec4 color;              // xyz = RGB intensity, w = sign(transparent): >=0 opaque, <0 transparent
+  float cosInnerAngle;
+  float _padSpot0, _padSpot1, _padSpot2;
+};

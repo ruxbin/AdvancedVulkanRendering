@@ -1,16 +1,17 @@
+#include "shadercompat.hlsl"
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
 
 #include "geom.hlsl"
 
-[[vk::binding(0,0)]] 
-cbuffer frameData
+VK_BINDING(0,0)
+cbuffer frameData REGISTER_CBV(0,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(0,1)]] cbuffer cullParams {
+VK_BINDING(0,1) cbuffer cullParams REGISTER_CBV(1,0) {
     uint opaqueChunkCount;
     uint alphaMaskedChunkCount;
     uint transparentChunkCount;
@@ -22,23 +23,23 @@ cbuffer frameData
     Frustum frustum;
 };
 
-[[vk::binding(1,1)]]
-StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData;  //world position
+VK_BINDING(1,1)
+StructuredBuffer<AAPLPointLightCullingData> pointLightCullingData REGISTER_SRV(1,1);  //world position
 
-[[vk::binding(2,1)]] Texture2D<float> inDepth; //Texture2D<half> -->  generated SPIR-V is invalid: [VUID-StandaloneSpirv-OpTypeImage-04656] Expected Sampled Type to be a 32-bit int, 64-bit int or 32-bit float scalar type for Vulkan environment
+VK_BINDING(2,1) Texture2D<float> inDepth REGISTER_SRV(2,1); //Texture2D<half> -->  generated SPIR-V is invalid: [VUID-StandaloneSpirv-OpTypeImage-04656] Expected Sampled Type to be a 32-bit int, 64-bit int or 32-bit float scalar type for Vulkan environment
                                                                         //%type_2d_image = OpTypeImage % half2 D2 0 0 1 Unknown
 
-[[vk::binding(3,1)]] RWStructuredBuffer<uint16_t4> lightXZRange; //-enable-16bit-types
-[[vk::binding(4,1)]] RWTexture2D<uint> lightDebug;            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
-[[vk::binding(5,1)]] RWStructuredBuffer<uint> lightIndices;
-[[vk::binding(6,1)]] RWTexture2D<float4> tradtionDebug;
-[[vk::binding(7,1)]] RWStructuredBuffer<uint> lightIndicesTransparent;
+VK_BINDING(3,1) RWStructuredBuffer<uint16_t4> lightXZRange REGISTER_UAV(3,1); //-enable-16bit-types
+VK_BINDING(4,1) RWTexture2D<uint> lightDebug REGISTER_UAV(4,1);            //uint16_t on VK_FORMAT_R8_UINT actuarry --- interlockecadd only supports uint or int
+VK_BINDING(5,1) RWStructuredBuffer<uint> lightIndices REGISTER_UAV(5,1);
+VK_BINDING(6,1) RWTexture2D<float4> tradtionDebug REGISTER_UAV(6,1);
+VK_BINDING(7,1) RWStructuredBuffer<uint> lightIndicesTransparent REGISTER_UAV(7,1);
 
 // Spot light culling bindings (parallel set to point light bindings 1/3/5/7).
-[[vk::binding(8,1)]]  StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData;
-[[vk::binding(9,1)]]  RWStructuredBuffer<uint16_t4> spotXZRange;
-[[vk::binding(10,1)]] RWStructuredBuffer<uint> spotLightIndices;
-[[vk::binding(11,1)]] RWStructuredBuffer<uint> spotLightIndicesTransparent;
+VK_BINDING(8,1)  StructuredBuffer<AAPLSpotLightCullingData> spotLightCullingData REGISTER_SRV(8,1);
+VK_BINDING(9,1)  RWStructuredBuffer<uint16_t4> spotXZRange REGISTER_UAV(9,1);
+VK_BINDING(10,1) RWStructuredBuffer<uint> spotLightIndices REGISTER_UAV(10,1);
+VK_BINDING(11,1) RWStructuredBuffer<uint> spotLightIndicesTransparent REGISTER_UAV(11,1);
 
 
 //calculate each light's xzrange

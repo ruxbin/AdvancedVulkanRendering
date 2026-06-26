@@ -115,6 +115,7 @@ private:
   ComPtr<ID3D12RootSignature> _hizRootSig;
   ComPtr<ID3D12RootSignature> _saoRootSig;
   ComPtr<ID3D12RootSignature> _shadowCullRootSig;
+  ComPtr<ID3D12RootSignature> _lightCullRootSig;
 
   // Pipeline states
   ComPtr<ID3D12PipelineState> _occluderPSO;
@@ -127,6 +128,9 @@ private:
   ComPtr<ID3D12PipelineState> _hizDownsamplePSO;
   ComPtr<ID3D12PipelineState> _saoPSO;
   ComPtr<ID3D12PipelineState> _shadowCullPSO;
+  ComPtr<ID3D12PipelineState> _coarseCullPSO;
+  ComPtr<ID3D12PipelineState> _traditionalCullPSO;
+  ComPtr<ID3D12PipelineState> _clearIndicesPSO;
 
   // Command signature for ExecuteIndirect
   ComPtr<ID3D12CommandSignature> _drawIndexedCmdSig;
@@ -186,6 +190,25 @@ private:
     Frustum frustum;
   };
 
+  // Light data
+  std::vector<AAPLPointLightCullingData> _pointLights;
+  std::vector<AAPLSpotLightCullingData>  _spotLights;
+  ComPtr<ID3D12Resource> _pointLightBuffer;
+  ComPtr<ID3D12Resource> _spotLightBuffer;
+
+  // Light culling output buffers
+  static constexpr uint32_t LIGHT_TILE_SIZE    = 32;
+  static constexpr uint32_t MAX_LIGHTS_PER_TILE_LC = 64; // matches MAX_LIGHTS_PER_TILE in commonstruct.hlsl
+  ComPtr<ID3D12Resource> _lightXZRangeBuffer;
+  ComPtr<ID3D12Resource> _spotXZRangeBuffer;
+  ComPtr<ID3D12Resource> _lightIndicesBuffer;
+  ComPtr<ID3D12Resource> _spotLightIndicesBuffer;
+  ComPtr<ID3D12Resource> _lightIndicesTransparentBuffer;
+  ComPtr<ID3D12Resource> _spotLightIndicesTransparentBuffer;
+  ComPtr<ID3D12Resource> _lightDebugTexture;     // RWTexture2D<uint>
+  ComPtr<ID3D12Resource> _lightCullParamsBuffer; // upload, persistently mapped
+  void* _lightCullParamsMapped = nullptr;
+
   // Init helpers
   void LoadMeshData();
   void CreateBuffers();
@@ -198,6 +221,8 @@ private:
   void CreateShadowResources();
   void CreateCommandSignature();
   void CreateStaticDescriptors();
+  void CreateLights();
+  void CreateLightCullPipelines();
   void FlushCommandQueue();
 
   // Per-frame
@@ -205,6 +230,7 @@ private:
   void RecordCommandBuffer();
   void ReadbackCullingStats();
   void RenderImGuiOverlay();
+  void DispatchLightCulling(ID3D12GraphicsCommandList* cmdList);
 };
 
 #endif // ENABLE_DX12
