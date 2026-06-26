@@ -1,24 +1,25 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
+#include "shadercompat.hlsl"
 
 
 
-[[vk::binding(0,0)]] Texture2D<float4> albedoeTex;
-[[vk::binding(1,0)]] Texture2D<float4> normalTex;
-[[vk::binding(2,0)]] Texture2D<float4> emissiveTex;
-[[vk::binding(3,0)]] Texture2D<float4> F0RoughnessTex;
-[[vk::binding(4,0)]] Texture2D<float> inDepth;
-[[vk::binding(5,0)]] SamplerState _NearestClampSampler;
+VK_BINDING(0,0) Texture2D<float4> albedoeTex REGISTER_SRV(0,0);
+VK_BINDING(1,0) Texture2D<float4> normalTex REGISTER_SRV(1,0);
+VK_BINDING(2,0) Texture2D<float4> emissiveTex REGISTER_SRV(2,0);
+VK_BINDING(3,0) Texture2D<float4> F0RoughnessTex REGISTER_SRV(3,0);
+VK_BINDING(4,0) Texture2D<float> inDepth REGISTER_SRV(4,0);
+VK_BINDING(5,0) SamplerState _NearestClampSampler REGISTER_SAMPLER(5,0);
 
-[[vk::binding(6,0)]] 
-cbuffer frameData
+VK_BINDING(6,0)
+cbuffer frameData REGISTER_CBV(6,0)
 {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameConstants;
 }
 
-[[vk::binding(7,0)]]
-cbuffer pointLightData
+VK_BINDING(7,0)
+cbuffer pointLightData REGISTER_CBV(7,0)
 {
     float4 posSqrRadius;
     float3 color;

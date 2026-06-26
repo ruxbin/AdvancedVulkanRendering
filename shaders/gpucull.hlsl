@@ -1,8 +1,9 @@
 #include "commonstruct.hlsl"
+#include "shadercompat.hlsl"
 
 // --- Bindings ---
-[[vk::binding(0,0)]] RWStructuredBuffer<DrawIndexedIndirectCommand> drawParams;
-[[vk::binding(1,0)]] cbuffer cullParams {
+VK_BINDING(0,0) RWStructuredBuffer<DrawIndexedIndirectCommand> drawParams REGISTER_UAV(0,0);
+VK_BINDING(1,0) cbuffer cullParams REGISTER_CBV(1,0) {
     uint opaqueChunkCount;
     uint alphaMaskedChunkCount;
     uint transparentChunkCount;
@@ -14,16 +15,16 @@
     Frustum frustum;
 };
 
-[[vk::binding(2,0)]] StructuredBuffer<AAPLMeshChunk> meshChunks;
-[[vk::binding(3,0)]] RWStructuredBuffer<uint> writeIndex;
+VK_BINDING(2,0) StructuredBuffer<AAPLMeshChunk> meshChunks REGISTER_SRV(2,0);
+VK_BINDING(3,0) RWStructuredBuffer<uint> writeIndex REGISTER_UAV(3,0);
 // writeIndex[0] = opaque visible count
 // writeIndex[1] = alpha-masked visible count
 // writeIndex[2] = transparent visible count
 
-[[vk::binding(4,0)]] RWStructuredBuffer<uint> chunkIndices;
+VK_BINDING(4,0) RWStructuredBuffer<uint> chunkIndices REGISTER_UAV(4,0);
 
-[[vk::binding(6,0)]] Texture2D<float> hizTexture;
-[[vk::binding(7,0)]] SamplerState hizSampler;
+VK_BINDING(6,0) Texture2D<float> hizTexture REGISTER_SRV(6,0);
+VK_BINDING(7,0) SamplerState hizSampler REGISTER_SAMPLER(7,0);
 
 // --- Hi-Z Occlusion Test ---
 bool IsOccludedByHiZ(AAPLBoundingBox3 aabb)
