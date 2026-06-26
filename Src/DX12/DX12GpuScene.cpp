@@ -3254,6 +3254,13 @@ void DX12GpuScene::InitImGui(SDL_Window* window) {
                        _cbvSrvUavHeap.GetHeap(),
                        fontDesc, fontDescGPU);
 
+  // Build font atlas on CPU side — required by legacy Init path which
+  // removes ImGuiBackendFlags_RendererHasTextures.
+  {
+    unsigned char* pixels; int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+  }
+
   _imguiInitialized = true;
   spdlog::info("DX12: ImGui initialized");
 }
