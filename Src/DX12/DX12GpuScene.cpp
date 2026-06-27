@@ -57,11 +57,11 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     : _rootPath(root), _device(device) {
 
   _mainCamera = new Camera(
-      60.0f, 0.1f, 1000.0f,
+      60.0f * (3.14159265f / 180.0f), 0.1f, 1000.0f,
       vec3(0, 2, 5),
       (float)_device.GetWidth() / _device.GetHeight(),
       vec3(0, 0, -1),
-      vec3(1, 0, 0));
+      vec3(0, 1, 0));
 
   // Default frame constants
   _frameConstants.sunDirection = vec3(0.3f, 1.0f, 0.5f); // reasonable default sun direction
