@@ -137,10 +137,11 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     _frameResources[i].cullParamsBuffer = DX12Util::CreateUploadBuffer(
         _device.GetDevice(), 512, &_frameResources[i].cullParamsMapped);
 
-    // Shadow cull resources
+    // Shadow cull resources — shader uses cascadeMaxChunks * 2 per cascade
+    // (opaque bucket + alpha bucket each get cascadeMaxChunks slots)
     _frameResources[i].shadowDrawParams = DX12Util::CreateGPUBuffer(
         _device.GetDevice(),
-        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * 2 * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 
     _frameResources[i].shadowWriteIndexUpload = DX12Util::CreateUploadBuffer(
@@ -158,7 +159,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
 
     _frameResources[i].shadowChunkIndicesBuffer = DX12Util::CreateGPUBuffer(
         _device.GetDevice(),
-        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * sizeof(uint32_t),
+        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * 2 * sizeof(uint32_t),
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
   }
 
@@ -2364,7 +2365,7 @@ void DX12GpuScene::Draw() {
       D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
       d.Format = DXGI_FORMAT_UNKNOWN;
       d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-      d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT;
+      d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT * 2;
       d.Buffer.StructureByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
       dev->CreateUnorderedAccessView(fr.shadowDrawParams.Get(), nullptr, &d,
           {cullDesc.cpu.ptr + 0 * ds});
@@ -2391,7 +2392,7 @@ void DX12GpuScene::Draw() {
       D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
       d.Format = DXGI_FORMAT_R32_UINT;
       d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-      d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT;
+      d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT * 2;
       dev->CreateUnorderedAccessView(fr.shadowChunkIndicesBuffer.Get(), nullptr, &d,
           {cullDesc.cpu.ptr + 4 * ds});
     }
