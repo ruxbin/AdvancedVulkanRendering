@@ -2471,7 +2471,7 @@ void DX12GpuScene::Draw() {
         ciSrv.Format = DXGI_FORMAT_R32_UINT;
         ciSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         ciSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        ciSrv.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT;
+        ciSrv.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT * 2;
         _device.GetDevice()->CreateShaderResourceView(fr.shadowChunkIndicesBuffer.Get(), &ciSrv, ciDesc.cpu);
         cmdList->SetGraphicsRootDescriptorTable(2, ciDesc.gpu);
       }
@@ -2480,21 +2480,24 @@ void DX12GpuScene::Draw() {
       cmdList->IASetVertexBuffers(0, 4, vbvs);
       cmdList->IASetIndexBuffer(&ibv);
 
-      uint32_t cascadeBase = cascade * totalShadowChunks;
+      // GPU shadow cull shader layout (shadowcull.hlsl):
+      //   cascadeBase = c * cascadeMaxChunks * 2  (opaque) or + cascadeMaxChunks (alpha)
+      uint32_t shCascadeOpaqueBase = cascade * totalShadowChunks * 2;
+      uint32_t shCascadeAlphaBase  = shCascadeOpaqueBase + totalShadowChunks;
       uint32_t writeIdxOffset = cascade * 2 * sizeof(uint32_t);
 
       // Opaque draws
       cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
           (uint32_t)_applMesh->_opaqueChunkCount,
           fr.shadowDrawParams.Get(),
-          (UINT64)cascadeBase * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          (UINT64)shCascadeOpaqueBase * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
           fr.shadowWriteIndex.Get(), writeIdxOffset);
 
       // Alpha-masked draws
       cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
           (uint32_t)_applMesh->_alphaMaskedChunkCount,
           fr.shadowDrawParams.Get(),
-          (UINT64)(cascadeBase + _applMesh->_opaqueChunkCount) * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          (UINT64)shCascadeAlphaBase * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
           fr.shadowWriteIndex.Get(), writeIdxOffset + sizeof(uint32_t));
     }
 
