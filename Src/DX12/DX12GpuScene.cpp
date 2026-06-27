@@ -565,11 +565,11 @@ void DX12GpuScene::CreateRootSignatures() {
     params[0].Descriptor.ShaderRegister = 0;
     params[0].Descriptor.RegisterSpace = 0;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    // [1] Root constant: cascadeIndex (b1, space0, 1 uint32)
+    // [1] Root constant: PushConstants {materialIndex, shadowIndex} (b1, space0, 2 uint32)
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[1].Constants.ShaderRegister = 1;
     params[1].Constants.RegisterSpace = 0;
-    params[1].Constants.Num32BitValues = 1;
+    params[1].Constants.Num32BitValues = 2;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
     // [2] Descriptor table: chunkIndex SRV at t4, space1
     D3D12_DESCRIPTOR_RANGE chunkRange = {};
@@ -2460,7 +2460,8 @@ void DX12GpuScene::Draw() {
       cmdList->SetGraphicsRootSignature(_shadowRootSig.Get());
       cmdList->SetGraphicsRootConstantBufferView(0,
           fr.uniformBuffer->GetGPUVirtualAddress());
-      cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascade, 0);
+      // PushConstants {materialIndex, shadowIndex}: shadow VS uses shadowIndex
+      { uint32_t push[2] = {0, cascade}; cmdList->SetGraphicsRoot32BitConstants(1, 2, push, 0); }
 
       // Bind chunkIndex SRV (t4,space1) for shadow VS instancing
       {
