@@ -347,21 +347,7 @@ void DX12GpuScene::CreateTextures() {
     uint32_t h = (uint32_t)texData._height;
     uint32_t mipCount = (uint32_t)texData._mipmapLevelCount;
 
-    // Auto-detect BC format from compressed mip 0 size before creating resource
-    {
-      size_t dataOffset0 = texData._mipOffsets.size() > 0 ? texData._mipOffsets[0] : 0;
-      size_t dataLen0 = texData._mipLengths.size() > 0 ? texData._mipLengths[0] : 0;
-      if (dataLen0 > 0) {
-        uint8_t* cs = (uint8_t*)_applMesh->_textureData + texData._pixelDataOffset + dataOffset0;
-        auto [mip0, mip0Size] = decompressToHeap(cs, dataLen0);
-        uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
-        if (mip0Size == bw * bh * 8)       format = DXGI_FORMAT_BC1_UNORM_SRGB;
-        else if (mip0Size == bw * bh * 16) format = DXGI_FORMAT_BC3_UNORM_SRGB;
-        free(mip0);
-      }
-    }
-
-    // Create texture resource (now with auto-corrected format)
+    // Create texture resource with format from MapMTLToDXGI
     auto tex = DX12Util::CreateTexture2D(dev, w, h, format,
         D3D12_RESOURCE_FLAG_NONE, mipCount, 1, D3D12_RESOURCE_STATE_COPY_DEST);
 
@@ -382,7 +368,8 @@ void DX12GpuScene::CreateTextures() {
       // Calculate row pitch for BC formats (4x4 block compressed)
       uint32_t blockW = (mipW + 3) / 4;
       uint32_t blockH = (mipH + 3) / 4;
-      uint32_t bytesPerBlock = (format == DXGI_FORMAT_BC1_UNORM_SRGB) ? 8 : 16;
+      uint32_t bytesPerBlock = (format == DXGI_FORMAT_BC1_UNORM || format == DXGI_FORMAT_BC1_UNORM_SRGB
+                                || format == DXGI_FORMAT_BC4_UNORM || format == DXGI_FORMAT_BC4_SNORM) ? 8 : 16;
       uint32_t rowPitch = blockW * bytesPerBlock;
       uint32_t alignedRowPitch = (rowPitch + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
       uint32_t uploadSize = alignedRowPitch * blockH;
