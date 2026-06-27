@@ -1101,7 +1101,7 @@ void DX12GpuScene::CreatePipelineStates() {
     desc.InputLayout = {occluderLayout, 1};
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    desc.RasterizerState.FrontCounterClockwise = TRUE;
+    desc.RasterizerState.FrontCounterClockwise = FALSE;
     desc.RasterizerState.DepthClipEnable = TRUE;
     desc.DepthStencilState.DepthEnable = TRUE;
     desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -1131,7 +1131,7 @@ void DX12GpuScene::CreatePipelineStates() {
     desc.InputLayout = {clusterLayout, 4};
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    desc.RasterizerState.FrontCounterClockwise = TRUE;
+    desc.RasterizerState.FrontCounterClockwise = FALSE;
     desc.RasterizerState.DepthClipEnable = TRUE;
     desc.DepthStencilState.DepthEnable = TRUE;
     desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -1168,7 +1168,7 @@ void DX12GpuScene::CreatePipelineStates() {
     desc.InputLayout = {clusterLayout, 4};
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // double-sided for alpha-mask
-    desc.RasterizerState.FrontCounterClockwise = TRUE;
+    desc.RasterizerState.FrontCounterClockwise = FALSE;
     desc.RasterizerState.DepthClipEnable = TRUE;
     desc.DepthStencilState.DepthEnable = TRUE;
     desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -1204,7 +1204,7 @@ void DX12GpuScene::CreatePipelineStates() {
     desc.InputLayout = {clusterLayout, 4};
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    desc.RasterizerState.FrontCounterClockwise = TRUE;
+    desc.RasterizerState.FrontCounterClockwise = FALSE;
     desc.RasterizerState.DepthClipEnable = TRUE;
     desc.DepthStencilState.DepthEnable = TRUE;
     desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // depth read-only
@@ -1626,7 +1626,7 @@ void DX12GpuScene::CreateShadowResources() {
     desc.InputLayout = {layout, 4};
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    desc.RasterizerState.FrontCounterClockwise = TRUE;
+    desc.RasterizerState.FrontCounterClockwise = FALSE;
     desc.RasterizerState.DepthClipEnable = TRUE;
     desc.RasterizerState.DepthBias = 1000;
     desc.RasterizerState.DepthBiasClamp = 0.0f;
