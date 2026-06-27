@@ -36,11 +36,11 @@ struct ShadowCullParams {
 };
 
 // Decompress LZFSE data to malloc'd buffer. Returns {ptr, size}.
+// Must match GpuScene.cpp: compressionMode(u32) + 4-byte padding + uncompressedSize(u64) + compressedSize(u64)
 struct AAPLCompressionHeader {
   uint32_t compressionMode;
-  uint32_t dataSize;
-  uint32_t uncompressedSize;
-  uint32_t compressedSize;
+  uint64_t uncompressedSize;
+  uint64_t compressedSize;
 };
 
 static std::pair<void*, size_t> decompressToHeap(void* compressedData, size_t compressedLength) {
