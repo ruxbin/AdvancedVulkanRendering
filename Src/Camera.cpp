@@ -22,15 +22,8 @@ Camera::Camera(float fov, float n, float f, vec3 origin, float aspect,
   _near = n;
   _far = f;
   _fov = fov;
-  // mat4 proj = perspective(fov, aspect, n, f);
-  mat4 flipx;
-  flipx.x[0] = -1;
-  flipx.y[1] = 1;
-  flipx.z[2] = 1;
-  flipx.w[3] = 1;
-
   mat4 proj = reverseZperspective(fov, aspect, n, f);
-  _projectionMatrix = proj * flipx;
+  _projectionMatrix = proj;
   _z = lookat;
   _x = normalize(up.cross(_z));
   _y = _z.cross(_x);
