@@ -1641,7 +1641,7 @@ void DX12GpuScene::CreateShadowResources() {
     desc.RasterizerState.SlopeScaledDepthBias = 1.0f;
     desc.DepthStencilState.DepthEnable = TRUE;
     desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER;
+    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS; // standard-Z orthographic, matches Vulkan VK_COMPARE_OP_LESS
     desc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
     desc.SampleMask = UINT_MAX;
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
