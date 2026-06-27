@@ -56,15 +56,35 @@ static std::pair<void*, size_t> decompressToHeap(void* compressedData, size_t co
 DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     : _rootPath(root), _device(device) {
 
+  // Read camera and sun from scene file (matching Vulkan path)
+  vec3 cameraPos(0, 2, 5), cameraLookat(0, 0, -1), cameraUp(0, 1, 0);
+  if (_sceneFile.contains("camera_position")) {
+    cameraPos = vec3(_sceneFile["camera_position"][0].template get<float>(),
+                     _sceneFile["camera_position"][1].template get<float>(),
+                     _sceneFile["camera_position"][2].template get<float>());
+    cameraUp = vec3(_sceneFile["camera_up"][0].template get<float>(),
+                    _sceneFile["camera_up"][1].template get<float>(),
+                    _sceneFile["camera_up"][2].template get<float>());
+    cameraLookat = vec3(_sceneFile["camera_direction"][0].template get<float>(),
+                        _sceneFile["camera_direction"][1].template get<float>(),
+                        _sceneFile["camera_direction"][2].template get<float>());
+  }
+
   _mainCamera = new Camera(
-      60.0f * (3.14159265f / 180.0f), 0.1f, 1000.0f,
-      vec3(0, 2, 5),
+      65.0f * (3.14159265f / 180.0f), 0.1f, 100.0f,
+      cameraPos,
       (float)_device.GetWidth() / _device.GetHeight(),
-      vec3(0, 0, -1),
-      vec3(0, 1, 0));
+      cameraLookat,
+      cameraUp);
 
   // Default frame constants
-  _frameConstants.sunDirection = vec3(0.3f, 1.0f, 0.5f); // reasonable default sun direction
+  _frameConstants.sunDirection = vec3(0.3f, 1.0f, 0.5f);
+  if (_sceneFile.contains("sun_direction")) {
+    _frameConstants.sunDirection = vec3(
+        _sceneFile["sun_direction"][0].template get<float>(),
+        _sceneFile["sun_direction"][1].template get<float>(),
+        _sceneFile["sun_direction"][2].template get<float>());
+  }
   _frameConstants.sunColor     = vec3(1.0f, 0.95f, 0.8f);
   _frameConstants.skyColor     = vec3(0.2f, 0.3f, 0.5f);
   _frameConstants.exposure     = 1.0f;
@@ -3174,6 +3194,16 @@ void DX12GpuScene::Draw() {
         d.Texture2D.MipLevels = 1;
         dv->CreateShaderResourceView(nullptr, &d, {dlDesc.cpu.ptr + off * ds});
       };
+      // Helper: write a null structured-buffer SRV (for StructuredBuffer<> slots)
+      auto nullBuf = [&](uint32_t off, uint32_t stride) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = 0;
+        d.Buffer.StructureByteStride = stride;
+        dv->CreateShaderResourceView(nullptr, &d, {dlDesc.cpu.ptr + off * ds});
+      };
 
       // t0-t3: G-buffers (albedo, normals, emissive, F0/Roughness)
       static const DXGI_FORMAT kGbFmt[4] = {
@@ -3217,7 +3247,7 @@ void DX12GpuScene::Draw() {
         d.Buffer.NumElements = (UINT)_pointLights.size();
         d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
         dv->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 8 * ds});
-      } else { nullTex2D(8); }
+      } else { nullBuf(8, sizeof(AAPLPointLightCullingData)); }
       // t9: light indices (StructuredBuffer<int>)
       if (_lightIndicesBuffer && !_pointLights.empty()) {
         D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
@@ -3227,7 +3257,7 @@ void DX12GpuScene::Draw() {
         d.Buffer.NumElements = (UINT)(_lightIndicesBuffer->GetDesc().Width / sizeof(uint32_t));
         d.Buffer.StructureByteStride = sizeof(uint32_t);
         dv->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 9 * ds});
-      } else { nullTex2D(9); }
+      } else { nullBuf(9, sizeof(uint32_t)); }
       // t10: AO texture — must be at offset 10, was incorrectly at offset 5 via static table
       { D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
         d.Format = DXGI_FORMAT_R8_UNORM;
@@ -3236,9 +3266,9 @@ void DX12GpuScene::Draw() {
         d.Texture2D.MipLevels = 1;
         dv->CreateShaderResourceView(_aoTexture.Get(), &d, {dlDesc.cpu.ptr + 10 * ds}); }
       // t11: spot light culling data (null — no spot lights yet)
-      nullTex2D(11);
+      nullBuf(11, sizeof(AAPLSpotLightCullingData));
       // t12: spot light indices (null)
-      nullTex2D(12);
+      nullBuf(12, sizeof(uint32_t));
       // t13-t15: unused
       for (uint32_t s = 13; s <= 15; ++s) nullTex2D(s);
       // t16: scatter accum volume (Texture3D)
