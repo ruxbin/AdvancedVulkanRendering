@@ -307,14 +307,22 @@ void DX12GpuScene::CreateBuffers() {
 
 // ---- Map Metal pixel format to DXGI format ----
 static DXGI_FORMAT MapMTLToDXGI(uint32_t mtlFormat) {
-  // MTLPixelFormat values from Apple headers
-  constexpr uint32_t MTL_BC3_RGBA_sRGB = 302;
-  constexpr uint32_t MTL_BC5_RGUnorm = 312;
-  constexpr uint32_t MTL_BC1_RGBA_sRGB = 292;
+  // MTLPixelFormat values from Apple's Metal/MTLPixelFormat.h
   switch (mtlFormat) {
-  case MTL_BC3_RGBA_sRGB: return DXGI_FORMAT_BC3_UNORM_SRGB;
-  case MTL_BC5_RGUnorm:   return DXGI_FORMAT_BC5_UNORM;
-  case MTL_BC1_RGBA_sRGB: return DXGI_FORMAT_BC1_UNORM_SRGB;
+  case 130: return DXGI_FORMAT_BC1_UNORM;       // BC1_RGBA
+  case 131: return DXGI_FORMAT_BC1_UNORM_SRGB;  // BC1_RGBA_sRGB
+  case 132: return DXGI_FORMAT_BC2_UNORM;       // BC2_RGBA
+  case 133: return DXGI_FORMAT_BC2_UNORM_SRGB;  // BC2_RGBA_sRGB
+  case 134: return DXGI_FORMAT_BC3_UNORM;       // BC3_RGBA
+  case 135: return DXGI_FORMAT_BC3_UNORM_SRGB;  // BC3_RGBA_sRGB
+  case 140: return DXGI_FORMAT_BC4_UNORM;       // BC4_RUnorm
+  case 141: return DXGI_FORMAT_BC4_SNORM;       // BC4_RSnorm
+  case 142: return DXGI_FORMAT_BC5_UNORM;       // BC5_RGUnorm
+  case 143: return DXGI_FORMAT_BC5_SNORM;       // BC5_RGSnorm
+  case 150: return DXGI_FORMAT_BC6H_SF16;       // BC6H_RGBFloat
+  case 151: return DXGI_FORMAT_BC6H_UF16;       // BC6H_RGBUfloat
+  case 152: return DXGI_FORMAT_BC7_UNORM;       // BC7_RGBAUnorm
+  case 153: return DXGI_FORMAT_BC7_UNORM_SRGB;  // BC7_RGBAUnorm_sRGB
   default:
     spdlog::warn("DX12: Unknown MTL pixel format {}, using BC3_SRGB", mtlFormat);
     return DXGI_FORMAT_BC3_UNORM_SRGB;
