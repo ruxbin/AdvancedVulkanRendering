@@ -1773,15 +1773,8 @@ void DX12GpuScene::UpdateUniforms() {
       vec3 center = _mainCamera->GetOrigin() + _mainCamera->GetCameraDir() * (range * 0.5f);
       // Build shadow view matrix (look from sun direction)
       vec3 eye = center + sunDir * range;
-      vec3 z = normalize(sunDir * -1.0f); // looking toward -sunDir
-      vec3 x = normalize(vec3(0, 1, 0).cross(z));
-      vec3 y = z.cross(x);
-      mat4 view(1.0f);
-      view[0] = vec4(x.x, y.x, z.x, 0);
-      view[1] = vec4(x.y, y.y, z.y, 0);
-      view[2] = vec4(x.z, y.z, z.z, 0);
-      view[3] = vec4(-x.dot(eye), -y.dot(eye), -z.dot(eye), 1);
-      _shadowViewMatrices[i] = view;
+      // Use invLookAt (same as Vulkan path) instead of transposed manual construction
+      _shadowViewMatrices[i] = invLookAt(eye, vec3(0, 1, 0), sunDir * -1.0f);
       _shadowProjectionMatrices[i] = orthographic(range * 2.0f, range * 2.0f,
           0.1f, range * 4.0f, 0, 0);
     }
