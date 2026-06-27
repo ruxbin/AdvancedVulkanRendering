@@ -3171,8 +3171,103 @@ void DX12GpuScene::Draw() {
         _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // Use static heap binding for deferred lighting (simplified path)
-    cmdList->SetGraphicsRootDescriptorTable(1, _cbvSrvUavHeap.GetStaticGPU(SRV_GBUFFER_START));
+    // Build dynamic 18-slot table mapping t0-t17 (space1) to actual resources.
+    // The root sig uses a single continuous range t0-t17, so slot offset = register index.
+    {
+      auto dlDesc = _cbvSrvUavHeap.AllocateDynamic(18);
+      auto ds   = _cbvSrvUavHeap.GetDescriptorSize();
+      auto* dv  = _device.GetDevice();
+
+      // Helper: write a null 2D SRV at a given slot offset (for unused registers)
+      auto nullTex2D = [&](uint32_t off) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R8_UNORM;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2D.MipLevels = 1;
+        dv->CreateShaderResourceView(nullptr, &d, {dlDesc.cpu.ptr + off * ds});
+      };
+
+      // t0-t3: G-buffers (albedo, normals, emissive, F0/Roughness)
+      static const DXGI_FORMAT kGbFmt[4] = {
+        DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB };
+      for (int i = 0; i < 4; ++i) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = kGbFmt[i];
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2D.MipLevels = 1;
+        dv->CreateShaderResourceView(_gbuffers[i].Get(), &d, {dlDesc.cpu.ptr + (UINT64)i * ds});
+      }
+      // t4: window depth
+      { D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2D.MipLevels = 1;
+        dv->CreateShaderResourceView(_device.GetDepthStencilBuffer(), &d, {dlDesc.cpu.ptr + 4 * ds}); }
+      // t5: unused
+      nullTex2D(5);
+      // t6: shadow maps (Texture2DArray)
+      if (_shadowMapArray) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2DArray.MipLevels = 1;
+        d.Texture2DArray.ArraySize = SHADOW_CASCADE_COUNT;
+        dv->CreateShaderResourceView(_shadowMapArray.Get(), &d, {dlDesc.cpu.ptr + 6 * ds});
+      } else { nullTex2D(6); }
+      // t7: unused
+      nullTex2D(7);
+      // t8: point light culling data
+      if (_pointLightBuffer && !_pointLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_pointLights.size();
+        d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
+        dv->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 8 * ds});
+      } else { nullTex2D(8); }
+      // t9: light indices (StructuredBuffer<int>)
+      if (_lightIndicesBuffer && !_pointLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)(_lightIndicesBuffer->GetDesc().Width / sizeof(uint32_t));
+        d.Buffer.StructureByteStride = sizeof(uint32_t);
+        dv->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 9 * ds});
+      } else { nullTex2D(9); }
+      // t10: AO texture — must be at offset 10, was incorrectly at offset 5 via static table
+      { D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R8_UNORM;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2D.MipLevels = 1;
+        dv->CreateShaderResourceView(_aoTexture.Get(), &d, {dlDesc.cpu.ptr + 10 * ds}); }
+      // t11: spot light culling data (null — no spot lights yet)
+      nullTex2D(11);
+      // t12: spot light indices (null)
+      nullTex2D(12);
+      // t13-t15: unused
+      for (uint32_t s = 13; s <= 15; ++s) nullTex2D(s);
+      // t16: scatter accum volume (Texture3D)
+      if (_scatterAccumVolume && _scatterAccumIsInPSR) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture3D.MipLevels = 1;
+        dv->CreateShaderResourceView(_scatterAccumVolume.Get(), &d, {dlDesc.cpu.ptr + 16 * ds});
+      } else { nullTex2D(16); }
+      // t17: unused
+      nullTex2D(17);
+
+      cmdList->SetGraphicsRootDescriptorTable(1, dlDesc.gpu);
+    }
 
     // Draw fullscreen triangle (3 vertices, no VB)
     cmdList->DrawInstanced(3, 1, 0, 0);
