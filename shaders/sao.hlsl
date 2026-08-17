@@ -2,26 +2,33 @@
 // Ported from AAPLAmbientObscurance.metal (ModernRenderingWithMetal)
 // Adapted for Vulkan reverse-Z (near=1, far=0)
 
+#include "shadercompat.hlsl"
 #include "commonstruct.hlsl"
 
 // --- Bindings ---
+// DX12 root signature (DX12GpuScene.cpp CreateRootSignatures):
+//   [0] table: SRV t0-t1, UAV u3
+//   [1] CBV b2 (camera params)
+//   [2] root constants b3 (screenSize)
 // SAO depth pyramid (R32_SFLOAT, full-res mip 0).  Serves both as
 // the source of centre-pixel depth (mip 0 Load) and as the mip chain
 // for coarse-level lookups.
-[[vk::binding(0,0)]] Texture2D<float> depthMipTexture;
+VK_BINDING(0,0) Texture2D<float> depthMipTexture REGISTER_SRV(0,0);
 
-[[vk::binding(1,0)]] cbuffer cam {
+VK_BINDING(1,0) cbuffer cam REGISTER_CBV(2,0) {
     CameraParamsBufferFull cameraParams;
     AAPLFrameConstants frameData;
 };
-[[vk::binding(2,0)]] 
-[[vk::image_format("r8")]] 
-RWTexture2D<float> aoOutput;          // Output AO texture (R8_UNORM)
+VK_BINDING(2,0)
+#if !defined(DX12_BACKEND)
+[[vk::image_format("r8")]]
+#endif
+RWTexture2D<float> aoOutput REGISTER_UAV(3,0);    // Output AO texture (R8_UNORM)
 
 struct SAOPushConstants {
     uint2 screenSize;
 };
-[[vk::push_constant]] SAOPushConstants pushConstants;
+DECLARE_PUSH_CONSTANTS(SAOPushConstants, pushConstants, 3);
 
 // Wang hash for per-pixel pseudo-random dithering
 uint wang_hash(uint seed)

@@ -65,3 +65,13 @@ endif()
 
 target_link_libraries(${OUTPUT_NAME}
     ${LIBRARIES})
+
+# lzfse 是共享库，DLL 不会被 CMake 自动部署到输出目录。
+# 若找不到 DLL，程序启动会报"找不到 lzfse.dll"。
+if(WIN32)
+    add_custom_command(TARGET ${OUTPUT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../ThirdParty/lzfse/build/Debug/lzfse.dll"
+            "$<TARGET_FILE_DIR:${OUTPUT_NAME}>/lzfse.dll"
+        COMMENT "Copying lzfse.dll to output directory")
+endif()
