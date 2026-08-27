@@ -27,8 +27,12 @@ void CopyDepthToHiZ(uint3 DTid : SV_DispatchThreadID)
 }
 
 // --- Downsample Hi-Z (MIN for reverse-Z, with edge handling for odd sizes) ---
-VK_BINDING(0,0) Texture2D<float> prevMip REGISTER_SRV(0,0);
-VK_BINDING(1,0) RWTexture2D<float> currentMip REGISTER_UAV(1,0);
+// Vulkan uses set 1 here, not set 0: GpuScene.cpp builds _hizPipelineLayout as
+// {set 0 = copy layout, set 1 = downsample layout} and binds the downsample set
+// with firstSet=1. DX12 has a single root signature shared by both kernels, so
+// the registers stay at t0/u1 to match _hizRootSig's descriptor table.
+VK_BINDING(0,1) Texture2D<float> prevMip REGISTER_SRV(0,0);
+VK_BINDING(1,1) RWTexture2D<float> currentMip REGISTER_UAV(1,0);
 
 [numthreads(8, 8, 1)]
 void DownsampleHiZ(uint3 DTid : SV_DispatchThreadID)
