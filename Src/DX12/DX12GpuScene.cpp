@@ -78,6 +78,11 @@ static std::pair<void*, size_t> decompressToHeap(void* compressedData, size_t co
 DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     : _rootPath(root), _device(device) {
 
+  // Load the scene file FIRST — the camera/sun reads below depend on it.
+  // (LoadMeshData used to load it too late; the camera then fell back to
+  // the (0,2,5) default, matching the corrupted dx12.rdc capture.)
+  LoadSceneFile();
+
   // Read camera and sun from scene file (matching Vulkan path)
   vec3 cameraPos(0, 2, 5), cameraLookat(0, 0, -1), cameraUp(0, 1, 0);
   if (_sceneFile.contains("camera_position")) {
@@ -211,17 +216,25 @@ DX12GpuScene::~DX12GpuScene() {
   delete _applMesh;
 }
 
+// ---- Load Scene File (camera, sun, lights, occluders) ----
+void DX12GpuScene::LoadSceneFile() {
+  // Must match the Vulkan path (GpuScene.cpp reads "scene.scene").
+  // NOTE: "bistro.dxt.bin.json" does not exist — it silently fell back to
+  // default camera/sun/lights, producing the all-black dx12.rdc capture.
+  std::string scenePath = (_rootPath / "scene.scene").generic_string();
+  std::ifstream sceneFileStream(scenePath);
+  if (sceneFileStream.is_open()) {
+    sceneFileStream >> _sceneFile;
+    spdlog::info("DX12: Loaded scene file {}", scenePath);
+  } else {
+    spdlog::warn("DX12: Scene file not found: {} — camera/sun/lights will use defaults", scenePath);
+  }
+}
+
 // ---- Load Mesh Data ----
 void DX12GpuScene::LoadMeshData() {
   std::string meshPath = (_rootPath / "bistro.dxt.bin").generic_string();
   _applMesh = new AAPLMeshData(meshPath.c_str());
-
-  // Load scene file for occluder data
-  std::string scenePath = (_rootPath / "bistro.dxt.bin.json").generic_string();
-  std::ifstream sceneFileStream(scenePath);
-  if (sceneFileStream.is_open()) {
-    sceneFileStream >> _sceneFile;
-  }
 
   spdlog::info("DX12: Loaded mesh - {} vertices, {} indices, {} chunks",
                _applMesh->_vertexCount, _applMesh->_indexCount, _applMesh->_chunkCount);
@@ -303,14 +316,35 @@ void DX12GpuScene::CreateBuffers() {
   }
 
   // --- Occluder data from scene file ---
+  // occluder_verts is a nested array [[x,y,z],...]; mirror the Vulkan path
+  // (GpuScene.cpp:2279-2290): swap y/z and subtract the scene center_offset.
+  // NOTE: this code was dead while the scene file never loaded (wrong path);
+  // the old `v.get<float>()` also crashed on the nested arrays (nlohmann
+  // type_error) once the file started loading.
   if (_sceneFile.contains("occluder_verts") && _sceneFile.contains("occluder_indices")) {
     auto& verts = _sceneFile["occluder_verts"];
     auto& indices = _sceneFile["occluder_indices"];
 
+    vec3 centerOffset(0, 0, 0);
+    if (_sceneFile.contains("center_offset")) {
+      centerOffset = vec3(_sceneFile["center_offset"][0].template get<float>(),
+                          _sceneFile["center_offset"][1].template get<float>(),
+                          _sceneFile["center_offset"][2].template get<float>());
+    }
+
     std::vector<float> vertData;
-    for (auto& v : verts) vertData.push_back(v.get<float>());
+    vertData.reserve(verts.size() * 3);
+    for (auto& v : verts) {
+      float x = v[0].template get<float>() - centerOffset.x;
+      float z = v[1].template get<float>() - centerOffset.z;
+      float y = v[2].template get<float>() - centerOffset.y;
+      vertData.push_back(x);
+      vertData.push_back(y);
+      vertData.push_back(z);
+    }
     std::vector<uint32_t> idxData;
-    for (auto& i : indices) idxData.push_back(i.get<uint32_t>());
+    idxData.reserve(indices.size());
+    for (auto& i : indices) idxData.push_back(i.template get<uint32_t>());
 
     _occluderVertexBuffer = uploadBuffer(vertData.data(), vertData.size() * sizeof(float));
     _occluderIndexBuffer = uploadBuffer(idxData.data(), idxData.size() * sizeof(uint32_t));
@@ -1898,14 +1932,38 @@ void DX12GpuScene::CreateLights() {
   auto* dev = _device.GetDevice();
   auto* cmdList = _device.GetCommandList();
 
-  // Place a small grid of point lights around the scene
-  float positions[][3] = {{2,1,0},{-2,1,0},{0,1,3},{0,1,-3}};
-  float colors[][3] = {{1,.8f,.6f},{.6f,.8f,1.f},{1,1,.8f},{.8f,1,.9f}};
-  for (int k = 0; k < 4; ++k) {
-    AAPLPointLightCullingData pl;
-    pl.posRadius = vec4(positions[k][0], positions[k][1], positions[k][2], 5.0f);
-    pl.color = vec4(colors[k][0]*3.f, colors[k][1]*3.f, colors[k][2]*3.f, 0.f);
-    _pointLights.push_back(pl);
+  // Load point lights from the scene file (matches Vulkan GpuScene.cpp:2822).
+  // sqrt_radius is the SQUARED radius — the cull/lighting shaders use the
+  // sphere radius directly (posRadius.w), so take the square root here.
+  if (_sceneFile.contains("point_lights")) {
+    for (auto& j : _sceneFile["point_lights"]) {
+      AAPLPointLightCullingData pl;
+      pl.posRadius = vec4(j["position_x"].template get<float>(),
+                          j["position_y"].template get<float>(),
+                          j["position_z"].template get<float>(),
+                          std::sqrt(j["sqrt_radius"].template get<float>()));
+      // color.w encodes the transparent flag: >= 0 opaque, < 0 transparent
+      // (matches the Vulkan culling data layout).
+      pl.color = vec4(j["color_r"].template get<float>(),
+                      j["color_g"].template get<float>(),
+                      j["color_b"].template get<float>(),
+                      j["for_transparent"].template get<bool>() ? -1.0f : 1.0f);
+      _pointLights.push_back(pl);
+    }
+    spdlog::info("DX12: Loaded {} point lights from scene file", _pointLights.size());
+  }
+
+  // Fallback: small debug grid when the scene file has no lights
+  if (_pointLights.empty()) {
+    // Place a small grid of point lights around the scene
+    float positions[][3] = {{2,1,0},{-2,1,0},{0,1,3},{0,1,-3}};
+    float colors[][3] = {{1,.8f,.6f},{.6f,.8f,1.f},{1,1,.8f},{.8f,1,.9f}};
+    for (int k = 0; k < 4; ++k) {
+      AAPLPointLightCullingData pl;
+      pl.posRadius = vec4(positions[k][0], positions[k][1], positions[k][2], 5.0f);
+      pl.color = vec4(colors[k][0]*3.f, colors[k][1]*3.f, colors[k][2]*3.f, 0.f);
+      _pointLights.push_back(pl);
+    }
   }
 
   // Upload point light data to GPU

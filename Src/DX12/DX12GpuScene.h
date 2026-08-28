@@ -264,6 +264,7 @@ private:
   void* _lightCullParamsMapped = nullptr;
 
   // Init helpers
+  void LoadSceneFile();
   void LoadMeshData();
   void CreateBuffers();
   void CreateTextures();

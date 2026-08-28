@@ -154,6 +154,10 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     }
 
     // --- Scatter volume application (froxel volumetrics) ---
+    // Guard on scatterScale: when disabled (0), the DX12 backend binds t16
+    // (scatterAccumVolume) as a NULL descriptor; sampling it unconditionally
+    // yields (0,0,0,0) and zeroes the entire lighting result (black screen).
+    if (frameConstants.scatterScale > 0.0f)
     {
         const float SCATTERING_RANGE = 100.0;
         float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
