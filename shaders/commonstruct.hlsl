@@ -29,6 +29,24 @@ struct AAPLMeshChunk
 };
 
 //keep it the same as VkDrawIndexedIndirectCommand
+#ifdef DX12_BACKEND
+// D3D12 variant: the command signature is [CONSTANT(b1), DRAW_INDEXED], so each
+// argument record is a leading root-constant DWORD followed by the 20-byte
+// D3D12_DRAW_INDEXED_ARGUMENTS. drawSlot carries the chunkIndices slot, which
+// D3D12 cannot deliver via SV_InstanceID (it ignores StartInstanceLocation).
+// Keep in sync with DX12DrawIndexedArgs in DX12GpuScene.cpp.
+struct DrawIndexedIndirectCommand
+{
+    uint drawSlot;
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+#define MAKE_DRAW_CMD(slot, idxCount, idxBegin) \
+    { (slot), (idxCount), 1u, (idxBegin), 0, (slot) }
+#else
 struct DrawIndexedIndirectCommand
 {
     uint indexCount;
@@ -37,6 +55,9 @@ struct DrawIndexedIndirectCommand
     int vertexOffset;
     uint firstInstance;
 };
+#define MAKE_DRAW_CMD(slot, idxCount, idxBegin) \
+    { (idxCount), 1u, (idxBegin), 0, (slot) }
+#endif
 
 
 struct AAPLPixelSurfaceData

@@ -201,6 +201,20 @@ private:
   mat4 _shadowProjectionMatrices[SHADOW_CASCADE_COUNT];
   mat4 _shadowViewMatrices[SHADOW_CASCADE_COUNT];
 
+  // Per-cascade sun-view box, kept so the GPU cull frustum can be built from
+  // explicit corners instead of extracting planes out of the VP matrix (the
+  // matrix route is easy to get wrong given this codebase's storage
+  // convention — see docs/dx12-matrix-and-binding-audit.md).
+  // The box is [-halfExtent, +halfExtent]^2 in x/y and [0, farZ] in z,
+  // anchored at `eye` and oriented by (axisX, axisY, axisZ).
+  struct ShadowCascadeBox {
+    vec3 eye;
+    vec3 axisX, axisY, axisZ;
+    float halfExtent = 0.0f;
+    float farZ = 0.0f;
+  };
+  ShadowCascadeBox _shadowCascadeBoxes[SHADOW_CASCADE_COUNT];
+
   // Frame state
   FrameConstants _frameConstants{};
   uint32_t _currentFrame = 0;

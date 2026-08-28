@@ -18,6 +18,13 @@ struct PushConstants
 {
     uint materialIndex;
     uint shadowIndex;
+#ifdef DX12_BACKEND
+    // Written per-draw by the [CONSTANT(b1), DRAW_INDEXED] command signature.
+    // Vulkan gets the same value through firstInstance/gl_InstanceIndex, so the
+    // field only exists on the DX12 side (keeps the VK push-constant block size
+    // unchanged).
+    uint drawSlot;
+#endif
 };
 
 
@@ -67,7 +74,7 @@ struct VSInput
     [[vk::location(2)]] float3 tangent:Tangent;
     [[vk::location(3)]] float2 uv:TEXCOORD0;
     //[[vk::location(4)]] uint drawcallid : BLENDINDICES;
-	uint instancid: SV_InstanceID;
+	DECLARE_CHUNK_ID_INPUT
 };
 
 struct VSOutput
@@ -101,7 +108,7 @@ VSOutput RenderSceneVS( VSInput input)
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
-    Output.chunkid = chunkIndex[input.instancid];
+    Output.chunkid = GET_CHUNK_ID(input);
 
     float4x4 invViewMatrix = cameraParams.invViewMatrix;
 
@@ -121,7 +128,7 @@ VSOutput RenderSceneVSShadow( VSInput input)
     Output.Position = mul(finalMatrix ,float4(input.position,1.0));
     //Output.Diffuse = float4(input.uv,0,0);
     Output.TextureUV = input.uv;
-    Output.chunkid = chunkIndex[input.instancid];
+    Output.chunkid = GET_CHUNK_ID(input);
 
     float4x4 invViewMatrix = cameraParams.invViewMatrix;
 

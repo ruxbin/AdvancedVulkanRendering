@@ -164,7 +164,7 @@ void ShadowCull(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID)
         InterlockedAdd(shadowWriteIndex[slot], 1, insertIndex);
         uint globalIdx = cascadeBase + insertIndex;
 
-        DrawIndexedIndirectCommand cmd = { totalIndexCount, 1, myIndexBegin, 0, globalIdx };
+        DrawIndexedIndirectCommand cmd = MAKE_DRAW_CMD(globalIdx, totalIndexCount, myIndexBegin);
         shadowDrawParams [globalIdx] = cmd;
         shadowChunkIndices[globalIdx] = chunkIndex;
     }

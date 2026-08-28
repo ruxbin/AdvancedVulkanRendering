@@ -132,7 +132,7 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID)
         // Opaque region: [0, opaqueChunkCount)
         uint insertIndex;
         InterlockedAdd(writeIndex[0], 1, insertIndex);
-        DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, insertIndex };
+        DrawIndexedIndirectCommand cmd = MAKE_DRAW_CMD(insertIndex, indexCount, indexBegin);
         drawParams[insertIndex] = cmd;
         chunkIndices[insertIndex] = chunkIndex;
     }
@@ -142,7 +142,7 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID)
         uint insertIndex;
         InterlockedAdd(writeIndex[1], 1, insertIndex);
         uint offset = opaqueChunkCount;
-        DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, offset + insertIndex };
+        DrawIndexedIndirectCommand cmd = MAKE_DRAW_CMD(offset + insertIndex, indexCount, indexBegin);
         drawParams[offset + insertIndex] = cmd;
         chunkIndices[offset + insertIndex] = chunkIndex;
     }
@@ -152,7 +152,7 @@ void EncodeDrawBuffer(uint3 DTid : SV_DispatchThreadID)
         uint insertIndex;
         InterlockedAdd(writeIndex[2], 1, insertIndex);
         uint offset = opaqueChunkCount + alphaMaskedChunkCount;
-        DrawIndexedIndirectCommand cmd = { indexCount, 1, indexBegin, 0, offset + insertIndex };
+        DrawIndexedIndirectCommand cmd = MAKE_DRAW_CMD(offset + insertIndex, indexCount, indexBegin);
         drawParams[offset + insertIndex] = cmd;
         chunkIndices[offset + insertIndex] = chunkIndex;
     }

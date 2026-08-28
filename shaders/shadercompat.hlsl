@@ -14,6 +14,19 @@
   #define DECLARE_PUSH_CONSTANTS(type_name, var_name, reg_idx) \
     cbuffer var_name##_cb : register(b##reg_idx) { type_name var_name; }
   #define NDC_Y_FLIP 1.0
+  // Chunk id delivery for GPU-culled indirect draws.
+  //
+  // D3D12's SV_InstanceID is 0-based *per draw* and does NOT include
+  // StartInstanceLocation, so Vulkan's trick of smuggling the draw slot through
+  // firstInstance and looking it up as chunkIndex[gl_InstanceIndex] is
+  // unavailable here — SV_InstanceID would be 0 for every indirect draw
+  // (InstanceCount is always 1), collapsing the whole scene onto one material.
+  //
+  // Instead the command signature is [CONSTANT(b1), DRAW_INDEXED]: the cull
+  // shader writes the draw slot as the first uint of each argument record and
+  // ExecuteIndirect patches it into pushConstants.drawSlot before the draw.
+  #define DECLARE_CHUNK_ID_INPUT
+  #define GET_CHUNK_ID(input)     (chunkIndex[pushConstants.drawSlot])
 #else
   #define VK_BINDING(binding_idx, set_idx)       [[vk::binding(binding_idx,set_idx)]]
   #define REGISTER_CBV(binding_idx, set_idx)
@@ -25,4 +38,8 @@
   #define DECLARE_PUSH_CONSTANTS(type_name, var_name, reg_idx) \
     [[vk::push_constant]] type_name var_name
   #define NDC_Y_FLIP -1.0
+  // Vulkan's gl_InstanceIndex includes firstInstance, which the cull shader
+  // sets to the draw slot — so the chunk id comes from chunkIndex[slot].
+  #define DECLARE_CHUNK_ID_INPUT  uint instancid : SV_InstanceID;
+  #define GET_CHUNK_ID(input)     (chunkIndex[input.instancid])
 #endif

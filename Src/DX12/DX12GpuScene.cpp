@@ -16,8 +16,30 @@
 // Reuse readFile from GpuScene linkage
 extern std::vector<char> readFile(const std::string& filename);
 
+// Indirect argument record for the GPU-culled draws.
+//
+// D3D12's SV_InstanceID is 0-based per draw and ignores StartInstanceLocation,
+// so the Vulkan scheme of smuggling the chunkIndices slot through firstInstance
+// does not reach the shader here. Instead the command signature is
+// [CONSTANT(b1), DRAW_INDEXED]: `drawSlot` is patched into the pushConstants
+// root constant before each draw and the VS reads chunkIndex[drawSlot].
+//
+// Must stay in sync with DrawIndexedIndirectCommand in commonstruct.hlsl
+// (DX12_BACKEND branch).
+struct DX12DrawIndexedArgs {
+  uint32_t drawSlot;
+  D3D12_DRAW_INDEXED_ARGUMENTS draw;
+};
+static_assert(sizeof(DX12DrawIndexedArgs) == 24,
+              "indirect arg stride must match the [CONSTANT, DRAW_INDEXED] signature");
+
+// Root-constant slot that the command signature patches (3rd uint of
+// PushConstants {materialIndex, shadowIndex, drawSlot}).
+static constexpr uint32_t DRAW_SLOT_CONSTANT_OFFSET = 2;
+static constexpr uint32_t PUSH_CONSTANT_COUNT = 3;
+
 // Shadow cull params - POD structs mirroring shadowcull.hlsl cbuffer layout.
-// Kept here (not in header) so buildFrustumFromMatrix can access them as file-scope types.
+// Kept here (not in header) so buildCascadeFrustum can access them as file-scope types.
 struct ShadowPlane {
   vec3 normal;
   float w;
@@ -141,7 +163,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     // (opaque bucket + alpha bucket each get cascadeMaxChunks slots)
     _frameResources[i].shadowDrawParams = DX12Util::CreateGPUBuffer(
         _device.GetDevice(),
-        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * 2 * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+        (UINT64)maxShadowDraws * SHADOW_CASCADE_COUNT * 2 * sizeof(DX12DrawIndexedArgs),
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 
     _frameResources[i].shadowWriteIndexUpload = DX12Util::CreateUploadBuffer(
@@ -305,7 +327,7 @@ void DX12GpuScene::CreateBuffers() {
   for (auto& fr : _frameResources) {
     // Draw params buffer (indirect args, needs UAV for compute write)
     fr.drawParamsBuffer = DX12Util::CreateGPUBuffer(
-        dev, totalChunks * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+        dev, totalChunks * sizeof(DX12DrawIndexedArgs),
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_COMMON);
 
@@ -566,11 +588,12 @@ void DX12GpuScene::CreateRootSignatures() {
     params[0].Descriptor.ShaderRegister = 0;
     params[0].Descriptor.RegisterSpace = 0;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    // [1] Root constant: PushConstants {materialIndex, shadowIndex} (b1, space0, 2 uint32)
+    // [1] Root constant: PushConstants {materialIndex, shadowIndex, drawSlot}
+    // (b1, space0). drawSlot is patched per-draw by the command signature.
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[1].Constants.ShaderRegister = 1;
     params[1].Constants.RegisterSpace = 0;
-    params[1].Constants.Num32BitValues = 2;
+    params[1].Constants.Num32BitValues = PUSH_CONSTANT_COUNT;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
     // [2] Descriptor table: chunkIndex SRV at t4, space1
     D3D12_DESCRIPTOR_RANGE chunkRange = {};
@@ -643,11 +666,11 @@ void DX12GpuScene::CreateRootSignatures() {
     params[2].DescriptorTable.pDescriptorRanges = &bindlessRange;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // [3] Root constants (push constants)
+    // [3] Root constants (push constants: materialIndex/shadowIndex/drawSlot)
     params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[3].Constants.ShaderRegister = 1;
     params[3].Constants.RegisterSpace = 0;
-    params[3].Constants.Num32BitValues = 2;
+    params[3].Constants.Num32BitValues = PUSH_CONSTANT_COUNT;
     params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Static sampler for linear repeat
@@ -1576,7 +1599,11 @@ void DX12GpuScene::CreateShadowResources() {
   // Shadow map Texture2DArray (3 cascades)
   D3D12_CLEAR_VALUE depthClear = {};
   depthClear.Format = DXGI_FORMAT_D32_FLOAT;
-  depthClear.DepthStencil.Depth = 0.0f; // reverse-Z
+  // Standard-Z (not reverse-Z): the shadow PSO uses DepthFunc = LESS and the
+  // comparison sampler uses LESS_EQUAL, matching Vulkan (Shadow.cpp clears to
+  // 1.0 with VK_COMPARE_OP_LESS). Clearing to 0.0 here would make every
+  // fragment fail the depth test and leave the map empty.
+  depthClear.DepthStencil.Depth = 1.0f;
   _shadowMapArray = DX12Util::CreateTexture2D(dev, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE,
       DXGI_FORMAT_R32_TYPELESS, // typeless for both DSV and SRV views
       D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
@@ -1634,7 +1661,12 @@ void DX12GpuScene::CreateShadowResources() {
     desc.InputLayout = {layout, 4};
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    desc.RasterizerState.FrontCounterClockwise = FALSE;
+    // Shadow pass is the one geometry pass Vulkan renders CCW-front
+    // (Shadow.cpp: VK_FRONT_FACE_COUNTER_CLOCKWISE) — the shadow orthographic
+    // projection has no flipX, unlike the camera projection. With the
+    // negative-height viewport making rasterization match Vulkan, the mapping
+    // is direct: VK_FRONT_FACE_COUNTER_CLOCKWISE -> FrontCounterClockwise TRUE.
+    desc.RasterizerState.FrontCounterClockwise = TRUE;
     desc.RasterizerState.DepthClipEnable = TRUE;
     desc.RasterizerState.DepthBias = 1000;
     desc.RasterizerState.DepthBiasClamp = 0.0f;
@@ -1665,33 +1697,49 @@ void DX12GpuScene::CreateShadowResources() {
         "Failed to create shadow cull PSO");
   }
 
-  // Shadow ExecuteIndirect command signature (DrawIndexed, same stride as _drawIndexedCmdSig)
+  // Shadow ExecuteIndirect command signature.
+  // [CONSTANT(b1 -> root param 1, offset 2) , DRAW_INDEXED] — the leading uint
+  // of each record lands in pushConstants.drawSlot so the VS can resolve
+  // chunkIndex[drawSlot]. Signatures that patch root arguments must be created
+  // against the root signature they will be used with.
   {
-    D3D12_INDIRECT_ARGUMENT_DESC argDesc = {};
-    argDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    D3D12_INDIRECT_ARGUMENT_DESC argDescs[2] = {};
+    argDescs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    argDescs[0].Constant.RootParameterIndex = 1; // shadow root sig: 32BIT_CONSTANTS
+    argDescs[0].Constant.DestOffsetIn32BitValues = DRAW_SLOT_CONSTANT_OFFSET;
+    argDescs[0].Constant.Num32BitValuesToSet = 1;
+    argDescs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
     D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-    sigDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-    sigDesc.NumArgumentDescs = 1;
-    sigDesc.pArgumentDescs = &argDesc;
+    sigDesc.ByteStride = sizeof(DX12DrawIndexedArgs);
+    sigDesc.NumArgumentDescs = 2;
+    sigDesc.pArgumentDescs = argDescs;
     DX12Util::ThrowIfFailed(
-        dev->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&_shadowDrawCmdSig)),
+        dev->CreateCommandSignature(&sigDesc, _shadowRootSig.Get(),
+                                    IID_PPV_ARGS(&_shadowDrawCmdSig)),
         "Failed to create shadow draw command signature");
   }
 }
 
 // ---- Create Command Signature for ExecuteIndirect ----
 void DX12GpuScene::CreateCommandSignature() {
-  D3D12_INDIRECT_ARGUMENT_DESC argDesc = {};
-  argDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+  // Same [CONSTANT, DRAW_INDEXED] layout as the shadow signature; the
+  // drawcluster root signature puts its 32BIT_CONSTANTS at param 3.
+  D3D12_INDIRECT_ARGUMENT_DESC argDescs[2] = {};
+  argDescs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+  argDescs[0].Constant.RootParameterIndex = 3;
+  argDescs[0].Constant.DestOffsetIn32BitValues = DRAW_SLOT_CONSTANT_OFFSET;
+  argDescs[0].Constant.Num32BitValuesToSet = 1;
+  argDescs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 
   D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-  sigDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS); // 20 bytes
-  sigDesc.NumArgumentDescs = 1;
-  sigDesc.pArgumentDescs = &argDesc;
+  sigDesc.ByteStride = sizeof(DX12DrawIndexedArgs); // 4 (constant) + 20 (draw)
+  sigDesc.NumArgumentDescs = 2;
+  sigDesc.pArgumentDescs = argDescs;
 
   DX12Util::ThrowIfFailed(
       _device.GetDevice()->CreateCommandSignature(
-          &sigDesc, nullptr, IID_PPV_ARGS(&_drawIndexedCmdSig)),
+          &sigDesc, _drawClusterRootSig.Get(), IID_PPV_ARGS(&_drawIndexedCmdSig)),
       "Failed to create draw indexed command signature");
 }
 
@@ -1772,17 +1820,33 @@ void DX12GpuScene::UpdateUniforms() {
       float range = cascadeSplits[i];
       vec3 center = _mainCamera->GetOrigin() + _mainCamera->GetCameraDir() * (range * 0.5f);
       vec3 eye = center + sunDir * range;
-      vec3 z = normalize(sunDir * -1.0f); // looking toward -sunDir
-      vec3 x = normalize(vec3(0, 1, 0).cross(z));
-      vec3 y = z.cross(x);
-      mat4 view(1.0f);
-      view[0] = vec4(x.x, y.x, z.x, 0);
-      view[1] = vec4(x.y, y.y, z.y, 0);
-      view[2] = vec4(x.z, y.z, z.z, 0);
-      view[3] = vec4(-x.dot(eye), -y.dot(eye), -z.dot(eye), 1);
-      _shadowViewMatrices[i] = view;
+      // Must use invLookAt (same convention as Camera::getObjectToCamera): the
+      // mat4 members hold the ROWS of the math matrix, and the upload below
+      // transposes them so HLSL's column-major cbuffer sees the matrix itself.
+      // Building the view "column-wise" here instead makes the upload hand
+      // HLSL V-transposed, which blows up clip.w and throws every caster
+      // off-screen.
+      _shadowViewMatrices[i] = invLookAt(eye, vec3(0, 1, 0), sunDir * -1.0f);
+      // near MUST stay 0: orthographic() writes its offsets/near term into the
+      // 4th *column*, i.e. the opposite storage convention from every other
+      // matrix builder here. With near = 0 and zero xy offsets the result is
+      // diagonal, so the upload's transpose() is a no-op and HLSL gets the
+      // right matrix. A non-zero near lands -n/(f-n) in what HLSL reads as
+      // row 3 col 2, making clip.w != 1. Vulkan (Shadow.cpp) passes 0 too.
       _shadowProjectionMatrices[i] = orthographic(range * 2.0f, range * 2.0f,
-          0.1f, range * 4.0f, 0, 0);
+          0.0f, range * 4.0f, 0, 0);
+
+      // Record the same box invLookAt/orthographic just encoded, in explicit
+      // world-space terms, for the GPU cull frustum (see BuildCascadeFrustum).
+      // Basis must match invLookAt exactly: z = normalize(lookat),
+      // x = normalize(up x z), y = z x x.
+      ShadowCascadeBox& box = _shadowCascadeBoxes[i];
+      box.eye   = eye;
+      box.axisZ = normalize(sunDir * -1.0f);
+      box.axisX = normalize(vec3(0, 1, 0).cross(box.axisZ));
+      box.axisY = box.axisZ.cross(box.axisX);
+      box.halfExtent = range;      // orthographic() width/height = range * 2
+      box.farZ       = range * 4.0f;
     }
     frameData.camConstants.shadowProjectionMatrix0 = transpose(_shadowProjectionMatrices[0]);
     frameData.camConstants.shadowViewMatrix0 = transpose(_shadowViewMatrices[0]);
@@ -2015,8 +2079,10 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
   lcp.hizMipLevels     = _hizMipLevels;
   lcp.screenWidth      = (float)w;
   lcp.screenHeight     = (float)h;
-  // mat4 quirk: A*B = B*A, same as GPUCull path
-  mat4 vp = transpose(_mainCamera->getProjectMatrix() * _mainCamera->getObjectToCamera());
+  // mat4 quirk: `A * B` computes the mathematical B*A, so view * proj is the
+  // mathematical P*V — which is what mul(viewProjMatrix, pos) expects.
+  // Matches GpuScene.cpp's Vulkan path.
+  mat4 vp = transpose(_mainCamera->getObjectToCamera() * _mainCamera->getProjectMatrix());
   memcpy(lcp.vpMatrix, vp.value_ptr(), sizeof(float) * 16);
   // Build frustum planes from camera frustum (layout-compatible with HLSL Frustum)
   const Frustum& camFrustum = _mainCamera->getFrustum();
@@ -2251,36 +2317,43 @@ void DX12GpuScene::ReadbackCullingStats() {
   }
 }
 
-// Helper: extract frustum planes from a combined shadow VP matrix.
-// Pass: vp = _shadowProjectionMatrices[c] * _shadowViewMatrices[c]
-// (with the mat4 quirk, A*B = B*A, this equals view_cpp * proj_cpp_actual)
-// The HLSL clip matrix is transpose(vp), so Gribb-Hartmann plane extraction
-// uses columns of vp as the effective rows of the HLSL matrix.
-static ShadowFrustum buildFrustumFromMatrix(const mat4& vp) {
-  // Columns of vp == rows of HLSL VP matrix
-  auto col = [&](int ci) -> vec4 {
-    return vp[ci]; // mat4::operator[] returns the ci-th column vec4
-  };
-  vec4 c0 = col(0), c1 = col(1), c2 = col(2), c3 = col(3);
+// Helper: build the 6 world-space cull planes of a cascade's sun-view box.
+//
+// Deliberately corner-based rather than Gribb-Hartmann plane extraction from
+// the VP matrix: this codebase stores matrices in two different conventions
+// (see docs/dx12-matrix-and-binding-audit.md), so "which vec4 is a row" is a
+// trap. Corners are unambiguous. Mirrors Shadow.cpp's Vulkan implementation.
+//
+// Plane convention must match commonstruct.hlsl's IsInside(): a point is
+// inside when dot(p, normal) - w > 0, i.e. w = p_on_plane . normal.
+static ShadowFrustum buildCascadeFrustum(const vec3& eye,
+                                         const vec3& axisX, const vec3& axisY,
+                                         const vec3& axisZ,
+                                         float halfExtent, float farZ) {
+  // Box corners: bit0 = +/-halfExtent along X, bit1 = along Y, bit2 = z 0 or farZ
+  vec3 c[8];
+  for (int k = 0; k < 8; ++k) {
+    float vx = (k & 1) ? halfExtent : -halfExtent;
+    float vy = (k & 2) ? halfExtent : -halfExtent;
+    float vz = (k & 4) ? farZ : 0.0f;
+    c[k] = eye + axisX * vx + axisY * vy + axisZ * vz;
+  }
 
-  auto makePlane = [](vec4 p) -> ShadowPlane {
-    float len = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
-    if (len < 1e-8f) len = 1.0f;
+  // Winding of each triple is chosen so the normal points INTO the box.
+  auto makePlane = [](const vec3& p1, const vec3& p2, const vec3& p3) -> ShadowPlane {
     ShadowPlane pl;
-    pl.normal = vec3(p.x, p.y, p.z) / len;
-    pl.w = p.w / len;
+    pl.normal = normalize((p2 - p1).cross(p3 - p1));
+    pl.w = p1.dot(pl.normal);
     return pl;
   };
 
   ShadowFrustum f;
-  // Gribb-Hartmann: left, right, bottom, top, near, far
-  // Using columns of C++ matrix (= rows of HLSL row-major VP)
-  f.borders[0] = makePlane(c3 + c0); // left
-  f.borders[1] = makePlane(c3 - c0); // right
-  f.borders[2] = makePlane(c3 + c1); // bottom
-  f.borders[3] = makePlane(c3 - c1); // top
-  f.borders[4] = makePlane(c3 + c2); // near
-  f.borders[5] = makePlane(c3 - c2); // far
+  f.borders[0] = makePlane(c[0], c[2], c[4]); // -X
+  f.borders[1] = makePlane(c[1], c[5], c[3]); // +X
+  f.borders[2] = makePlane(c[0], c[4], c[1]); // -Y
+  f.borders[3] = makePlane(c[2], c[3], c[6]); // +Y
+  f.borders[4] = makePlane(c[0], c[1], c[2]); // -Z (sun-near)
+  f.borders[5] = makePlane(c[4], c[6], c[5]); // +Z (sun-far)
   return f;
 }
 
@@ -2303,10 +2376,23 @@ void DX12GpuScene::Draw() {
   ID3D12DescriptorHeap* heaps[] = { _cbvSrvUavHeap.GetHeap(), _samplerHeap.GetHeap() };
   cmdList->SetDescriptorHeaps(2, heaps);
 
-  // Set viewport and scissor
+  // Set viewport and scissor.
+  //
+  // Negative height so D3D12's viewport transform reproduces Vulkan's:
+  //   D3D12:  y_w = (1 - ndc.y) * Height/2 + TopLeftY
+  //   with TopLeftY = H, Height = -H  =>  y_w = (ndc.y + 1) * H/2
+  // which is exactly what Vulkan does with a positive-height viewport.
+  //
+  // Without this, D3D12's Y-up NDC renders everything vertically mirrored
+  // relative to Vulkan, which (a) reverses screen-space winding and (b)
+  // invalidates every `uv = ndc.xy * 0.5 + 0.5` in the shaders — all of which
+  // were written against the Vulkan backend. Flipping here keeps the whole
+  // shader set valid verbatim; see docs/dx12-matrix-and-binding-audit.md.
   D3D12_VIEWPORT viewport = {};
+  viewport.TopLeftX = 0.0f;
+  viewport.TopLeftY = (float)_device.GetHeight();
   viewport.Width = (float)_device.GetWidth();
-  viewport.Height = (float)_device.GetHeight();
+  viewport.Height = -(float)_device.GetHeight();
   viewport.MinDepth = 0.0f;
   viewport.MaxDepth = 1.0f;
   cmdList->RSSetViewports(1, &viewport);
@@ -2352,8 +2438,10 @@ void DX12GpuScene::Draw() {
     scp.cascadeCount = SHADOW_CASCADE_COUNT;
     for (uint32_t c = 0; c < SHADOW_CASCADE_COUNT; ++c) {
       scp.cascadeCullThreshold[c] = vec4(0.0f, 0.0f, 0.0f, 0.0f);
-      mat4 shadowVP = _shadowProjectionMatrices[c] * _shadowViewMatrices[c];
-      scp.cascadeFrustum[c] = buildFrustumFromMatrix(shadowVP);
+      const auto& box = _shadowCascadeBoxes[c];
+      scp.cascadeFrustum[c] = buildCascadeFrustum(box.eye, box.axisX, box.axisY,
+                                                  box.axisZ, box.halfExtent,
+                                                  box.farZ);
     }
     memcpy(fr.shadowCullParamsMapped, &scp, sizeof(ShadowCullParams));
 
@@ -2365,7 +2453,7 @@ void DX12GpuScene::Draw() {
       d.Format = DXGI_FORMAT_UNKNOWN;
       d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
       d.Buffer.NumElements = totalShadowChunks * SHADOW_CASCADE_COUNT * 2;
-      d.Buffer.StructureByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+      d.Buffer.StructureByteStride = sizeof(DX12DrawIndexedArgs);
       dev->CreateUnorderedAccessView(fr.shadowDrawParams.Get(), nullptr, &d,
           {cullDesc.cpu.ptr + 0 * ds});
     }
@@ -2429,10 +2517,18 @@ void DX12GpuScene::Draw() {
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     DX12Util::TransitionBarrier(cmdList, fr.shadowWriteIndex.Get(),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    // The VS reads chunkIndex as an SRV (t4, space1), indexed by the drawSlot
+    // root constant that the command signature patches per draw.
+    DX12Util::TransitionBarrier(cmdList, fr.shadowChunkIndicesBuffer.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     // --- Per-cascade shadow draw via ExecuteIndirect ---
     uint32_t dsvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-    D3D12_VIEWPORT shadowViewport = {0, 0, (float)SHADOW_MAP_SIZE, (float)SHADOW_MAP_SIZE, 0.0f, 1.0f};
+    // Negative height, same Vulkan-parity reason as the main viewport above.
+    D3D12_VIEWPORT shadowViewport = {0, (float)SHADOW_MAP_SIZE,
+                                     (float)SHADOW_MAP_SIZE, -(float)SHADOW_MAP_SIZE,
+                                     0.0f, 1.0f};
     D3D12_RECT shadowScissor = {0, 0, (LONG)SHADOW_MAP_SIZE, (LONG)SHADOW_MAP_SIZE};
 
     D3D12_VERTEX_BUFFER_VIEW vbvs[4] = {};
@@ -2451,7 +2547,7 @@ void DX12GpuScene::Draw() {
     for (uint32_t cascade = 0; cascade < SHADOW_CASCADE_COUNT; ++cascade) {
       D3D12_CPU_DESCRIPTOR_HANDLE cascadeDsv = _shadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
       cascadeDsv.ptr += (SIZE_T)cascade * dsvSize;
-      cmdList->ClearDepthStencilView(cascadeDsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr);
+      cmdList->ClearDepthStencilView(cascadeDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
       cmdList->OMSetRenderTargets(0, nullptr, FALSE, &cascadeDsv);
       cmdList->RSSetViewports(1, &shadowViewport);
       cmdList->RSSetScissorRects(1, &shadowScissor);
@@ -2460,10 +2556,13 @@ void DX12GpuScene::Draw() {
       cmdList->SetGraphicsRootSignature(_shadowRootSig.Get());
       cmdList->SetGraphicsRootConstantBufferView(0,
           fr.uniformBuffer->GetGPUVirtualAddress());
-      // PushConstants {materialIndex, shadowIndex}: shadow VS uses shadowIndex
-      { uint32_t push[2] = {0, cascade}; cmdList->SetGraphicsRoot32BitConstants(1, 2, push, 0); }
+      // PushConstants {materialIndex, shadowIndex, drawSlot}. Only the first
+      // two are set here; drawSlot (offset 2) is patched per draw by the
+      // command signature. ExecuteIndirect leaves root arguments it touches
+      // undefined, so this is re-issued before each ExecuteIndirect below.
+      const uint32_t push[2] = {0, cascade};
 
-      // Bind chunkIndex SRV (t4,space1) for shadow VS instancing
+      // chunkIndex SRV (t4,space1): the VS indexes it with pushConstants.drawSlot
       {
         auto ciDesc = _cbvSrvUavHeap.AllocateDynamic(1);
         D3D12_SHADER_RESOURCE_VIEW_DESC ciSrv = {};
@@ -2486,17 +2585,19 @@ void DX12GpuScene::Draw() {
       uint32_t writeIdxOffset = cascade * 2 * sizeof(uint32_t);
 
       // Opaque draws
+      cmdList->SetGraphicsRoot32BitConstants(1, 2, push, 0);
       cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
           (uint32_t)_applMesh->_opaqueChunkCount,
           fr.shadowDrawParams.Get(),
-          (UINT64)shCascadeOpaqueBase * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          (UINT64)shCascadeOpaqueBase * sizeof(DX12DrawIndexedArgs),
           fr.shadowWriteIndex.Get(), writeIdxOffset);
 
       // Alpha-masked draws
+      cmdList->SetGraphicsRoot32BitConstants(1, 2, push, 0);
       cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
           (uint32_t)_applMesh->_alphaMaskedChunkCount,
           fr.shadowDrawParams.Get(),
-          (UINT64)shCascadeAlphaBase * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          (UINT64)shCascadeAlphaBase * sizeof(DX12DrawIndexedArgs),
           fr.shadowWriteIndex.Get(), writeIdxOffset + sizeof(uint32_t));
     }
 
@@ -2506,7 +2607,7 @@ void DX12GpuScene::Draw() {
     DX12Util::TransitionBarrier(cmdList, fr.shadowWriteIndex.Get(),
         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COMMON);
     DX12Util::TransitionBarrier(cmdList, fr.shadowChunkIndicesBuffer.Get(),
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 
     // Transition shadow maps to SRV for deferred lighting
     DX12Util::TransitionBarrier(cmdList, _shadowMapArray.Get(),
@@ -2654,7 +2755,11 @@ void DX12GpuScene::Draw() {
     cullParams.hizMipLevels = _hizMipLevels;
     cullParams.screenWidth = (float)_device.GetWidth();
     cullParams.screenHeight = (float)_device.GetHeight();
-    mat4 vp = transpose(_mainCamera->getProjectMatrix() * _mainCamera->getObjectToCamera());
+    // mat4 quirk: `A * B` computes the mathematical B*A, so view * proj gives
+    // the mathematical P*V that gpucull.hlsl's mul(viewProjMatrix, corner)
+    // needs. Writing proj * view here yields V*P and corrupts the Hi-Z
+    // occlusion test. Matches GpuScene.cpp's Vulkan path.
+    mat4 vp = transpose(_mainCamera->getObjectToCamera() * _mainCamera->getProjectMatrix());
     memcpy(cullParams.viewProjMatrix, vp.value_ptr(), sizeof(float) * 16);
     memcpy(&cullParams.frustum, &_mainCamera->getFrustum(), sizeof(Frustum));
     memcpy(fr.cullParamsMapped, &cullParams, sizeof(GPUCullParams));
@@ -2675,7 +2780,7 @@ void DX12GpuScene::Draw() {
       uavDesc.Format = DXGI_FORMAT_UNKNOWN;
       uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
       uavDesc.Buffer.NumElements = totalChunks;
-      uavDesc.Buffer.StructureByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+      uavDesc.Buffer.StructureByteStride = sizeof(DX12DrawIndexedArgs);
       _device.GetDevice()->CreateUnorderedAccessView(fr.drawParamsBuffer.Get(), nullptr, &uavDesc,
           {cullDescs.cpu.ptr + 0 * descSize});
     }
@@ -2833,7 +2938,7 @@ void DX12GpuScene::Draw() {
     cmdList->ExecuteIndirect(
         _drawIndexedCmdSig.Get(),
         alphaCount,
-        fr.drawParamsBuffer.Get(), opaqueCount * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+        fr.drawParamsBuffer.Get(), opaqueCount * sizeof(DX12DrawIndexedArgs),
         fr.writeIndexBuffer.Get(), sizeof(uint32_t));
   }
 
@@ -3391,7 +3496,7 @@ void DX12GpuScene::Draw() {
       cmdList->ExecuteIndirect(
           _drawIndexedCmdSig.Get(),
           transpCount,
-          fr.drawParamsBuffer.Get(), transpOffset * sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+          fr.drawParamsBuffer.Get(), transpOffset * sizeof(DX12DrawIndexedArgs),
           fr.writeIndexBuffer.Get(), 2 * sizeof(uint32_t));
 
       DX12Util::TransitionBarrier(cmdList, fr.drawParamsBuffer.Get(),
