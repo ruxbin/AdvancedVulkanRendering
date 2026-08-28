@@ -1,6 +1,7 @@
 #ifdef ENABLE_DX12
 
 #include "DX12GpuScene.h"
+#include "DX12ScenePolicy.h"
 #include "GpuScene.h"      // for AAPLMeshData, AAPLTextureData, readFile
 #include "AssetLoader.h"
 #include "ThirdParty/lzfse.h"
@@ -89,9 +90,10 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     cameraPos = vec3(_sceneFile["camera_position"][0].template get<float>(),
                      _sceneFile["camera_position"][1].template get<float>(),
                      _sceneFile["camera_position"][2].template get<float>());
-    cameraUp = vec3(_sceneFile["camera_up"][0].template get<float>(),
-                    _sceneFile["camera_up"][1].template get<float>(),
-                    _sceneFile["camera_up"][2].template get<float>());
+    cameraUp = DX12ScenePolicy::CameraUp(vec3(
+        _sceneFile["camera_up"][0].template get<float>(),
+        _sceneFile["camera_up"][1].template get<float>(),
+        _sceneFile["camera_up"][2].template get<float>()));
     cameraLookat = vec3(_sceneFile["camera_direction"][0].template get<float>(),
                         _sceneFile["camera_direction"][1].template get<float>(),
                         _sceneFile["camera_direction"][2].template get<float>());
@@ -1923,6 +1925,8 @@ void DX12GpuScene::UpdateUniforms() {
   }
 
   frameData.frameConstants = _frameConstants;
+  frameData.frameConstants.scatterScale = DX12ScenePolicy::EffectiveScatterScale(
+      _frameConstants.scatterScale, IsScatterReady());
 
   memcpy(frame.uniformMapped, &frameData, sizeof(FrameData));
 }
@@ -2087,6 +2091,17 @@ void DX12GpuScene::CreateScatterResources() {
   _scatterAccumIsInPSR = false;
   spdlog::info("DX12: Scatter resources created (froxel: {}x{}x{})",
                SCATTER_FROXEL_W, SCATTER_FROXEL_H, SCATTER_FROXEL_D);
+}
+
+bool DX12GpuScene::IsScatterReady() const {
+  return DX12ScenePolicy::IsScatterReady({
+      _scatterVolumePSO.Get() != nullptr,
+      _accumulatePSO.Get() != nullptr,
+      _scatterRootSig.Get() != nullptr,
+      _accumRootSig.Get() != nullptr,
+      _scatterVolume.Get() != nullptr,
+      _scatterAccumVolume.Get() != nullptr,
+  });
 }
 
 // ---- Dispatch Light Culling (CoarseCull + ClearIndices + TraditionalCull) ----
@@ -3134,9 +3149,7 @@ void DX12GpuScene::Draw() {
   DispatchLightCulling(cmdList);
 
   // === Scatter Volume (froxel volumetrics, after light culling, before deferred) ===
-  if (_scatterVolumePSO && _accumulatePSO && _scatterRootSig && _accumRootSig
-      && _scatterVolume && _scatterAccumVolume
-      && _frameConstants.scatterScale > 0.0f) {
+  if (IsScatterReady() && _frameConstants.scatterScale > 0.0f) {
     auto* dev = _device.GetDevice();
     uint32_t w = _device.GetWidth(), h = _device.GetHeight();
 

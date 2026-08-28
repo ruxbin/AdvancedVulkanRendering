@@ -280,6 +280,7 @@ private:
   void CreateLights();
   void CreateLightCullPipelines();
   void CreateScatterResources();
+  bool IsScatterReady() const;
   void FlushCommandQueue();
 
   // Per-frame
