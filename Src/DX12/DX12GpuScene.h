@@ -18,6 +18,8 @@ using Microsoft::WRL::ComPtr;
 
 struct AAPLMeshData;
 struct AAPLTextureData;
+struct AAPLSubMesh;
+struct AAPLMaterial;
 
 class DX12GpuScene {
 public:
@@ -115,6 +117,10 @@ private:
   std::vector<TextureStreamEntry> _streamEntries;
   std::unordered_map<uint32_t, size_t> _streamEntryMap; // pathHash -> entry index
   uint32_t _streamWantUpgrade = 0; // 本帧 requiredMip != currentMip 的条目数(观测)
+
+  // CPU 侧场景数据(streaming 覆盖度用;对齐 Vulkan 的 m_SubMeshes / cpuMaterials)
+  AAPLSubMesh* _subMeshes = nullptr;     // 解压自 _applMesh->_meshData
+  AAPLMaterial* _cpuMaterials = nullptr; // 解压自 _applMesh->_materialData
 
   // Occluder data
   ComPtr<ID3D12Resource> _occluderVertexBuffer;

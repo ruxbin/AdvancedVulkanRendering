@@ -216,6 +216,8 @@ DX12GpuScene::~DX12GpuScene() {
     ImGui_ImplDX12_Shutdown();
   }
   delete _mainCamera;
+  free(_subMeshes);
+  free(_cpuMaterials);
   delete _applMesh;
 }
 
@@ -241,6 +243,10 @@ void DX12GpuScene::LoadMeshData() {
 
   spdlog::info("DX12: Loaded mesh - {} vertices, {} indices, {} chunks",
                _applMesh->_vertexCount, _applMesh->_indexCount, _applMesh->_chunkCount);
+
+  // 保留 submesh 包围球供 streaming 覆盖度计算(对齐 GpuScene.cpp:2773)
+  _subMeshes = (AAPLSubMesh*)decompressToHeap(_applMesh->_meshData,
+      _applMesh->compressedMeshDataLength).first;
 }
 
 // ---- Create Buffers (VB/IB/Chunks/Materials upload to GPU) ----
@@ -313,7 +319,7 @@ void DX12GpuScene::CreateBuffers() {
       shaderMats[i].hasMetallicRoughness = rawMats[i].hasMetallicRoughnessTexture ? 1 : 0;
       shaderMats[i].hasEmissive = rawMats[i].hasEmissiveTexture ? 1 : 0;
     }
-    free(matData);
+    _cpuMaterials = (AAPLMaterial*)matData; // 保留供 streaming hash 查询,析构释放
 
     _materialBuffer = uploadBuffer(shaderMats.data(), shaderMats.size() * sizeof(AAPLShaderMaterial));
   }
@@ -1796,9 +1802,74 @@ void DX12GpuScene::FlushCommandQueue() {
   _device.WaitForGpu();
 }
 
+// 球-AABB 视锥测试(直抄 GpuScene.cpp:5351 的 file-static)
+static bool SphereInFrustum(const Frustum& frustum, const AAPLSphere& sphere) {
+  AAPLBoundingBox3 aabb;
+  aabb.min.x = sphere.data.x - sphere.data.w;
+  aabb.min.y = sphere.data.y - sphere.data.w;
+  aabb.min.z = sphere.data.z - sphere.data.w;
+  aabb.max.x = sphere.data.x + sphere.data.w;
+  aabb.max.y = sphere.data.y + sphere.data.w;
+  aabb.max.z = sphere.data.z + sphere.data.w;
+  return !frustum.FrustumCull(aabb);
+}
+
 // ---- Update Texture Streaming (mip LOD selection) ----
 void DX12GpuScene::UpdateTextureStreaming() {
-  // 覆盖度计算(Task 3)与 streaming pipeline(Task 4)在此填充。
+  if (_streamEntries.empty()) return;
+
+  namespace TSP = DX12TextureStreamingPolicy;
+
+  // 1. reset requiredMip 到 permanent(允许驱逐回去的最粗 mip)
+  for (auto& e : _streamEntries) {
+    e.requiredMip = TSP::CalculateMinMip(e.desc->_width, e.desc->_height,
+                                         e.totalMips, TSP::PERMANENT_TEXTURE_SIZE);
+  }
+
+  // 2. 逐 submesh 覆盖度(镜像 GpuScene.cpp:5784-5832;只取 proj[0][0] 与
+  //    view z,与 NDC Y / 负高度 viewport / mat4 存储约定无关)
+  Camera* cam = _mainCamera;
+  if (cam && _subMeshes && _applMesh && _cpuMaterials) {
+    mat4 viewMatrix = cam->getObjectToCamera();
+    float focalLength = cam->getProjectMatrix()[0][0];
+    float focalLengthSquared = focalLength * focalLength;
+    float viewW = (float)_device.GetWidth();
+    float viewH = (float)_device.GetHeight();
+    Frustum frustum = cam->getFrustum();
+
+    for (unsigned int i = 0; i < _applMesh->_meshCount; ++i) {
+      const AAPLSubMesh& mesh = _subMeshes[i];
+      const AAPLSphere& sphere = mesh.boundingSphere;
+      if (!SphereInFrustum(frustum, sphere)) continue;
+
+      vec4 viewPos = viewMatrix * vec4(sphere.data.x, sphere.data.y,
+                                       sphere.data.z, 1.0f);
+      float area = TSP::ComputeScreenArea(viewPos.x, viewPos.y, viewPos.z,
+          sphere.data.w, focalLengthSquared, viewW, viewH);
+
+      uint32_t matIndex = mesh.materialIndex;
+      if (matIndex >= _applMesh->_materialCount) continue;
+      const AAPLMaterial& cpuMat = _cpuMaterials[matIndex];
+
+      // MIN 累积:最近的 submesh 赢(对齐 GpuScene.cpp::setRequiredMip)
+      auto require = [&](uint32_t hash) {
+        auto it = _streamEntryMap.find(hash);
+        if (it == _streamEntryMap.end()) return;
+        auto& e = _streamEntries[it->second];
+        uint32_t mip = TSP::CalculateRequiredMip(e.desc->_width, e.desc->_height,
+                                                 e.totalMips, area);
+        if (mip < e.requiredMip) e.requiredMip = mip;
+      };
+      if (cpuMat.hasBaseColorTexture) require(cpuMat.baseColorTextureHash);
+      if (cpuMat.hasNormalMap) require(cpuMat.normalMapHash);
+      if (cpuMat.hasMetallicRoughnessTexture) require(cpuMat.metallicRoughnessHash);
+      if (cpuMat.hasEmissiveTexture) require(cpuMat.emissiveTextureHash);
+    }
+  }
+
+  _streamWantUpgrade = 0;
+  for (auto& e : _streamEntries)
+    if (e.requiredMip != e.currentMip) ++_streamWantUpgrade;
 }
 
 // ---- Update Uniforms ----
@@ -3658,6 +3729,7 @@ void DX12GpuScene::RenderImGuiOverlay() {
       else qtrRes++;
     }
     ImGui::Text("Textures: %u full | %u half | %u low", fullRes, halfRes, qtrRes);
+    ImGui::Text("Stream want-swap: %u", _streamWantUpgrade);
   }
 
   ImGui::End();
