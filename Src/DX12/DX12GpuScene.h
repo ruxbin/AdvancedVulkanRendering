@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #ifdef ENABLE_DX12
 
 #include "DX12Setup.h"
@@ -17,6 +17,7 @@
 using Microsoft::WRL::ComPtr;
 
 struct AAPLMeshData;
+struct AAPLTextureData;
 
 class DX12GpuScene {
 public:
@@ -105,14 +106,15 @@ private:
 
   // Texture streaming state (parallel to _textures)
   struct TextureStreamEntry {
-    uint32_t totalMips  = 1;  // total mip levels in the full texture
-    uint32_t currentMip = 0;  // lowest mip currently resident (0 = full res)
-    uint32_t requiredMip = 0; // mip requested by coverage computation
+    const AAPLTextureData* desc = nullptr; // 指向 _applMesh->_textures[k]
+    uint32_t totalMips  = 1;  // 完整纹理的总 mip 数
+    uint32_t currentMip = 0;  // 当前常驻的最细 mip(0 = 满分辨率)
+    uint32_t requiredMip = 0; // 覆盖度计算的本帧需求(MIN 累积)
+    bool inFlight = false;    // 已有 streaming work item 在途
   };
   std::vector<TextureStreamEntry> _streamEntries;
-  ComPtr<ID3D12Resource> _streamingStagingBuffer; // large upload heap for mip streaming
-  void* _streamingStagingMapped = nullptr;
-  static constexpr uint32_t STREAMING_STAGING_SIZE = 32 * 1024 * 1024; // 32 MB staging
+  std::unordered_map<uint32_t, size_t> _streamEntryMap; // pathHash -> entry index
+  uint32_t _streamWantUpgrade = 0; // 本帧 requiredMip != currentMip 的条目数(观测)
 
   // Occluder data
   ComPtr<ID3D12Resource> _occluderVertexBuffer;

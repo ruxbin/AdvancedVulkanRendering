@@ -1,7 +1,8 @@
-#ifdef ENABLE_DX12
+﻿#ifdef ENABLE_DX12
 
 #include "DX12GpuScene.h"
 #include "DX12ScenePolicy.h"
+#include "DX12TextureStreamingPolicy.h"
 #include "GpuScene.h"      // for AAPLMeshData, AAPLTextureData, readFile
 #include "AssetLoader.h"
 #include "ThirdParty/lzfse.h"
@@ -426,18 +427,24 @@ void DX12GpuScene::CreateTextures() {
     uint32_t h = (uint32_t)texData._height;
     uint32_t mipCount = (uint32_t)texData._mipmapLevelCount;
 
+    uint32_t permanentMip = DX12TextureStreamingPolicy::CalculateMinMip(
+        w, h, mipCount, DX12TextureStreamingPolicy::PERMANENT_TEXTURE_SIZE);
+    uint32_t loadedMipCount = mipCount - permanentMip;
+    uint32_t baseW = (w >> permanentMip) > 0 ? (w >> permanentMip) : 1;
+    uint32_t baseH = (h >> permanentMip) > 0 ? (h >> permanentMip) : 1;
+
     // Create texture resource with format from MapMTLToDXGI
-    auto tex = DX12Util::CreateTexture2D(dev, w, h, format,
-        D3D12_RESOURCE_FLAG_NONE, mipCount, 1, D3D12_RESOURCE_STATE_COPY_DEST);
+    auto tex = DX12Util::CreateTexture2D(dev, baseW, baseH, format,
+        D3D12_RESOURCE_FLAG_NONE, loadedMipCount, 1, D3D12_RESOURCE_STATE_COPY_DEST);
 
     // Upload each mip level
-    for (uint32_t mip = 0; mip < mipCount; ++mip) {
-      uint32_t mipW = (w >> mip) > 1 ? (w >> mip) : 1;
-      uint32_t mipH = (h >> mip) > 1 ? (h >> mip) : 1;
+    for (uint32_t srcMip = permanentMip; srcMip < mipCount; ++srcMip) {
+      uint32_t mipW = (w >> srcMip) > 1 ? (w >> srcMip) : 1;
+      uint32_t mipH = (h >> srcMip) > 1 ? (h >> srcMip) : 1;
 
       // Get mip data offset and length
-      size_t dataOffset = texData._mipOffsets.size() > mip ? texData._mipOffsets[mip] : 0;
-      size_t dataLen = texData._mipLengths.size() > mip ? texData._mipLengths[mip] : 0;
+      size_t dataOffset = texData._mipOffsets.size() > srcMip ? texData._mipOffsets[srcMip] : 0;
+      size_t dataLen = texData._mipLengths.size() > srcMip ? texData._mipLengths[srcMip] : 0;
       if (dataLen == 0) continue;
 
       // Decompress mip data
@@ -481,7 +488,7 @@ void DX12GpuScene::CreateTextures() {
       D3D12_TEXTURE_COPY_LOCATION dst = {};
       dst.pResource = tex.Get();
       dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-      dst.SubresourceIndex = mip;
+      dst.SubresourceIndex = srcMip - permanentMip;
 
       D3D12_TEXTURE_COPY_LOCATION src = {};
       src.pResource = uploadBuf.Get();
@@ -506,7 +513,7 @@ void DX12GpuScene::CreateTextures() {
     srvDesc.Format = format;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Texture2D.MipLevels = mipCount;
+    srvDesc.Texture2D.MipLevels = loadedMipCount;
     dev->CreateShaderResourceView(tex.Get(), &srvDesc,
         _cbvSrvUavHeap.GetStaticCPU(srvIndex));
 
@@ -564,16 +571,21 @@ void DX12GpuScene::CreateTextures() {
         _cbvSrvUavHeap.GetStaticCPU(SRV_MATERIALS));
   }
 
-  // Initialize texture streaming entries
+  // Initialize texture streaming entries (textures start at permanent mip;
+  // finer mips stream in via UpdateTextureStreaming, mirroring the Vulkan path)
   _streamEntries.resize(_textures.size());
+  _streamEntryMap.clear();
   for (size_t k = 0; k < _textures.size(); ++k) {
-    _streamEntries[k].totalMips  = (uint32_t)_textures[k]->GetDesc().MipLevels;
-    _streamEntries[k].currentMip = 0;
-    _streamEntries[k].requiredMip = 0;
+    auto& e = _streamEntries[k];
+    e.desc = &_applMesh->_textures[k];
+    e.totalMips = (uint32_t)e.desc->_mipmapLevelCount;
+    e.currentMip = DX12TextureStreamingPolicy::CalculateMinMip(
+        e.desc->_width, e.desc->_height, e.totalMips,
+        DX12TextureStreamingPolicy::PERMANENT_TEXTURE_SIZE);
+    e.requiredMip = e.currentMip;
+    e.inFlight = false;
+    _streamEntryMap[e.desc->_pathHash] = k;
   }
-  // Allocate staging buffer (stub — actual transfer via SRV MostDetailedMip, not copy)
-  _streamingStagingBuffer = DX12Util::CreateUploadBuffer(_device.GetDevice(),
-      STREAMING_STAGING_SIZE, &_streamingStagingMapped);
 
   spdlog::info("DX12: {} textures loaded into bindless heap", _textures.size());
 }
@@ -1786,54 +1798,7 @@ void DX12GpuScene::FlushCommandQueue() {
 
 // ---- Update Texture Streaming (mip LOD selection) ----
 void DX12GpuScene::UpdateTextureStreaming() {
-  if (_streamEntries.empty()) return;
-
-  // Distance heuristic: mip 0 when close, mip 2 at mid range, mip 4 at distance
-  float camDist = _mainCamera->GetOrigin().length();
-  uint32_t targetMip = (camDist > 60.0f) ? 4u : (camDist > 20.0f) ? 2u : 0u;
-
-  // --- Pass 1: scan all entries to detect if any mip change is needed ---
-  // We must NOT write descriptors into a static (shader-visible) heap while
-  // earlier in-flight frames may still be sampling those same slots. Scanning
-  // first lets us avoid a GPU stall when nothing changed.
-  bool anyChange = false;
-  for (size_t k = 0; k < _streamEntries.size(); ++k) {
-    auto& e = _streamEntries[k];
-    uint32_t newMip = std::min(targetMip, e.totalMips > 0 ? e.totalMips - 1 : 0u);
-    e.requiredMip = newMip;
-    if (e.requiredMip != e.currentMip) {
-      anyChange = true;
-      // Don't break — we still need to write requiredMip for every entry.
-    }
-  }
-
-  if (!anyChange) return;
-
-  // --- Stall: wait for all in-flight GPU work to finish ---
-  // Only stall when we actually need to rewrite descriptor slots. With
-  // triple-buffering, frames N-1 and N-2 may still reference the current
-  // SRV descriptors; writing them now would be a D3D12 spec violation.
-  _device.WaitForGpu();
-
-  // --- Pass 2: rewrite SRV descriptors for every entry whose mip changed ---
-  auto* dev = _device.GetDevice();
-  for (size_t k = 0; k < _streamEntries.size(); ++k) {
-    auto& e = _streamEntries[k];
-    if (e.requiredMip == e.currentMip) continue;
-
-    auto texDesc = _textures[k]->GetDesc();
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = texDesc.Format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Texture2D.MostDetailedMip = e.requiredMip;
-    srvDesc.Texture2D.MipLevels = texDesc.MipLevels - e.requiredMip;
-
-    dev->CreateShaderResourceView(_textures[k].Get(), &srvDesc,
-        _cbvSrvUavHeap.GetStaticCPU(SRV_BINDLESS_START + (uint32_t)k));
-
-    e.currentMip = e.requiredMip;
-  }
+  // 覆盖度计算(Task 3)与 streaming pipeline(Task 4)在此填充。
 }
 
 // ---- Update Uniforms ----
