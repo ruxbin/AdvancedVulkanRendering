@@ -206,12 +206,14 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   CreateLights();
   CreateLightCullPipelines();
   CreateScatterResources();
+  initTextureStreaming();
 
   spdlog::info("DX12GpuScene initialized");
 }
 
 DX12GpuScene::~DX12GpuScene() {
   _device.WaitForGpu();
+  shutdownTextureStreaming(); // join 后台线程,须在 delete _applMesh 之前
   if (_imguiInitialized) {
     ImGui_ImplDX12_Shutdown();
   }
@@ -1802,6 +1804,235 @@ void DX12GpuScene::FlushCommandQueue() {
   _device.WaitForGpu();
 }
 
+// ---- Texture streaming pipeline(镜像 GpuScene.cpp 的 Vulkan 路径)----
+void DX12GpuScene::initTextureStreaming() {
+  _retiredResources.resize(DX12Device::FRAME_COUNT);
+  auto* dev = _device.GetDevice();
+  DX12Util::ThrowIfFailed(
+      dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+          IID_PPV_ARGS(&_streamingCmdAllocator)), "streaming cmd allocator");
+  DX12Util::ThrowIfFailed(
+      dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+          _streamingCmdAllocator.Get(), nullptr,
+          IID_PPV_ARGS(&_streamingCmdList)), "streaming cmd list");
+  _streamingCmdList->Close();
+  _streamingThreadRunning = true;
+  _streamingThread = std::thread(&DX12GpuScene::blitThreadFunc, this);
+}
+
+void DX12GpuScene::shutdownTextureStreaming() {
+  _streamingThreadRunning = false;
+  _pendingCv.notify_all();
+  if (_streamingThread.joinable()) _streamingThread.join();
+  _pendingWorks.clear();
+  _cpuCompletedWorks.clear(); // ComPtr 自动释放
+  for (auto& slot : _retiredResources) slot.clear();
+}
+
+void DX12GpuScene::dispatchStreamingRequest(size_t entryIndex) {
+  auto& entry = _streamEntries[entryIndex];
+  PendingStreamWork work;
+  work.entryIndex = entryIndex;
+  work.targetMip = entry.requiredMip;
+  work.snapshotCurrentMip = entry.currentMip;
+  work.snapshotSource = _textures[entryIndex];
+  // 先入队前置位,防下一帧重复 dispatch(对齐 GpuScene.cpp:5442)
+  entry.inFlight = true;
+  {
+    std::lock_guard<std::mutex> lock(_pendingMutex);
+    _pendingWorks.push_back(std::move(work));
+  }
+  _pendingCv.notify_one();
+}
+
+void DX12GpuScene::blitThreadFunc() {
+  // CPU-only:建替代纹理、解压新 mip 进 staging。GPU 命令在主线程录制。
+  // (D3D12 device 方法 free-threaded;命令录制/Execute/SRV 重写在主线程。)
+  namespace TSP = DX12TextureStreamingPolicy;
+  while (_streamingThreadRunning) {
+    std::unique_lock<std::mutex> lock(_pendingMutex);
+    _pendingCv.wait(lock, [this] {
+      return !_pendingWorks.empty() || !_streamingThreadRunning;
+    });
+    if (!_streamingThreadRunning) break;
+
+    std::vector<PendingStreamWork> workItems;
+    std::swap(workItems, _pendingWorks);
+    lock.unlock();
+
+    for (auto& work : workItems) {
+      auto& entry = _streamEntries[work.entryIndex];
+      const AAPLTextureData& desc = *entry.desc;
+
+      CpuStreamingWork cpuWork;
+      cpuWork.entryIndex = work.entryIndex;
+      cpuWork.targetMip = work.targetMip;
+      cpuWork.sourceTexture = work.snapshotSource;
+      cpuWork.format = MapMTLToDXGI(desc._pixelFormat);
+      cpuWork.plan = TSP::BuildStreamingCopyPlan(desc._width, desc._height,
+          desc._mipmapLevelCount, desc._pixelFormat, work.targetMip,
+          work.snapshotCurrentMip);
+
+      try {
+        uint32_t baseW = (uint32_t)((desc._width >> work.targetMip) > 0
+            ? (desc._width >> work.targetMip) : 1);
+        uint32_t baseH = (uint32_t)((desc._height >> work.targetMip) > 0
+            ? (desc._height >> work.targetMip) : 1);
+
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC texDesc = {};
+        texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDesc.Width = baseW;
+        texDesc.Height = baseH;
+        texDesc.DepthOrArraySize = 1;
+        texDesc.MipLevels = (UINT16)cpuWork.plan.newMipCount;
+        texDesc.Format = cpuWork.format;
+        texDesc.SampleDesc.Count = 1;
+        DX12Util::ThrowIfFailed(
+            _device.GetDevice()->CreateCommittedResource(&heapProps,
+                D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr, IID_PPV_ARGS(&cpuWork.newTexture)),
+            "streaming: create texture");
+
+        if (cpuWork.plan.stagingSize > 0) {
+          cpuWork.staging = DX12Util::CreateUploadBuffer(_device.GetDevice(),
+              cpuWork.plan.stagingSize, nullptr);
+          void* mapped = nullptr;
+          cpuWork.staging->Map(0, nullptr, &mapped);
+          if (!mapped) throw std::runtime_error("streaming: staging map failed");
+          for (const auto& copy : cpuWork.plan.bufferCopies) {
+            uint32_t srcMip = work.targetMip + copy.dstSubresource;
+            uint8_t* compressedSrc = (uint8_t*)_applMesh->_textureData +
+                desc._pixelDataOffset + desc._mipOffsets[srcMip];
+            auto [mipData, mipSize] = decompressToHeap(compressedSrc,
+                desc._mipLengths[srcMip]);
+            // 紧密行距 -> 256 对齐行距
+            for (uint32_t row = 0; row < copy.blockRows; ++row) {
+              memcpy((uint8_t*)mapped + copy.stagingOffset + row * copy.rowPitch,
+                     (uint8_t*)mipData + row * copy.srcRowPitch, copy.srcRowPitch);
+            }
+            free(mipData);
+          }
+          cpuWork.staging->Unmap(0, nullptr);
+        }
+      } catch (const std::exception& e) {
+        spdlog::warn("DX12 streaming: work failed: {}", e.what());
+        cpuWork.newTexture.Reset(); // 主线程按失败 work 处理:只复位 inFlight
+        cpuWork.staging.Reset();
+      }
+      {
+        std::lock_guard<std::mutex> clock(_cpuWorkMutex);
+        _cpuCompletedWorks.push_back(std::move(cpuWork));
+      }
+    }
+  }
+}
+
+void DX12GpuScene::processStreamingWork() {
+  std::vector<CpuStreamingWork> workItems;
+  {
+    std::lock_guard<std::mutex> lock(_cpuWorkMutex);
+    std::swap(workItems, _cpuCompletedWorks);
+  }
+  if (workItems.empty()) return;
+
+  auto* dev = _device.GetDevice();
+
+  // 动 static(shader-visible)SRV slot 或 transition 旧纹理前必须 GPU 空闲:
+  // 所有 in-flight 帧共享这份描述符堆。对等于 Vulkan processStreamingWork
+  // 内 endSingleTimeCommands 的 vkQueueWaitIdle——只在真有 work 完成时发生。
+  _device.WaitForGpu();
+
+  _streamingCmdAllocator->Reset();
+  _streamingCmdList->Reset(_streamingCmdAllocator.Get(), nullptr);
+
+  for (auto& work : workItems) {
+    if (!work.newTexture) continue; // 后台失败;inFlight 在下面统一复位
+
+    if (!work.plan.imageCopies.empty() && work.sourceTexture) {
+      DX12Util::TransitionBarrier(_streamingCmdList.Get(), work.sourceTexture.Get(),
+          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+    // 共享 mip:old -> new
+    for (const auto& copy : work.plan.imageCopies) {
+      D3D12_TEXTURE_COPY_LOCATION dst = {};
+      dst.pResource = work.newTexture.Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      dst.SubresourceIndex = copy.dstSubresource;
+      D3D12_TEXTURE_COPY_LOCATION src = {};
+      src.pResource = work.sourceTexture.Get();
+      src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      src.SubresourceIndex = copy.srcSubresource;
+      // 全 subresource copy,传 nullptr box:BC 格式的 src box 必须 4x4 块对齐
+      // (#873 COPYTEXTUREREGION_INVALIDSRCBOX),尾部 1x1/2x2 mip 与非 4 倍数
+      // 尺寸会触发;空 box 等价 CopySubresourceRegion,绕开对齐校验。
+      _streamingCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    // 新 mip:staging -> new
+    for (const auto& copy : work.plan.bufferCopies) {
+      D3D12_TEXTURE_COPY_LOCATION dst = {};
+      dst.pResource = work.newTexture.Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      dst.SubresourceIndex = copy.dstSubresource;
+      D3D12_TEXTURE_COPY_LOCATION src = {};
+      src.pResource = work.staging.Get();
+      src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      src.PlacedFootprint.Offset = copy.stagingOffset;
+      src.PlacedFootprint.Footprint.Format = work.format;
+      src.PlacedFootprint.Footprint.Width = copy.width;
+      src.PlacedFootprint.Footprint.Height = copy.height;
+      src.PlacedFootprint.Footprint.Depth = 1;
+      src.PlacedFootprint.Footprint.RowPitch = copy.rowPitch;
+      _streamingCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    // 新纹理出生即 COPY_DEST,无需进入 barrier;旧纹理不转回(即将退役)
+    DX12Util::TransitionBarrier(_streamingCmdList.Get(), work.newTexture.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  }
+
+  // Close 会返回录制期间的首个校验错误(如有)。出错时绝不能 Execute/swap:
+  // 否则中毒列表滞留资源引用,而 swap 又改写 SRV/退役旧纹理——
+  // 状态腐败级联到 OBJECT_DELETED_WHILE_STILL_IN_USE 直至 device removed。
+  // 这里整批放弃:只复位 inFlight(下帧重试),list 留待下次 Reset。
+  HRESULT closeHr = _streamingCmdList->Close();
+  if (FAILED(closeHr)) {
+    spdlog::error("DX12 streaming: cmd list close failed (HRESULT: 0x{:08X}), batch dropped",
+                  (unsigned)closeHr);
+    for (auto& work : workItems)
+      _streamEntries[work.entryIndex].inFlight = false;
+    return;
+  }
+  ID3D12CommandList* lists[] = { _streamingCmdList.Get() };
+  _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+
+  // CPU 侧 swap。GPU 跑 copy 时重写 SRV slot 合法:copy 不读描述符;
+  // 之后录制的命令列表见到的已是新描述符(spec §4)。
+  for (auto& work : workItems) {
+    auto& entry = _streamEntries[work.entryIndex];
+    entry.inFlight = false;
+    if (!work.newTexture) continue;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = work.format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = work.plan.newMipCount;
+    dev->CreateShaderResourceView(work.newTexture.Get(), &srvDesc,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_BINDLESS_START + (uint32_t)work.entryIndex));
+
+    // 旧纹理 + staging 退役:Draw 开头随帧槽 fence 清空,无需二次 stall
+    if (work.sourceTexture)
+      _retiredResources[_currentFrame].push_back(work.sourceTexture);
+    if (work.staging)
+      _retiredResources[_currentFrame].push_back(work.staging);
+
+    _textures[work.entryIndex] = work.newTexture;
+    entry.currentMip = work.targetMip;
+  }
+}
+
 // 球-AABB 视锥测试(直抄 GpuScene.cpp:5351 的 file-static)
 static bool SphereInFrustum(const Frustum& frustum, const AAPLSphere& sphere) {
   AAPLBoundingBox3 aabb;
@@ -1870,6 +2101,21 @@ void DX12GpuScene::UpdateTextureStreaming() {
   _streamWantUpgrade = 0;
   for (auto& e : _streamEntries)
     if (e.requiredMip != e.currentMip) ++_streamWantUpgrade;
+
+  // 3. 清空本帧槽的退役资源——必须先于 dispatch/processStreamingWork:
+  //    后者会往同一槽压新退役资源(copy 刚提交仍在途)。安全性:Draw 开头
+  //    _currentFrame 槽的上轮 fence 已被 MoveToNextFrame 等过(spec §3 步 3)。
+  _retiredResources[_currentFrame].clear();
+
+  // 4. dispatch(跳过在途条目)
+  for (size_t i = 0; i < _streamEntries.size(); ++i) {
+    auto& e = _streamEntries[i];
+    if (e.currentMip != e.requiredMip && !e.inFlight)
+      dispatchStreamingRequest(i);
+  }
+
+  // 5. 消费后台完成的 work(GPU copy + swap,本线程)
+  processStreamingWork();
 }
 
 // ---- Update Uniforms ----

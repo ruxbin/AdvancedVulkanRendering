@@ -4,6 +4,7 @@
 #include "DX12Setup.h"
 #include "DX12DescriptorHeap.h"
 #include "DX12ResourceHelper.h"
+#include "DX12TextureStreamingPolicy.h"
 #include "Common.h"
 #include "Camera.h"
 #include "nlohmann/json.hpp"
@@ -13,6 +14,9 @@
 #include <filesystem>
 #include <vector>
 #include <unordered_map>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 using Microsoft::WRL::ComPtr;
 
@@ -298,6 +302,45 @@ private:
   void ReadbackCullingStats();
   void RenderImGuiOverlay();
   void DispatchLightCulling(ID3D12GraphicsCommandList* cmdList);
+
+  // --- Texture streaming pipeline(镜像 Vulkan 五件套;spec §4)---
+  void initTextureStreaming();
+  void shutdownTextureStreaming();
+  void dispatchStreamingRequest(size_t entryIndex);
+  void blitThreadFunc();
+  void processStreamingWork();
+
+  struct PendingStreamWork {
+    size_t entryIndex;
+    uint32_t targetMip;
+    uint32_t snapshotCurrentMip;           // dispatch 时快照,防与主线程竞态
+    ComPtr<ID3D12Resource> snapshotSource; // 旧纹理,保活到 copy 用完
+  };
+
+  struct CpuStreamingWork {
+    size_t entryIndex = 0;
+    ComPtr<ID3D12Resource> newTexture;    // 后台失败时为 nullptr
+    ComPtr<ID3D12Resource> staging;       // 纯驱逐时为 nullptr
+    ComPtr<ID3D12Resource> sourceTexture; // copy 源(旧纹理)
+    uint32_t targetMip = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    DX12TextureStreamingPolicy::StreamingCopyPlan plan;
+  };
+
+  std::thread _streamingThread;
+  std::mutex _pendingMutex;
+  std::condition_variable _pendingCv;
+  bool _streamingThreadRunning = false;
+  std::vector<PendingStreamWork> _pendingWorks;
+  std::vector<CpuStreamingWork> _cpuCompletedWorks;
+  std::mutex _cpuWorkMutex;
+
+  // 退役资源(旧纹理 + staging),每帧槽一份;Draw 开头清空——
+  // 该槽上一轮 fence 已由 MoveToNextFrame 等过(spec §4)
+  std::vector<std::vector<ComPtr<ID3D12Resource>>> _retiredResources;
+
+  ComPtr<ID3D12CommandAllocator> _streamingCmdAllocator;
+  ComPtr<ID3D12GraphicsCommandList> _streamingCmdList;
 };
 
 #endif // ENABLE_DX12

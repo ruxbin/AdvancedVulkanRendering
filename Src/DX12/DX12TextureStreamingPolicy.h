@@ -135,6 +135,9 @@ inline StreamingCopyPlan BuildStreamingCopyPlan(uint64_t width, uint64_t height,
       plan.bufferCopies.push_back({offset, mipW, mipH, rowPitch, srcRowPitch,
                                    static_cast<uint32_t>(bh), m - targetMip});
       offset += static_cast<uint64_t>(rowPitch) * bh;
+      // PLACED_FOOTPRINT.Offset 必须是 D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT
+      // (512) 的倍数;rowPitch 只保证 256,小 mip 需要补 padding。
+      offset = (offset + 511ull) & ~511ull;
     }
     plan.stagingSize = offset;
 
