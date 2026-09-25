@@ -2029,6 +2029,8 @@ void DX12GpuScene::processStreamingWork() {
       _retiredResources[_currentFrame].push_back(work.staging);
 
     _textures[work.entryIndex] = work.newTexture;
+    spdlog::debug("DX12 streaming: tex[{}] mip {} -> {}", work.entryIndex,
+                  entry.currentMip, work.targetMip);
     entry.currentMip = work.targetMip;
   }
 }
@@ -3976,6 +3978,25 @@ void DX12GpuScene::RenderImGuiOverlay() {
     }
     ImGui::Text("Textures: %u full | %u half | %u low", fullRes, halfRes, qtrRes);
     ImGui::Text("Stream want-swap: %u", _streamWantUpgrade);
+    // 常驻显存估算(CPU 侧近似,不含 256 行距 padding)
+    uint64_t residentBytes = 0;
+    for (auto& e : _streamEntries) {
+      uint64_t bs, bpb;
+      DX12TextureStreamingPolicy::GetPixelFormatBlockDesc(e.desc->_pixelFormat, bs, bpb);
+      for (uint32_t m = e.currentMip; m < e.totalMips; ++m) {
+        residentBytes += DX12TextureStreamingPolicy::CalculateMipSizeInBlocks(
+                             e.desc->_width, bs, m) *
+                         DX12TextureStreamingPolicy::CalculateMipSizeInBlocks(
+                             e.desc->_height, bs, m) * bpb;
+      }
+    }
+    size_t pending = 0, completed = 0, inFlightCount = 0;
+    { std::lock_guard<std::mutex> l(_pendingMutex); pending = _pendingWorks.size(); }
+    { std::lock_guard<std::mutex> l(_cpuWorkMutex); completed = _cpuCompletedWorks.size(); }
+    for (auto& e : _streamEntries) inFlightCount += e.inFlight ? 1 : 0;
+    ImGui::Text("TexMem ~%.1f MB", (double)residentBytes / (1024.0 * 1024.0));
+    ImGui::Text("Stream: %zu pend / %zu done / %zu inflight",
+                pending, completed, inFlightCount);
   }
 
   ImGui::End();
