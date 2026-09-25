@@ -148,5 +148,20 @@ int main() {
     expectU32(plan.imageCopies[0].dstSubresource, 1, "old sub 0 -> new sub 1");
   }
 
+  // --- 512 对齐回归(pin D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT 修复)---
+  // 升级 12 -> 10,4096 BC7:mip 10、11 均为 1x1 块(bw=bh=1),
+  // rowPitch 16->256,segment = 256*1 = 256(非 512 倍数)。
+  // mip11 的 stagingOffset 必须进位到 512,而不是 256。
+  {
+    auto plan = BuildStreamingCopyPlan(4096, 4096, 13, 152, 10, 12);
+    expectSize(plan.bufferCopies.size(), 2, "512-align: mips 10,11 uploaded");
+    expectU32(plan.bufferCopies[0].dstSubresource, 0, "512-align: mip10 -> new sub 0");
+    expectU64(plan.bufferCopies[0].stagingOffset, 0, "512-align: mip10 at 0");
+    expectU32(plan.bufferCopies[0].blockRows, 1, "512-align: mip10 single block row");
+    expectU32(plan.bufferCopies[0].rowPitch, 256, "512-align: mip10 pitch 256");
+    expectU64(plan.bufferCopies[1].stagingOffset, 512, "512-align: mip11 offset rounds up to 512");
+    expectU64(plan.stagingSize, 1024, "512-align: total rounds up to 1024");
+  }
+
   return failures == 0 ? 0 : 1;
 }

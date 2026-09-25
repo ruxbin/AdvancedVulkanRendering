@@ -15,6 +15,7 @@
 #include <vector>
 #include <unordered_map>
 #include <thread>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 
@@ -330,7 +331,7 @@ private:
   std::thread _streamingThread;
   std::mutex _pendingMutex;
   std::condition_variable _pendingCv;
-  bool _streamingThreadRunning = false;
+  std::atomic<bool> _streamingThreadRunning{false};
   std::vector<PendingStreamWork> _pendingWorks;
   std::vector<CpuStreamingWork> _cpuCompletedWorks;
   std::mutex _cpuWorkMutex;

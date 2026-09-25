@@ -1868,12 +1868,13 @@ void DX12GpuScene::blitThreadFunc() {
       cpuWork.entryIndex = work.entryIndex;
       cpuWork.targetMip = work.targetMip;
       cpuWork.sourceTexture = work.snapshotSource;
-      cpuWork.format = MapMTLToDXGI(desc._pixelFormat);
-      cpuWork.plan = TSP::BuildStreamingCopyPlan(desc._width, desc._height,
-          desc._mipmapLevelCount, desc._pixelFormat, work.targetMip,
-          work.snapshotCurrentMip);
 
       try {
+        cpuWork.format = MapMTLToDXGI(desc._pixelFormat);
+        cpuWork.plan = TSP::BuildStreamingCopyPlan(desc._width, desc._height,
+            desc._mipmapLevelCount, desc._pixelFormat, work.targetMip,
+            work.snapshotCurrentMip);
+
         uint32_t baseW = (uint32_t)((desc._width >> work.targetMip) > 0
             ? (desc._width >> work.targetMip) : 1);
         uint32_t baseH = (uint32_t)((desc._height >> work.targetMip) > 0
@@ -2720,7 +2721,7 @@ void DX12GpuScene::Draw() {
 
   UpdateUniforms();
   ReadbackCullingStats();
-  UpdateTextureStreaming();  // update SRV MostDetailedMip before GPU work begins
+  UpdateTextureStreaming();  // streaming tick: coverage -> dispatch -> process swaps (before command recording)
 
   _device.BeginFrame();
   _cbvSrvUavHeap.ResetFrame();
