@@ -80,3 +80,6 @@ D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 decal.hlsl -E DecalPS -Fo de
 
 REM Resolve/PostFX pass (TAA + ACES Tone Mapping)
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 resolve.hlsl -fspv-debug=vulkan-with-source -E ResolvePS -Fo resolve.ps.spv
+
+REM IBL runtime generation kernels
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 ibl.hlsl -E EquirectToCubeCS -Fo ibl_equirect.cs.spv

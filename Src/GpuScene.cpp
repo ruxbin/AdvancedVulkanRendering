@@ -1,6 +1,7 @@
 
 #include "GpuScene.h"
 #include "AssetLoader.h"
+#include "IBLGenerator.h"
 #include "Light.h"
 #include "ObjLoader.h"
 #include "PbrtExporter.h"
@@ -6282,6 +6283,16 @@ void GpuScene::initIBL() {
   vkMapMemory(device.getLogicalDevice(), _iblSHMemory, 0, sizeof(shGpu), 0, &p);
   memcpy(p, shGpu, sizeof(shGpu));
   vkUnmapMemory(device.getLogicalDevice(), _iblSHMemory);
+
+  // 生成预过滤 env cube 与 DFG LUT(Task 3-5 逐步补全 generate 内部)
+  IBLResources ibl = IBLGenerator().generate(device, _equirectView, _rootPath);
+  _iblEnvCube = ibl.envCube;
+  _iblEnvCubeMemory = ibl.envCubeMemory;
+  _iblEnvCubeView = ibl.envCubeView;
+  _iblDfgLut = ibl.dfgLut;
+  _iblDfgLutMemory = ibl.dfgLutMemory;
+  _iblDfgLutView = ibl.dfgLutView;
+  _iblSampler = ibl.sampler;
 
   _iblAvailable = true; // envCube/dfgLut 由 Task 3-5 的 IBLGenerator 填充
 }
