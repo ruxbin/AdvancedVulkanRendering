@@ -1131,7 +1131,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 float IBL_GeometrySchlickGGX(float ndv, float roughness)
 {
     float a = roughness * roughness;
-    float k = (a * a) / 2.0; // IBL 的 k 定义(与直接光的 alpha/2 不同)
+    float k = a / 2.0; // IBL 的 k(= roughness²/2,与本项目 lighting.hlsl evaluateBRDF 的 alpha/2 一致)
     return ndv / (ndv * (1.0 - k) + k);
 }
 
