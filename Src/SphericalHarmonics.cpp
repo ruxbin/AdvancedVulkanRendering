@@ -1,0 +1,79 @@
+﻿#include "SphericalHarmonics.h"
+
+#include <cmath>
+
+namespace {
+constexpr float kPi = 3.1415926535897932f;
+
+// 实数 SH 基常量(不含方向项):Y00, Y1(y,z,x), Y2(yx, yz, 3z^2-1, zx, x^2-y^2)
+constexpr float kY[9] = {
+    0.282095f, // Y00
+    0.488603f, 0.488603f, 0.488603f, // Y1
+    1.092548f, 1.092548f, 0.315392f, 1.092548f, 0.546274f, // Y2
+};
+// A_l 卷积权重(辐照度):l0=π, l1=2π/3, l2=π/4
+constexpr float kA[9] = {
+    kPi,
+    2.0f * kPi / 3.0f, 2.0f * kPi / 3.0f, 2.0f * kPi / 3.0f,
+    kPi / 4.0f, kPi / 4.0f, kPi / 4.0f, kPi / 4.0f, kPi / 4.0f,
+};
+
+inline void EvalBasis(float dx, float dy, float dz, float out[9]) {
+  out[0] = kY[0];
+  out[1] = kY[1] * dy;
+  out[2] = kY[2] * dz;
+  out[3] = kY[3] * dx;
+  out[4] = kY[4] * dy * dx;
+  out[5] = kY[5] * dy * dz;
+  out[6] = kY[6] * (3.0f * dz * dz - 1.0f);
+  out[7] = kY[7] * dz * dx;
+  out[8] = kY[8] * (dx * dx - dy * dy);
+}
+
+// 每像素 2×2 子采样:像素颜色按分段常量取 texel 本身,方向/权重在子采样点求值。
+// 纯中心采样时 θ 向 midpoint 积分误差使 (x²-y²) 通道在 64×32 下残留 ~1.2e-3,
+// 超过测试 1e-3 容差;2×2 子采样把该误差降到 ~3e-4(h² 收敛)。
+constexpr int kSubSamples = 2;
+} // namespace
+
+SH9 ComputeSH9FromEquirect(const float* rgba, int width, int height) {
+  double proj[9][3] = {};
+  double weightSum = 0.0;
+
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const float* px = rgba + (size_t)(y * width + x) * 4;
+      for (int sy = 0; sy < kSubSamples; ++sy) {
+        const float v = (y + (sy + 0.5f) / kSubSamples) / height;
+        const float theta = v * kPi; // 0..π,自 +Y 起
+        const float sinTheta = std::sin(theta);
+        const float cosTheta = std::cos(theta);
+        for (int sx = 0; sx < kSubSamples; ++sx) {
+          const float u = (x + (sx + 0.5f) / kSubSamples) / width;
+          const float phi = (u - 0.5f) * 2.0f * kPi;
+          const float dx = sinTheta * std::sin(phi);
+          const float dy = cosTheta;
+          const float dz = sinTheta * std::cos(phi);
+
+          float basis[9];
+          EvalBasis(dx, dy, dz, basis);
+
+          const double w = sinTheta; // 立体角 ∝ sinθ(常数因子 dθdφ 归一化时约掉)
+          weightSum += w;
+          for (int i = 0; i < 9; ++i)
+            for (int ch = 0; ch < 3; ++ch)
+              proj[i][ch] += (double)px[ch] * basis[i] * w;
+        }
+      }
+    }
+  }
+
+  // L_lm = 4π * Σ(color·Y·w) / Σw(对恒定环境精确);
+  // 浓缩形式 c[i] = A_l · Y_i常量 · L_i(Y 归一化常数折入,见头文件注释)。
+  SH9 sh;
+  const double norm = 4.0 * kPi / weightSum;
+  for (int i = 0; i < 9; ++i)
+    for (int ch = 0; ch < 3; ++ch)
+      sh.c[i][ch] = (float)(kA[i] * kY[i] * proj[i][ch] * norm);
+  return sh;
+}
