@@ -91,6 +91,10 @@ struct AAPLFrameConstants
     // Wind-animated noise offset for volumetric scatter detail.
     float3 globalNoiseOffset;
     float  noiseSpeed;
+    float iblScale;         // offset 128
+    float iblSpecularScale; // offset 132
+    float _padIbl0;
+    float _padIbl1;
 };
 
 struct CameraParamsBuffer

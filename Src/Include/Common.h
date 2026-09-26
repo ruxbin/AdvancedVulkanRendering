@@ -91,16 +91,20 @@ struct FrameConstants {
   // Wind-animated noise offset for scatter volume fog detail.
   alignas(16) vec3 globalNoiseOffset;
   float noiseSpeed; // retained for padding; set to 0
+  float iblScale;          // IBL 总强度(0 = 关闭);ImGui 可调,默认 1.0
+  float iblSpecularScale;  // 仅 IBL 高光额外倍率;默认 4.0(对齐 Metal)
+  float _padIbl0;
+  float _padIbl1;
 };
-static_assert(sizeof(FrameConstants) == 128,
-              "FrameConstants size mismatch. Must match AAPLFrameConstants in commonstruct.hlsl. "
-              "Layout: skyColor packs wetness into same register (offset 44), no _padFR before invPhysicalSize.");
+static_assert(sizeof(FrameConstants) == 144, "FrameConstants size mismatch vs AAPLFrameConstants (ibl fields appended)");
 // Field-offset checks against the HLSL SPIR-V layout (wetness=44, exposure=96, taaEnabled=100).
 static_assert(offsetof(FrameConstants, wetness)          == 44,  "wetness offset mismatch vs HLSL Offset(44)");
 static_assert(offsetof(FrameConstants, scatterScale)     == 64,  "scatterScale offset mismatch vs HLSL Offset(64)");
 static_assert(offsetof(FrameConstants, exposure)         == 96,  "exposure offset mismatch vs HLSL Offset(96)");
 static_assert(offsetof(FrameConstants, taaEnabled)       == 100, "taaEnabled offset mismatch vs HLSL Offset(100)");
 static_assert(offsetof(FrameConstants, globalNoiseOffset)== 112, "globalNoiseOffset offset mismatch vs HLSL Offset(112)");
+static_assert(offsetof(FrameConstants, iblScale)         == 128, "iblScale offset mismatch vs HLSL Offset(128)");
+static_assert(offsetof(FrameConstants, iblSpecularScale) == 132, "iblSpecularScale offset mismatch vs HLSL Offset(132)");
 
 struct FrameData {
   uniformBufferData camConstants;

@@ -997,7 +997,17 @@ public:
       vec3(0.4f, 0.6f, 1.0f),    // skyColor
       1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
       0.1f, 1000.f,              // nearPlane, farPlane
-      1.0f                       // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
+      1.0f,                      // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
+      0u,                        // frameCounter (per-frame fill)
+      vec2(),                    // physicalSize (per-frame fill)
+      vec2(),                    // invPhysicalSize (per-frame fill)
+      vec2(),                    // taaJitter (per-frame fill)
+      0.0f,                      // exposure (per-frame fill)
+      0u,                        // taaEnabled (per-frame fill)
+      vec3(),                    // globalNoiseOffset (per-frame fill)
+      0.0f,                      // noiseSpeed
+      1.0f,                      // iblScale (ImGui-adjustable; NOT overwritten per-frame)
+      4.0f                       // iblSpecularScale (Metal parity; ImGui-adjustable)
   };
 };
 

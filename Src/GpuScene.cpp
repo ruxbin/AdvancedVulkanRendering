@@ -8801,6 +8801,12 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   ImGui::Checkbox("Occluder Wireframe", &_showOccluderWireframe);
   ImGui::Checkbox("Spot Light Cones",   &_showSpotLightViz);
 
+  if (ImGui::CollapsingHeader("IBL")) {
+    ImGui::SliderFloat("IBL Scale", &frameConstants.iblScale, 0.0f, 2.0f);
+    ImGui::SliderFloat("IBL Specular Scale", &frameConstants.iblSpecularScale, 0.0f, 8.0f);
+    if (!_iblAvailable) ImGui::TextDisabled("env map missing - using black fallback");
+  }
+
   ImGui::Separator();
   if (ImGui::Button("Export PBRT")) {
       bool ok = PbrtExporter::Export(*this, _rootPath / "scene.pbrt");

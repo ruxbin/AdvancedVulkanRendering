@@ -120,6 +120,10 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   _frameConstants.exposure     = 1.0f;
   _frameConstants.emissiveScale     = 1.0f;
   _frameConstants.localLightIntensity = 1.0f;
+  // IBL defaults (written once at init; DX12 shaders don't consume these yet —
+  // values exist only so the field is never read uninitialized).
+  _frameConstants.iblScale          = 1.0f;
+  _frameConstants.iblSpecularScale  = 4.0f;
 
   // Init descriptor heaps
   _cbvSrvUavHeap.Init(_device.GetDevice(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
