@@ -72,6 +72,22 @@ uint32_t findMemoryType(uint32_t typeFilter,
 const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& getRTPipelineProperties() const { return rtPipelineProperties; }
 const VkPhysicalDeviceAccelerationStructurePropertiesKHR& getASProperties() const { return asProperties; }
 #endif
+  // Startup probe result: true only when the device exposes every RT
+  // extension AND the accelerationStructure + rayTracingPipeline features.
+  bool isRayTracingSupported() const { return rayTracingSupported; }
+  // Compose the device extension list: the base set (hard requirement) plus
+  // the RT set when the startup probe reported RT support.
+  static std::vector<const char*> buildDeviceExtensionList(bool rtSupported) {
+    std::vector<const char*> exts(
+        deviceExtensionNames,
+        deviceExtensionNames +
+            sizeof(deviceExtensionNames) / sizeof(deviceExtensionNames[0]));
+#ifndef __ANDROID__
+    if (rtSupported)
+      for (const char* e : deviceRTExtensionNames) exts.push_back(e);
+#endif
+    return exts;
+  }
 private:
   std::vector<std::string_view> getRequiredExtensions();
   VkInstance vkInstance;
@@ -105,6 +121,11 @@ private:
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
 #endif
 
+  // Startup RT probe result (extensions AND features). Set in
+  // createLogicalDevice; false on Android and on devices without full RT
+  // support (or when AVR_FORCE_NO_RT is set, a debug-only test hook).
+  bool rayTracingSupported = false;
+
 
 VkDebugUtilsMessengerEXT debugMessenger;
 
@@ -129,15 +150,21 @@ VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME,
 VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,  // supress validation error pCreateInfos[0].pStages[0] SPIR-V Extension SPV_KHR_non_semantic_info was declared, but one of the following requirements is required
 //VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
 VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,
-// --- Ray tracing ---
+#endif
+  };
+#ifndef __ANDROID__
+  // Optional ray tracing set — NOT required. Probed at startup; requested
+  // only when every entry is present (checkDeviceRTExtensionSupport) and the
+  // RT features probe succeeds. Devices lacking them still run raster passes.
+  constexpr static const char *const deviceRTExtensionNames[] = {
 VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
 VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
 VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
 VK_KHR_SPIRV_1_4_EXTENSION_NAME,
 VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME
-#endif
   };
+#endif
 #ifndef __ANDROID__
   constexpr static const char *const validationLayers[] = {
 
@@ -212,7 +239,8 @@ VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME
     return indices.isComplete() && extensionsSupported && swapChainAdequate;
   }
 
-  bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+  bool checkExtensionsPresent(VkPhysicalDevice device, const char* const* names,
+                              size_t count) {
     uint32_t extensionCount;
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
                                          nullptr);
@@ -221,22 +249,34 @@ VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
                                          availableExtensions.data());
 
-    int requireExtensionCount =
-        sizeof(deviceExtensionNames) / sizeof(deviceExtensionNames[0]);
-
-    for (const auto &extension : availableExtensions) {
-      // requiredExtensions.erase(extension.extensionName);
-      for (auto &i : deviceExtensionNames) {
-        if (strcmp(i, extension.extensionName) == 0) {
-          --requireExtensionCount;
-          if (requireExtensionCount == 0)
-            return true;
+    for (size_t i = 0; i < count; ++i) {
+      bool found = false;
+      for (const auto& extension : availableExtensions) {
+        if (strcmp(names[i], extension.extensionName) == 0) {
+          found = true;
+          break;
         }
       }
+      if (!found) return false;
     }
-
-    return false;
+    return true;
   }
+
+  bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+    return checkExtensionsPresent(
+        device, deviceExtensionNames,
+        sizeof(deviceExtensionNames) / sizeof(deviceExtensionNames[0]));
+  }
+
+#ifndef __ANDROID__
+  // RT is optional: this probe never gates device suitability, it only
+  // decides whether the RT extension set may be requested.
+  bool checkDeviceRTExtensionSupport(VkPhysicalDevice device) {
+    return checkExtensionsPresent(
+        device, deviceRTExtensionNames,
+        sizeof(deviceRTExtensionNames) / sizeof(deviceRTExtensionNames[0]));
+  }
+#endif
 
   QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
     QueueFamilyIndices indices;

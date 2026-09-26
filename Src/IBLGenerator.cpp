@@ -361,13 +361,24 @@ void validateDfgAgainstReference(const VulkanDevice& device, VkImage dfgImage,
   //               [5]glBaseInternalFormat [6]width [7]height [8]depth [9]arrayElements
   //               [10]faces [11]mipLevels [12]bytesOfKeyValueData
   std::vector<char> ktx = readFile(refPath.generic_string());
+  if (ktx.size() < 64) {
+    spdlog::warn("IBL: reference KTX too small ({} bytes), skip validation", ktx.size());
+    vkUnmapMemory(dev, stagingMem);
+    vkDestroyBuffer(dev, staging, nullptr);
+    vkFreeMemory(dev, stagingMem, nullptr);
+    return;
+  }
   const uint32_t* header = reinterpret_cast<const uint32_t*>(ktx.data() + 12);
   uint32_t glInternalFormat = header[4]; // 期望 0x822F (GL_RG16F)
   uint32_t width = header[6];
+  uint32_t height = header[7];
+  uint32_t mipLevels = header[11];
   uint32_t kvBytes = header[12];
-  if (glInternalFormat != 0x822F || width != kSize) {
-    spdlog::warn("IBL: reference KTX format unexpected (internal=0x{:x}, w={}), skip validation",
-                 glInternalFormat, width);
+  // 解析前边界校验:dev-only 校验,超差直接 warn + skip(不 throw)。
+  if (glInternalFormat != 0x822F || width != kSize || height != kSize || mipLevels != 1 ||
+      (uint64_t)64 + kvBytes + 4 + kBytes > (uint64_t)ktx.size()) {
+    spdlog::warn("IBL: reference KTX format unexpected (internal=0x{:x}, w={}, h={}, mips={}, size={}), skip validation",
+                 glInternalFormat, width, height, mipLevels, ktx.size());
   } else {
     const uint16_t* ref = reinterpret_cast<const uint16_t*>(ktx.data() + 64 + kvBytes + 4);
     double mae = 0.0;
@@ -430,12 +441,14 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
   vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
   VkImageView mip0StorageView;
-  vkCreateImageView(dev, &vi, nullptr, &mip0StorageView);
+  if (vkCreateImageView(dev, &vi, nullptr, &mip0StorageView) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create env cube mip0 storage view");
 
   // cube 采样 view(全 mip;Task 4 预过滤读 mip0、光照 SampleLevel 用)
   vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
   vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kEnvMipCount, 0, 6};
-  vkCreateImageView(dev, &vi, nullptr, &out.envCubeView);
+  if (vkCreateImageView(dev, &vi, nullptr, &out.envCubeView) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create env cube view");
 
   // --- DFG LUT(Task 5:Karis split-sum 第二步;256x256 RG16F) ---
   createImage2D(device, VK_FORMAT_R16G16_SFLOAT, 256, 256, 1, 1, 0,
@@ -448,7 +461,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   lvi.viewType = VK_IMAGE_VIEW_TYPE_2D;
   lvi.format = VK_FORMAT_R16G16_SFLOAT;
   lvi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  vkCreateImageView(dev, &lvi, nullptr, &out.dfgLutView);
+  if (vkCreateImageView(dev, &lvi, nullptr, &out.dfgLutView) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create DFG LUT view");
 
   // --- CS1 pipeline ---
   VkDescriptorSetLayoutBinding cs1Bindings[3] = {};
@@ -460,7 +474,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   slci.bindingCount = 3;
   slci.pBindings = cs1Bindings;
   VkDescriptorSetLayout cs1SetLayout;
-  vkCreateDescriptorSetLayout(dev, &slci, nullptr, &cs1SetLayout);
+  if (vkCreateDescriptorSetLayout(dev, &slci, nullptr, &cs1SetLayout) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create CS1 descriptor set layout");
 
   VkPushConstantRange pcRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
   VkPipelineLayoutCreateInfo plci{};
@@ -470,7 +485,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   plci.pushConstantRangeCount = 1;
   plci.pPushConstantRanges = &pcRange;
   VkPipelineLayout cs1Layout;
-  vkCreatePipelineLayout(dev, &plci, nullptr, &cs1Layout);
+  if (vkCreatePipelineLayout(dev, &plci, nullptr, &cs1Layout) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create CS1 pipeline layout");
 
   VkShaderModule cs1Module = loadModule(dev, rootPath / "shaders" / "ibl_equirect.cs.spv");
   VkComputePipelineCreateInfo cpci{};
@@ -492,7 +508,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   slci2.bindingCount = 3;
   slci2.pBindings = cs2Bindings;
   VkDescriptorSetLayout cs2SetLayout;
-  vkCreateDescriptorSetLayout(dev, &slci2, nullptr, &cs2SetLayout);
+  if (vkCreateDescriptorSetLayout(dev, &slci2, nullptr, &cs2SetLayout) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create CS2 descriptor set layout");
 
   VkPipelineLayoutCreateInfo plci2{};
   plci2.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -501,7 +518,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   plci2.pushConstantRangeCount = 1;
   plci2.pPushConstantRanges = &pcRange;
   VkPipelineLayout cs2Layout;
-  vkCreatePipelineLayout(dev, &plci2, nullptr, &cs2Layout);
+  if (vkCreatePipelineLayout(dev, &plci2, nullptr, &cs2Layout) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create CS2 pipeline layout");
 
   VkShaderModule cs2Module = loadModule(dev, rootPath / "shaders" / "ibl_prefilter.cs.spv");
   VkComputePipelineCreateInfo cpci2{};
@@ -521,7 +539,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   slci3.bindingCount = 1;
   slci3.pBindings = &cs3Binding;
   VkDescriptorSetLayout cs3SetLayout;
-  vkCreateDescriptorSetLayout(dev, &slci3, nullptr, &cs3SetLayout);
+  if (vkCreateDescriptorSetLayout(dev, &slci3, nullptr, &cs3SetLayout) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create CS3 descriptor set layout");
 
   VkPipelineLayoutCreateInfo plci3{};
   plci3.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -530,7 +549,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   plci3.pushConstantRangeCount = 0; // CS3 无 push constants(dxc 单 push block 属 CS1/CS2)
   plci3.pPushConstantRanges = nullptr;
   VkPipelineLayout cs3Layout;
-  vkCreatePipelineLayout(dev, &plci3, nullptr, &cs3Layout);
+  if (vkCreatePipelineLayout(dev, &plci3, nullptr, &cs3Layout) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create CS3 pipeline layout");
 
   VkShaderModule cs3Module = loadModule(dev, rootPath / "shaders" / "ibl_dfglut.cs.spv");
   VkComputePipelineCreateInfo cpci3{};
@@ -554,7 +574,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   dpci.poolSizeCount = 3;
   dpci.pPoolSizes = poolSizes;
   VkDescriptorPool pool;
-  vkCreateDescriptorPool(dev, &dpci, nullptr, &pool);
+  if (vkCreateDescriptorPool(dev, &dpci, nullptr, &pool) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create descriptor pool");
 
   VkDescriptorSetAllocateInfo dsai{};
   dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -562,7 +583,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   dsai.descriptorSetCount = 1;
   dsai.pSetLayouts = &cs1SetLayout;
   VkDescriptorSet cs1Set;
-  vkAllocateDescriptorSets(dev, &dsai, &cs1Set);
+  if (vkAllocateDescriptorSets(dev, &dsai, &cs1Set) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to allocate CS1 descriptor set");
 
   // 注意:VkDescriptorImageInfo 字段序为 (sampler, imageView, imageLayout),
   // 与 GpuScene.cpp:1383 一致用成员赋值,避免 brace 顺序错误。
@@ -586,7 +608,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   // CS3 descriptor set(单 binding 0 = LUT storage image)
   dsai.pSetLayouts = &cs3SetLayout;
   VkDescriptorSet cs3Set;
-  vkAllocateDescriptorSets(dev, &dsai, &cs3Set);
+  if (vkAllocateDescriptorSets(dev, &dsai, &cs3Set) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to allocate CS3 descriptor set");
   VkDescriptorImageInfo lutInfo{};
   lutInfo.imageView = out.dfgLutView;
   lutInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -636,7 +659,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
     mvi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     mvi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6};
     VkImageView mipView;
-    vkCreateImageView(dev, &mvi, nullptr, &mipView);
+    if (vkCreateImageView(dev, &mvi, nullptr, &mipView) != VK_SUCCESS)
+      throw std::runtime_error("IBL: failed to create env cube mip view");
     mipViews.push_back(mipView);
 
     VkDescriptorSetAllocateInfo dsai2{};
@@ -645,7 +669,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
     dsai2.descriptorSetCount = 1;
     dsai2.pSetLayouts = &cs2SetLayout;
     VkDescriptorSet set;
-    vkAllocateDescriptorSets(dev, &dsai2, &set);
+    if (vkAllocateDescriptorSets(dev, &dsai2, &set) != VK_SUCCESS)
+      throw std::runtime_error("IBL: failed to allocate CS2 descriptor set");
 
     VkDescriptorImageInfo outInfo2{};
     outInfo2.imageView = mipView;
@@ -709,6 +734,8 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   vkDestroyDescriptorPool(dev, pool, nullptr);
 
   // CPU-vs-GPU cube 链校验(Ruling 9/10;envCube 已处 SHADER_READ_ONLY)
+  // 注意:此处的 hdr 路径必须与 GpuScene::initIBL 选用的环境贴图保持一致
+  // (GpuScene.cpp initIBL 的 hdrPath);换资产时两处需同步修改。
   validateCubeChainAgainstCpu(device, out.envCube,
                               rootPath / "textures" / "san_giuseppe_bridge_2k.hdr");
 

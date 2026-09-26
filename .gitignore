@@ -6,4 +6,5 @@ ThirdPartyBuild
 Bin
 Makefile
 shaders/*.spv
+textures/*.hdr
 .worktrees/

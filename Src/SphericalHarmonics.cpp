@@ -37,12 +37,15 @@ constexpr int kSubSamples = 2;
 } // namespace
 
 SH9 ComputeSH9FromEquirect(const float* rgba, int width, int height) {
+  if (!rgba || width <= 0 || height <= 0) return SH9{}; // 全零 = 无环境贡献
+
   double proj[9][3] = {};
   double weightSum = 0.0;
 
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      const float* px = rgba + (size_t)(y * width + x) * 4;
+      // 索引全程 size_t:int 乘法在超大纹理下会先溢出再提升。
+      const float* px = rgba + ((size_t)y * (size_t)width + (size_t)x) * 4;
       for (int sy = 0; sy < kSubSamples; ++sy) {
         const float v = (y + (sy + 0.5f) / kSubSamples) / height;
         const float theta = v * kPi; // 0..π,自 +Y 起

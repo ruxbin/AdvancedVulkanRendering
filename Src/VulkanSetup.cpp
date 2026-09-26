@@ -5,6 +5,7 @@
 #include "SDL_vulkan.h"
 #include "spdlog/spdlog.h"
 #include <array>
+#include <cstdlib>
 #include <stdexcept>
 
 #ifdef __ANDROID__
@@ -232,12 +233,23 @@ void VulkanDevice::pickPhysicalDevice() {
   std::vector<VkPhysicalDevice> devices(deviceCount);
   vkEnumeratePhysicalDevices(vkInstance, &deviceCount, devices.data());
 
+  // RT no longer gates suitability: take the first RT-capable device if
+  // there is one, otherwise the first basically suitable device.
+  VkPhysicalDevice firstSuitable = VK_NULL_HANDLE;
   for (const auto &device : devices) {
     if (isDeviceSuitable(device)) {
-      physicalDevice = device;
-      break;
+      if (firstSuitable == VK_NULL_HANDLE)
+        firstSuitable = device;
+#ifndef __ANDROID__
+      if (checkDeviceRTExtensionSupport(device)) {
+        physicalDevice = device;
+        break;
+      }
+#endif
     }
   }
+  if (physicalDevice == VK_NULL_HANDLE)
+    physicalDevice = firstSuitable;
 
   if (physicalDevice == VK_NULL_HANDLE) {
     throw std::runtime_error("failed to find a suitable GPU!");
@@ -323,10 +335,20 @@ void VulkanDevice::createLogicalDevice() {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &asFeatures};
     asFeatures.pNext = &rtPipelineFeatures;
     vkGetPhysicalDeviceFeatures2(physicalDevice, &probe);
-    if (!asFeatures.accelerationStructure || !rtPipelineFeatures.rayTracingPipeline) {
-      spdlog::warn("Ray tracing not supported on this device — RT toggle will be unavailable.");
+    // Optional-ray-tracing probe: extensions AND features must all be
+    // present. AVR_FORCE_NO_RT is a debug-only hook that forces the
+    // unsupported path on RT-capable hardware.
+    const bool rtExtPresent = checkDeviceRTExtensionSupport(physicalDevice);
+    const bool forceNoRT = std::getenv("AVR_FORCE_NO_RT") != nullptr;
+    rayTracingSupported =
+        rtExtPresent && asFeatures.accelerationStructure &&
+        rtPipelineFeatures.rayTracingPipeline && !forceNoRT;
+    if (rayTracingSupported) {
+      spdlog::info("Ray tracing supported (AS + RT pipeline + extensions).");
     } else {
-      spdlog::info("Ray tracing supported (AS + RT pipeline).");
+      spdlog::warn("Ray tracing not supported on this device{}; "
+                   "RT passes will be disabled.",
+                   forceNoRT ? " (forced off by AVR_FORCE_NO_RT)" : "");
     }
     asFeatures.pNext = nullptr;  // detach so we can reattach below into the device chain
     // Force-enable only the bits we need so we don't request unsupported ones
@@ -372,9 +394,13 @@ void VulkanDevice::createLogicalDevice() {
       static_cast<uint32_t>(queueCreateInfos.size());
   createInfo.pQueueCreateInfos = queueCreateInfos.data();
 
-  createInfo.enabledExtensionCount = static_cast<uint32_t>(
-      sizeof(deviceExtensionNames) / sizeof(deviceExtensionNames[0]));
-  createInfo.ppEnabledExtensionNames = deviceExtensionNames;
+  // RT extensions are requested only when the probe passed; the base set
+  // is always required (see buildDeviceExtensionList).
+  const std::vector<const char*> enabledExtensions =
+      buildDeviceExtensionList(rayTracingSupported);
+  createInfo.enabledExtensionCount =
+      static_cast<uint32_t>(enabledExtensions.size());
+  createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
   if (enableValidationLayers) {
 #ifndef __ANDROID__
@@ -391,9 +417,16 @@ void VulkanDevice::createLogicalDevice() {
   float16_features.pNext = &synchron2_features;
   synchron2_features.pNext = &storagebuffer16bit;
 #ifndef __ANDROID__
-  storagebuffer16bit.pNext = &asFeatures;
-  asFeatures.pNext = &rtPipelineFeatures;
-  rtPipelineFeatures.pNext = nullptr;
+  // Chain the RT feature structs ONLY when the RT extensions are actually
+  // requested (rayTracingSupported): VUID-VkDeviceCreateInfo-pNext-pNext
+  // requires the parent extension for every struct in the chain.
+  if (rayTracingSupported) {
+    storagebuffer16bit.pNext = &asFeatures;
+    asFeatures.pNext = &rtPipelineFeatures;
+    rtPipelineFeatures.pNext = nullptr;
+  } else {
+    storagebuffer16bit.pNext = nullptr;
+  }
 #else
   storagebuffer16bit.pNext = nullptr;
 #endif

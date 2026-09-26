@@ -2293,6 +2293,58 @@ GpuScene::~GpuScene() {
   shutdownTextureStreaming();
   free(cpuMaterials);
   free(m_SubMeshes);
+
+  // IBL 资源销毁(Task 9):view 先于 image;窗口关闭时可能仍有帧在飞,
+  // 先等设备空闲再销毁。
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  if (_equirectView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _equirectView, nullptr);
+    _equirectView = VK_NULL_HANDLE;
+  }
+  if (_equirectImage != VK_NULL_HANDLE) {
+    vkDestroyImage(device.getLogicalDevice(), _equirectImage, nullptr);
+    _equirectImage = VK_NULL_HANDLE;
+  }
+  if (_equirectMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _equirectMemory, nullptr);
+    _equirectMemory = VK_NULL_HANDLE;
+  }
+  if (_iblEnvCubeView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _iblEnvCubeView, nullptr);
+    _iblEnvCubeView = VK_NULL_HANDLE;
+  }
+  if (_iblEnvCube != VK_NULL_HANDLE) {
+    vkDestroyImage(device.getLogicalDevice(), _iblEnvCube, nullptr);
+    _iblEnvCube = VK_NULL_HANDLE;
+  }
+  if (_iblEnvCubeMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _iblEnvCubeMemory, nullptr);
+    _iblEnvCubeMemory = VK_NULL_HANDLE;
+  }
+  if (_iblDfgLutView != VK_NULL_HANDLE) {
+    vkDestroyImageView(device.getLogicalDevice(), _iblDfgLutView, nullptr);
+    _iblDfgLutView = VK_NULL_HANDLE;
+  }
+  if (_iblDfgLut != VK_NULL_HANDLE) {
+    vkDestroyImage(device.getLogicalDevice(), _iblDfgLut, nullptr);
+    _iblDfgLut = VK_NULL_HANDLE;
+  }
+  if (_iblDfgLutMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _iblDfgLutMemory, nullptr);
+    _iblDfgLutMemory = VK_NULL_HANDLE;
+  }
+  if (_iblSHBuffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(device.getLogicalDevice(), _iblSHBuffer, nullptr);
+    _iblSHBuffer = VK_NULL_HANDLE;
+  }
+  if (_iblSHMemory != VK_NULL_HANDLE) {
+    vkFreeMemory(device.getLogicalDevice(), _iblSHMemory, nullptr);
+    _iblSHMemory = VK_NULL_HANDLE;
+  }
+  if (_iblSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(device.getLogicalDevice(), _iblSampler, nullptr);
+    _iblSampler = VK_NULL_HANDLE;
+  }
 }
 
 GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
@@ -2514,9 +2566,13 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
         bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           // AS build input is only legal (and only needed)
+                           // when the RT extension is enabled (VUID-09499).
+                           (device.isRayTracingSupported()
+                                ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+                                : (VkBufferUsageFlags)0);
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -2700,9 +2756,13 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = buffersize;
         bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           // AS build input is only legal (and only needed)
+                           // when the RT extension is enabled (VUID-09499).
+                           (device.isRayTracingSupported()
+                                ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+                                : (VkBufferUsageFlags)0);
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.flags = 0;
         if (vkCreateBuffer(device.getLogicalDevice(), &bufferInfo, nullptr,
@@ -3689,13 +3749,18 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width,
                           device.getSwapChainExtent().height);
   }
-  if (!_raytracing) {
+  // RayTracing is optional: only build the RT path (BLAS/TLAS, pipeline,
+  // SBT) when the device probe at startup said RT is supported. Devices
+  // without RT keep _raytracing null and never enter the RT branch.
+  if (!_raytracing && device.isRayTracingSupported()) {
     _raytracing = new RayTracing(const_cast<VulkanDevice &>(device), *this);
     _raytracing->Init();
     _raytracing->BuildAccelerationStructures();
     _raytracing->CreateOutputImagesAndDescriptorSet();
     _raytracing->CreatePipelineAndSBT();
   }
+  if (!device.isRayTracingSupported())
+    useRayTracing = false;
 
     {
   uint32_t opaqueCount = applMesh->_opaqueChunkCount;
@@ -6274,7 +6339,9 @@ bool GpuScene::createEquirectTexture(const std::filesystem::path& hdrPath) {
   imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-  vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_equirectImage);
+  if (vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_equirectImage) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create equirect image!");
+  }
 
   VkMemoryRequirements memReq;
   vkGetImageMemoryRequirements(device.getLogicalDevice(), _equirectImage, &memReq);
@@ -6282,7 +6349,9 @@ bool GpuScene::createEquirectTexture(const std::filesystem::path& hdrPath) {
   allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   allocInfo.allocationSize = memReq.size;
   allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_equirectMemory);
+  if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_equirectMemory) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to allocate equirect image memory!");
+  }
   vkBindImageMemory(device.getLogicalDevice(), _equirectImage, _equirectMemory, 0);
 
   device.transitionImageLayout(_equirectImage, imageInfo.format,
@@ -6299,7 +6368,9 @@ bool GpuScene::createEquirectTexture(const std::filesystem::path& hdrPath) {
   viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
   viewInfo.format = imageInfo.format;
   viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_equirectView);
+  if (vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_equirectView) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create equirect image view!");
+  }
   return true;
 }
 
@@ -6319,25 +6390,33 @@ void GpuScene::createBlackFallbackIBL() {
   ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-  vkCreateImage(device.getLogicalDevice(), &ci, nullptr, &_iblEnvCube);
+  if (vkCreateImage(device.getLogicalDevice(), &ci, nullptr, &_iblEnvCube) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create fallback env cube image!");
+  }
   VkMemoryRequirements mr;
   vkGetImageMemoryRequirements(device.getLogicalDevice(), _iblEnvCube, &mr);
   VkMemoryAllocateInfo ai{};
   ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   ai.allocationSize = mr.size;
   ai.memoryTypeIndex = device.findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &_iblEnvCubeMemory);
+  if (vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &_iblEnvCubeMemory) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to allocate fallback env cube memory!");
+  }
   vkBindImageMemory(device.getLogicalDevice(), _iblEnvCube, _iblEnvCubeMemory, 0);
 
   // --- 1x1 RG16F LUT ---
   ci.arrayLayers = 1;
   ci.flags = 0;
   ci.format = VK_FORMAT_R16G16_SFLOAT;
-  vkCreateImage(device.getLogicalDevice(), &ci, nullptr, &_iblDfgLut);
+  if (vkCreateImage(device.getLogicalDevice(), &ci, nullptr, &_iblDfgLut) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create fallback DFG LUT image!");
+  }
   vkGetImageMemoryRequirements(device.getLogicalDevice(), _iblDfgLut, &mr);
   ai.allocationSize = mr.size;
   ai.memoryTypeIndex = device.findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &_iblDfgLutMemory);
+  if (vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &_iblDfgLutMemory) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to allocate fallback DFG LUT memory!");
+  }
   vkBindImageMemory(device.getLogicalDevice(), _iblDfgLut, _iblDfgLutMemory, 0);
 
   // clear both to black via one-shot command buffer
@@ -6378,12 +6457,16 @@ void GpuScene::createBlackFallbackIBL() {
   vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
   vi.image = _iblEnvCube;
   vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
-  vkCreateImageView(device.getLogicalDevice(), &vi, nullptr, &_iblEnvCubeView);
+  if (vkCreateImageView(device.getLogicalDevice(), &vi, nullptr, &_iblEnvCubeView) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create fallback env cube view!");
+  }
   vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
   vi.format = VK_FORMAT_R16G16_SFLOAT;
   vi.image = _iblDfgLut;
   vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  vkCreateImageView(device.getLogicalDevice(), &vi, nullptr, &_iblDfgLutView);
+  if (vkCreateImageView(device.getLogicalDevice(), &vi, nullptr, &_iblDfgLutView) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create fallback DFG LUT view!");
+  }
 
   // zero SH UBO(9 * float4)
   createBuffer(9 * 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -6404,7 +6487,9 @@ void GpuScene::createBlackFallbackIBL() {
   samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   samplerInfo.maxLod = 9.0f;
-  vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &_iblSampler);
+  if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &_iblSampler) != VK_SUCCESS) {
+    throw std::runtime_error("IBL: failed to create fallback IBL sampler!");
+  }
 }
 
 void GpuScene::initIBL() {
@@ -8939,7 +9024,17 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   ImGui::Text("Transp:    %u / %u", _cullingStats.visibleTransparent, _cullingStats.totalTransparent);
 
   ImGui::Separator();
-  ImGui::Checkbox("Ray Tracing", &useRayTracing);
+  {
+    const bool rtSupported = device.isRayTracingSupported();
+    if (!rtSupported) useRayTracing = false;
+    ImGui::BeginDisabled(!rtSupported);
+    ImGui::Checkbox("Ray Tracing", &useRayTracing);
+    ImGui::EndDisabled();
+    if (!rtSupported) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(unsupported on this device)");
+    }
+  }
   if (useRayTracing) {
     ImGui::TextDisabled("(raster pipeline skipped)");
     if (_raytracing) {
