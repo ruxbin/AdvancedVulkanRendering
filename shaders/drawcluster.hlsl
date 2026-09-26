@@ -1,5 +1,6 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
+#include "ibl_common.hlsl"
 #include "shadercompat.hlsl"
 
 
@@ -61,6 +62,14 @@ VK_BINDING(1,1) SamplerState _LinearRepeatSampler REGISTER_SAMPLER(1,1);
 VK_BINDING(2,1) Texture2D<half4> _Textures[] REGISTER_SRV(0,2);  //bindless textures (DX12: own space to avoid overlap)
 VK_BINDING(3,1) StructuredBuffer<AAPLMeshChunk> meshChunks REGISTER_SRV(3,1);
 VK_BINDING(4,1) StructuredBuffer<uint> chunkIndex REGISTER_SRV(4,1);
+
+// IBL (Vulkan; same resources as the deferred pass, free slots in the appl set)
+#ifndef DX12_BACKEND
+VK_BINDING(5,1) Texture2D<float2> dfgLutTex;
+VK_BINDING(6,1) TextureCube envMap;
+VK_BINDING(7,1) SamplerState iblSampler;
+VK_BINDING(8,1) cbuffer SHCoefficients { float4 shCoefs[9]; };
+#endif
 
 
 
@@ -288,6 +297,17 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
     surfaceData.emissive = emissive.xyz;
 
     half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
+#ifndef DX12_BACKEND
+    if (frameConstants.iblScale > 0.0f)
+    {
+        float3 camPosIBL = float3(cameraParams.invViewMatrix._m03,
+                                  cameraParams.invViewMatrix._m13,
+                                  cameraParams.invViewMatrix._m23);
+        float3 viewDirIBL = normalize(camPosIBL - input.wsPosition.xyz);
+        res += (half3)IBL(surfaceData, envMap, dfgLutTex, iblSampler, shCoefs,
+                          viewDirIBL, frameConstants.iblScale, frameConstants.iblSpecularScale);
+    }
+#endif
     return half4(res, surfaceData.alpha);
 
 }
@@ -372,6 +392,17 @@ half4 RenderSceneForwardPSIndirect(VSOutput input) : SV_Target
     surfaceData.emissive = emissive.xyz;
 
     half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
+#ifndef DX12_BACKEND
+    if (frameConstants.iblScale > 0.0f)
+    {
+        float3 camPosIBL = float3(cameraParams.invViewMatrix._m03,
+                                  cameraParams.invViewMatrix._m13,
+                                  cameraParams.invViewMatrix._m23);
+        float3 viewDirIBL = normalize(camPosIBL - input.wsPosition.xyz);
+        res += (half3)IBL(surfaceData, envMap, dfgLutTex, iblSampler, shCoefs,
+                          viewDirIBL, frameConstants.iblScale, frameConstants.iblSpecularScale);
+    }
+#endif
     return half4(res, surfaceData.alpha);
 }
 

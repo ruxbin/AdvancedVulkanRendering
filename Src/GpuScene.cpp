@@ -1783,14 +1783,42 @@ void GpuScene::init_appl_descriptors() {
   // we use it from the vertex shader
   chunkIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  // IBL (same resources as the deferred set, free appl slots 5-8)
+  VkDescriptorSetLayoutBinding dfgLutBinding = {};
+  dfgLutBinding.binding = 5;
+  dfgLutBinding.descriptorCount = 1;
+  dfgLutBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  dfgLutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding envMapBinding = {};
+  envMapBinding.binding = 6;
+  envMapBinding.descriptorCount = 1;
+  envMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  envMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding iblSamplerBinding = {};
+  iblSamplerBinding.binding = 7;
+  iblSamplerBinding.descriptorCount = 1;
+  iblSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  iblSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding shBinding = {};
+  shBinding.binding = 8;
+  shBinding.descriptorCount = 1;
+  shBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  shBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {
       matBinding,        samplerBinding,
-      textureBinding,       meshChunksBinding, chunkIndexBinding};
+      textureBinding,       meshChunksBinding, chunkIndexBinding,
+      dfgLutBinding,     envMapBinding,
+      iblSamplerBinding,  shBinding};
 
   constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
   std::array<VkDescriptorBindingFlags, bindingcount> bindingFlags = {
-      0, 0, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT, 0, 0};
+      0, 0, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT, 0, 0,
+      0, 0, 0, 0};
 
   // VkDescriptorBindingFlags flag =
   // VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT |
@@ -1920,9 +1948,63 @@ void GpuScene::init_appl_descriptors() {
     chunkIndexBufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     chunkIndexBufferWrite.pBufferInfo = &chunkIndexBufferInfo;
 
+    VkDescriptorImageInfo dfgInfo{};
+    dfgInfo.imageView = _iblDfgLutView;
+    dfgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet setDfg = {};
+    setDfg.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setDfg.pNext = nullptr;
+    setDfg.dstBinding = 5;
+    setDfg.dstSet = applDescriptorSets[f];
+    setDfg.dstArrayElement = 0;
+    setDfg.descriptorCount = 1;
+    setDfg.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setDfg.pImageInfo = &dfgInfo;
+
+    VkDescriptorImageInfo envInfo{};
+    envInfo.imageView = _iblEnvCubeView;
+    envInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet setEnv = {};
+    setEnv.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setEnv.pNext = nullptr;
+    setEnv.dstBinding = 6;
+    setEnv.dstSet = applDescriptorSets[f];
+    setEnv.dstArrayElement = 0;
+    setEnv.descriptorCount = 1;
+    setEnv.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    setEnv.pImageInfo = &envInfo;
+
+    VkDescriptorImageInfo iblSampInfo{};
+    iblSampInfo.sampler = _iblSampler;
+    VkWriteDescriptorSet setIblSamp = {};
+    setIblSamp.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setIblSamp.pNext = nullptr;
+    setIblSamp.dstBinding = 7;
+    setIblSamp.dstSet = applDescriptorSets[f];
+    setIblSamp.dstArrayElement = 0;
+    setIblSamp.descriptorCount = 1;
+    setIblSamp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    setIblSamp.pImageInfo = &iblSampInfo;
+
+    VkDescriptorBufferInfo shInfo{};
+    shInfo.buffer = _iblSHBuffer;
+    shInfo.offset = 0;
+    shInfo.range = 9 * 16;
+    VkWriteDescriptorSet setSH = {};
+    setSH.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    setSH.pNext = nullptr;
+    setSH.dstBinding = 8;
+    setSH.dstSet = applDescriptorSets[f];
+    setSH.dstArrayElement = 0;
+    setSH.descriptorCount = 1;
+    setSH.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    setSH.pBufferInfo = &shInfo;
+
     std::array<VkWriteDescriptorSet, bindingcount> writes = {
         WriteMaterialToSet,        setSampler,
-        setWriteTexture, meshChunksWrite, chunkIndexBufferWrite};
+        setWriteTexture, meshChunksWrite, chunkIndexBufferWrite,
+        setDfg,           setEnv,
+        setIblSamp,       setSH};
 
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                            writes.data(), 0, nullptr);
