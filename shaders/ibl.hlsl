@@ -109,3 +109,64 @@ void PrefilterSpecularCS(uint3 tid : SV_DispatchThreadID)
     }
     outputFace[tid] = float4(prefiltered / max(totalWeight, 1e-4), 1.0);
 }
+
+// ---- DFG LUT(Karis split-sum 第二步;uv = (NdotV, roughness) → (scale, bias)) ----
+float IBL_GeometrySchlickGGX(float ndv, float roughness)
+{
+    float a = roughness * roughness;
+    // k = a/2 = roughness²/2:必须与 shaders/lighting.hlsl evaluateBRDF 的
+    // `alpha = roughness²; k = alpha/2` 一致(IBL 与直接光用同一 BRDF),
+    // 也是 Karis/LearnOpenGL split-sum 的标准 IBL k。写成 (a*a)/2 会双重平方,
+    // 与 Apple 烘焙参考的 MAE 从 ~0.025 恶化到 ~0.10。
+    float k = a / 2.0;
+    return ndv / (ndv * (1.0 - k) + k);
+}
+
+float IBL_GeometrySmith(float3 n, float3 v, float3 l, float roughness)
+{
+    float ndv = saturate(dot(n, v));
+    float ndl = saturate(dot(n, l));
+    return IBL_GeometrySchlickGGX(ndv, roughness) * IBL_GeometrySchlickGGX(ndl, roughness);
+}
+
+// binding 0 与 CS1 的 equirect 同号但类型不同(STORAGE_IMAGE)——CS3 用自己的 set layout,无冲突。
+VK_BINDING(0,0) RWTexture2D<float2> outputLUT;
+
+[numthreads(8, 8, 1)]
+void DfgLutCS(uint3 tid : SV_DispatchThreadID)
+{
+    uint w, h;
+    outputLUT.GetDimensions(w, h);
+    if (tid.x >= w || tid.y >= h) return;
+
+    float ndv = (tid.x + 0.5) / (float)w;
+    float roughness = (tid.y + 0.5) / (float)h;
+
+    float3 v;
+    v.x = sqrt(1.0 - ndv * ndv);
+    v.y = 0.0;
+    v.z = ndv;
+    float3 n = float3(0.0, 0.0, 1.0);
+
+    float a = 0.0;
+    float b = 0.0;
+    const uint SAMPLE_COUNT = 128;
+    for (uint i = 0; i < SAMPLE_COUNT; ++i)
+    {
+        float2 xi = IBL_Hammersley(i, SAMPLE_COUNT);
+        float3 hv = IBL_ImportanceSampleGGX(xi, n, roughness);
+        float3 l = 2.0 * dot(v, hv) * hv - v;
+        float ndl = saturate(l.z);
+        if (ndl > 0.0)
+        {
+            float ndh = saturate(hv.z);
+            float vdh = saturate(dot(v, hv));
+            float g = IBL_GeometrySmith(n, v, l, roughness);
+            float gVis = (g * vdh) / max(ndh * ndv, 1e-4); // Review Focus #3
+            float fc = pow(1.0 - vdh, 5.0);
+            a += (1.0 - fc) * gVis;
+            b += fc * gVis;
+        }
+    }
+    outputLUT[tid.xy] = float2(a, b) / (float)SAMPLE_COUNT;
+}

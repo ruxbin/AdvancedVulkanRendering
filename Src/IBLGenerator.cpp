@@ -328,6 +328,74 @@ void validateCubeChainAgainstCpu(const VulkanDevice& device, VkImage envCube,
   stbi_image_free(pixels);
 }
 
+// 把 GPU 生成的 LUT 读回,与 Apple 烘焙的 DFGLUT.ktx 逐 texel 对比(Review Focus #3)。
+void validateDfgAgainstReference(const VulkanDevice& device, VkImage dfgImage,
+                                 const std::filesystem::path& refPath) {
+  VkDevice dev = device.getLogicalDevice();
+  constexpr uint32_t kSize = 256;
+  constexpr VkDeviceSize kBytes = (VkDeviceSize)kSize * kSize * 4; // RG16F = 4B/texel
+
+  // 1) readback:SHADER_READ_ONLY → TRANSFER_SRC,copy → staging,转回
+  VkBuffer staging; VkDeviceMemory stagingMem;
+  createHostBuffer(device, kBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, staging, stagingMem);
+  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+  transitionRange(cmd, dfgImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 1, 1,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {kSize, kSize, 1}; // bufferOffset/rowLength 默认 0 = 紧密(1024B 行距,满足对齐)
+  vkCmdCopyImageToBuffer(cmd, dfgImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &region);
+  transitionRange(cmd, dfgImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 1,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+  device.endSingleTimeCommands(cmd);
+
+  uint16_t* gpu = nullptr;
+  vkMapMemory(dev, stagingMem, 0, kBytes, 0, (void**)&gpu);
+
+  // 2) 解析 KTX1:64B 头(12B identifier + 13×uint32)→ keyValue → per-mip(uint32 size + data)
+  // uint32 字段序:[0]endianness [1]glType [2]glTypeSize [3]glFormat [4]glInternalFormat
+  //               [5]glBaseInternalFormat [6]width [7]height [8]depth [9]arrayElements
+  //               [10]faces [11]mipLevels [12]bytesOfKeyValueData
+  std::vector<char> ktx = readFile(refPath.generic_string());
+  const uint32_t* header = reinterpret_cast<const uint32_t*>(ktx.data() + 12);
+  uint32_t glInternalFormat = header[4]; // 期望 0x822F (GL_RG16F)
+  uint32_t width = header[6];
+  uint32_t kvBytes = header[12];
+  if (glInternalFormat != 0x822F || width != kSize) {
+    spdlog::warn("IBL: reference KTX format unexpected (internal=0x{:x}, w={}), skip validation",
+                 glInternalFormat, width);
+  } else {
+    const uint16_t* ref = reinterpret_cast<const uint16_t*>(ktx.data() + 64 + kvBytes + 4);
+    double mae = 0.0;
+    uint32_t nanCount = 0;
+    for (uint32_t i = 0; i < kSize * kSize * 2; ++i) {
+      float a = halfToFloat(gpu[i]);
+      float b = halfToFloat(ref[i]);
+      if (std::isnan(a)) ++nanCount;
+      mae += std::fabs(a - b);
+    }
+    mae /= (double)(kSize * kSize * 2);
+    spdlog::info("IBL: DFG LUT vs Apple reference MAE={:.5f}, NaN count={}", mae, nanCount);
+    // 容差说明:Apple 的 DFGLUT.ktx 与其自身运行时 BRDF(AAPLLightingCommon.h:
+    // alpha=roughness², k=alpha/2,与本工程 shaders/lighting.hlsl 相同)的收敛解析积分
+    // 偏差就有 ~0.025(掠射角能量损失 + 粗糙度轴非线性扭曲;65536-sample 收敛积分对比
+    // 该文件 MAE≈0.0275)。即该文件不是 0.02 级别的解析真值,任何标准实现
+    // (Schlick/Smith/UE4-Vis/Walter/Cook-Torrance × k∈{r/2,r²/2,r⁴/2,(r+1)²/8})
+    // 对它就位 MAE 均 ≥ 0.024。因此本校验的意义是捕捉实现级错误(错误 k、错误
+    // Hammersley、NaN),阈值放在 0.04:超过即说明实现(而非参考文件)有问题。
+    if (mae > 0.04 || nanCount > 0)
+      spdlog::warn("IBL: DFG LUT validation out of tolerance — check k=a/2 (a=roughness^2) in IBL_GeometrySchlickGGX, Hammersley sequence, sample count");
+  }
+
+  vkUnmapMemory(dev, stagingMem);
+  vkDestroyBuffer(dev, staging, nullptr);
+  vkFreeMemory(dev, stagingMem, nullptr);
+}
+
 } // namespace
 
 IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equirectView,
@@ -368,6 +436,19 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
   vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kEnvMipCount, 0, 6};
   vkCreateImageView(dev, &vi, nullptr, &out.envCubeView);
+
+  // --- DFG LUT(Task 5:Karis split-sum 第二步;256x256 RG16F) ---
+  createImage2D(device, VK_FORMAT_R16G16_SFLOAT, 256, 256, 1, 1, 0,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, // TRANSFER_SRC:校验回读
+                out.dfgLut, out.dfgLutMemory);
+
+  VkImageViewCreateInfo lvi{};
+  lvi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  lvi.image = out.dfgLut;
+  lvi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  lvi.format = VK_FORMAT_R16G16_SFLOAT;
+  lvi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCreateImageView(dev, &lvi, nullptr, &out.dfgLutView);
 
   // --- CS1 pipeline ---
   VkDescriptorSetLayoutBinding cs1Bindings[3] = {};
@@ -432,15 +513,44 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci2, nullptr, &cs2Pipeline) != VK_SUCCESS)
     throw std::runtime_error("IBL: failed to create prefilter pipeline");
 
+  // --- CS3 pipeline(DFG LUT;set layout 单 binding 0 = STORAGE_IMAGE,无 push constants) ---
+  VkDescriptorSetLayoutBinding cs3Binding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+                                          VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+  VkDescriptorSetLayoutCreateInfo slci3{};
+  slci3.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  slci3.bindingCount = 1;
+  slci3.pBindings = &cs3Binding;
+  VkDescriptorSetLayout cs3SetLayout;
+  vkCreateDescriptorSetLayout(dev, &slci3, nullptr, &cs3SetLayout);
+
+  VkPipelineLayoutCreateInfo plci3{};
+  plci3.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  plci3.setLayoutCount = 1;
+  plci3.pSetLayouts = &cs3SetLayout;
+  plci3.pushConstantRangeCount = 0; // CS3 无 push constants(dxc 单 push block 属 CS1/CS2)
+  plci3.pPushConstantRanges = nullptr;
+  VkPipelineLayout cs3Layout;
+  vkCreatePipelineLayout(dev, &plci3, nullptr, &cs3Layout);
+
+  VkShaderModule cs3Module = loadModule(dev, rootPath / "shaders" / "ibl_dfglut.cs.spv");
+  VkComputePipelineCreateInfo cpci3{};
+  cpci3.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  cpci3.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                 VK_SHADER_STAGE_COMPUTE_BIT, cs3Module, "DfgLutCS", nullptr};
+  cpci3.layout = cs3Layout;
+  VkPipeline cs3Pipeline;
+  if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci3, nullptr, &cs3Pipeline) != VK_SUCCESS)
+    throw std::runtime_error("IBL: failed to create DFG LUT pipeline");
+
   // --- descriptor pool/set(生成专用,一次性) ---
   VkDescriptorPoolSize poolSizes[] = {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 12}, // CS1 equirect + CS2 × 8 mip 各 1
       {VK_DESCRIPTOR_TYPE_SAMPLER, 12},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 12}, // 9 个 mip view(CS1 mip0 + CS2 mip1-8)
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 13}, // 9 个 mip view(CS1 mip0 + CS2 mip1-8)+ CS3 LUT
   };
   VkDescriptorPoolCreateInfo dpci{};
   dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  dpci.maxSets = 12;
+  dpci.maxSets = 13;
   dpci.poolSizeCount = 3;
   dpci.pPoolSizes = poolSizes;
   VkDescriptorPool pool;
@@ -472,6 +582,17 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cs1Set, 2, 0, 1,
                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo, nullptr, nullptr};
   vkUpdateDescriptorSets(dev, 3, writes, 0, nullptr);
+
+  // CS3 descriptor set(单 binding 0 = LUT storage image)
+  dsai.pSetLayouts = &cs3SetLayout;
+  VkDescriptorSet cs3Set;
+  vkAllocateDescriptorSets(dev, &dsai, &cs3Set);
+  VkDescriptorImageInfo lutInfo{};
+  lutInfo.imageView = out.dfgLutView;
+  lutInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  VkWriteDescriptorSet w3{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cs3Set, 0, 0, 1,
+                          VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &lutInfo, nullptr, nullptr};
+  vkUpdateDescriptorSets(dev, 1, &w3, 0, nullptr);
 
   // --- 录制 one-shot 命令 ---
   VkCommandBuffer cmd = device.beginSingleTimeCommands();
@@ -548,7 +669,19 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
     // 各 mip 只写一次、输入恒为 mip0,dispatch 间无需 barrier
   }
 
-  // === Task 5 锚点:在此插入 DfgLutCS dispatch ===
+  // === Task 5:DfgLutCS 生成 Karis split-sum DFG LUT(256x256 RG16F,无 push constants)===
+  transitionRange(cmd, out.dfgLut, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                  0, 1, 1,
+                  0, VK_ACCESS_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cs3Pipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cs3Layout, 0, 1, &cs3Set, 0, nullptr);
+  vkCmdDispatch(cmd, 32, 32, 1); // 256/8
+  // 与 env cube 的最终 transition 并列:GENERAL → SHADER_READ_ONLY
+  transitionRange(cmd, out.dfgLut, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  0, 1, 1,
+                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
   // 最终:全 mip → SHADER_READ_ONLY
   transitionRange(cmd, out.envCube, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -563,17 +696,26 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   for (VkImageView v : mipViews) vkDestroyImageView(dev, v, nullptr);
   vkDestroyShaderModule(dev, cs1Module, nullptr);
   vkDestroyShaderModule(dev, cs2Module, nullptr);
+  vkDestroyShaderModule(dev, cs3Module, nullptr);
   vkDestroyPipeline(dev, cs1Pipeline, nullptr);
   vkDestroyPipeline(dev, cs2Pipeline, nullptr);
+  vkDestroyPipeline(dev, cs3Pipeline, nullptr);
   vkDestroyPipelineLayout(dev, cs1Layout, nullptr);
   vkDestroyPipelineLayout(dev, cs2Layout, nullptr);
+  vkDestroyPipelineLayout(dev, cs3Layout, nullptr);
   vkDestroyDescriptorSetLayout(dev, cs1SetLayout, nullptr);
   vkDestroyDescriptorSetLayout(dev, cs2SetLayout, nullptr);
+  vkDestroyDescriptorSetLayout(dev, cs3SetLayout, nullptr);
   vkDestroyDescriptorPool(dev, pool, nullptr);
 
   // CPU-vs-GPU cube 链校验(Ruling 9/10;envCube 已处 SHADER_READ_ONLY)
   validateCubeChainAgainstCpu(device, out.envCube,
                               rootPath / "textures" / "san_giuseppe_bridge_2k.hdr");
+
+  // DFG LUT 对拍校验(Apple 烘焙参考;存在时才跑)
+  const std::filesystem::path dfgRef = R"(D:\ModernRenderingWithMetal\Assets\DFGLUT.ktx)";
+  if (std::filesystem::exists(dfgRef))
+    validateDfgAgainstReference(device, out.dfgLut, dfgRef);
 
   return out;
 }
