@@ -1317,6 +1317,28 @@ void GpuScene::init_deferredlighting_descriptors() {
   linearSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   linearSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  // IBL bindings(18-21,see deferredlighting.hlsl)
+  VkDescriptorSetLayoutBinding dfgLutBinding = {};
+  dfgLutBinding.binding = 18;
+  dfgLutBinding.descriptorCount = 1;
+  dfgLutBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  dfgLutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding envCubeBinding = dfgLutBinding;
+  envCubeBinding.binding = 19;
+
+  VkDescriptorSetLayoutBinding iblSamplerBinding = {};
+  iblSamplerBinding.binding = 20;
+  iblSamplerBinding.descriptorCount = 1;
+  iblSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  iblSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutBinding shUboBinding = {};
+  shUboBinding.binding = 21;
+  shUboBinding.descriptorCount = 1;
+  shUboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  shUboBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
   VkDescriptorSetLayoutBinding bindings[] = {albedoBinding,
                                              normalBinding,
                                              emessiveBinding,
@@ -1334,7 +1356,11 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              spotShadowSamplerBinding,
                                              spotViewProjBinding,
                                              scatterVolumeBinding,
-                                             linearSamplerBinding};
+                                             linearSamplerBinding,
+                                             dfgLutBinding,
+                                             envCubeBinding,
+                                             iblSamplerBinding,
+                                             shUboBinding};
 
   VkDescriptorSetLayoutCreateInfo setinfo = {};
   setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1353,9 +1379,10 @@ void GpuScene::init_deferredlighting_descriptors() {
   // other code ....
   // create a descriptor pool that will hold 10 uniform buffers
   std::vector<VkDescriptorPoolSize> sizes = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 14 * framesInFlight}, // 0-4,6,10,13,16
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 4 * framesInFlight},        // 5,7,14,17
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16 * framesInFlight}, // 0-4,6,10,13,16,18,19 + headroom
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 5 * framesInFlight},        // 5,7,14,17,20
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * framesInFlight}, // 8,9,11,12,15 + headroom
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * framesInFlight}, // 21
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -1432,12 +1459,59 @@ void GpuScene::init_deferredlighting_descriptors() {
   setWriteDepth.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   setWriteDepth.pImageInfo = &depthImageInfo;
 
-  std::array<VkWriteDescriptorSet, 6> writes = {setWriteTexture[0],
-                                                setWriteTexture[1],
-                                                setWriteTexture[2],
-                                                setWriteTexture[3],
-                                                setWriteDepth,
-                                                setSampler};
+  VkDescriptorImageInfo dfgInfo{};
+  dfgInfo.imageView = _iblDfgLutView;
+  dfgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkWriteDescriptorSet setDfg = {};
+  setDfg.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setDfg.dstSet = deferredLightingDescriptorSet[f];
+  setDfg.dstBinding = 18;
+  setDfg.dstArrayElement = 0;
+  setDfg.descriptorCount = 1;
+  setDfg.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  setDfg.pImageInfo = &dfgInfo;
+
+  VkDescriptorImageInfo envInfo{};
+  envInfo.imageView = _iblEnvCubeView;
+  envInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkWriteDescriptorSet setEnv = {};
+  setEnv.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setEnv.dstSet = deferredLightingDescriptorSet[f];
+  setEnv.dstBinding = 19;
+  setEnv.dstArrayElement = 0;
+  setEnv.descriptorCount = 1;
+  setEnv.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  setEnv.pImageInfo = &envInfo;
+
+  VkDescriptorImageInfo iblSampInfo{};
+  iblSampInfo.sampler = _iblSampler;
+  VkWriteDescriptorSet setIblSamp = {};
+  setIblSamp.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setIblSamp.dstSet = deferredLightingDescriptorSet[f];
+  setIblSamp.dstBinding = 20;
+  setIblSamp.dstArrayElement = 0;
+  setIblSamp.descriptorCount = 1;
+  setIblSamp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  setIblSamp.pImageInfo = &iblSampInfo;
+
+  VkDescriptorBufferInfo shInfo{};
+  shInfo.buffer = _iblSHBuffer;
+  shInfo.offset = 0;
+  shInfo.range = 9 * 16;
+  VkWriteDescriptorSet setSH = {};
+  setSH.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  setSH.dstSet = deferredLightingDescriptorSet[f];
+  setSH.dstBinding = 21;
+  setSH.dstArrayElement = 0;
+  setSH.descriptorCount = 1;
+  setSH.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  setSH.pBufferInfo = &shInfo;
+
+  std::array<VkWriteDescriptorSet, 10> writes = {setWriteTexture[0], setWriteTexture[1],
+                                                 setWriteTexture[2], setWriteTexture[3],
+                                                 setWriteDepth,      setSampler,
+                                                 setDfg,             setEnv,
+                                                 setIblSamp,         setSH};
 
   vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                          writes.data(), 0, nullptr);

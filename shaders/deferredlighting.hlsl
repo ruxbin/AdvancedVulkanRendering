@@ -1,6 +1,7 @@
 #include "shadercompat.hlsl"
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
+#include "ibl_common.hlsl"
 
 
 
@@ -38,6 +39,14 @@ VK_BINDING(15,1) StructuredBuffer<float4x4> spotViewProjMatrices REGISTER_SRV(15
 // Scatter volume (froxel volumetrics, bound after spot shadow slots).
 VK_BINDING(16,1) Texture3D<float4> scatterAccumVolume REGISTER_SRV(16,1);
 VK_BINDING(17,1) SamplerState linearClampSampler REGISTER_SAMPLER(17,1);
+
+// IBL(Vulkan;DX12 移植前用 guard 隔离)
+#ifndef DX12_BACKEND
+VK_BINDING(18,1) Texture2D<float2> dfgLutTex;
+VK_BINDING(19,1) TextureCube envMap;
+VK_BINDING(20,1) SamplerState iblSampler;
+VK_BINDING(21,1) cbuffer SHCoefficients { float4 shCoefs[9]; };
+#endif
 
 struct VSOutput
 {
@@ -138,7 +147,23 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 
     float ao = aoTexture.SampleLevel(_NearestClampSampler, input.TextureUV, 0);
 
-    half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow * ao;
+    half3 result = lightingShader(surfaceData, depth, worldPosition, frameConstants, cameraParams) * shadow;
+
+#ifndef DX12_BACKEND
+    // IBL:(sun*shadow + IBL) * AO —— 对齐 Apple AAPLLightingCommon.h 的顺序。
+    // sky 像素(depth≈0)不加:随后的 sky 分支会整体覆盖 result。
+    if (frameConstants.iblScale > 0.0f && depth >= 0.0001f)
+    {
+        float3 camPosIBL = float3(cameraParams.invViewMatrix._m03,
+                                  cameraParams.invViewMatrix._m13,
+                                  cameraParams.invViewMatrix._m23);
+        float3 viewDirIBL = normalize(camPosIBL - worldPosition.xyz);
+        result += (half3)IBL(surfaceData, envMap, dfgLutTex, iblSampler, shCoefs,
+                             viewDirIBL, frameConstants.iblScale, frameConstants.iblSpecularScale);
+    }
+#endif
+
+    result *= (half)ao;
 
     // Phase F: for sky pixels (no geometry, depth == 0 in reverse-Z far plane)
     // use the skyColor as the base surface colour so the scatter volume composites
