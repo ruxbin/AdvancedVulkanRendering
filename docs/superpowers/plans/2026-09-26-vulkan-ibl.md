@@ -234,6 +234,11 @@ git commit -m "feat: CPU SH9 irradiance projection from equirect HDR
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+> **勘误(实现后补录,commit 5232332c):** Step 3 的 .cpp 清单有两处缺陷,以实现为准:
+> ① 末行须为 `sh.c[i][ch] = (float)(kA[i] * kY[i] * proj[i][ch] * norm);` —— 浓缩形式要求 `c_i = A_l·kY[i]·L_i`(重建 `E(n)=Σ c_i·f_i(n)`,`Y_i=kY[i]·f_i`),原清单漏乘 `kY[i]`,L00 偏大 1/0.282095≈3.5449 倍;
+> ② 64×32 网格 sinθ-midpoint 正交在 (x²−y²) 通道残留 1.19e-3 > 1e-3 容差,实现按像素 2×2 子采样(颜色仍取 texel 本身,方向/基/权重在子采样点求值)将残留降至 2.96e-4;接口与方向约定不变。
+> 另:3 个新文件需 UTF-8 BOM(MSVC/CP936 会按 GBK 误读无 BOM 文件,与仓库既有文件一致)。
+
 ---
 
 ### Task 2: HDR 资产 + equirect 上传 + initIBL 接线(含兜底资源)
