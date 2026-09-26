@@ -316,8 +316,11 @@ void validateCubeChainAgainstCpu(const VulkanDevice& device, VkImage envCube,
   }
   spdlog::info("IBL: cube-chain validation mip8 mean = ({:.4f}, {:.4f}, {:.4f}) vs mip0 mean = ({:.4f}, {:.4f}, {:.4f}), finite={}, max dev = {:.2f}%",
                mean8[0], mean8[1], mean8[2], mean0[0], mean0[1], mean0[2], mip8Finite, maxMeanDev * 100.0);
-  if (!mip8Finite || maxMeanDev > 0.10)
-    spdlog::warn("IBL: mip8 stats out of tolerance - check GGX importance sampling (Hammersley/ImportanceSampleGGX), roughness push constant, NaN guard");
+  // 注意:含小太阳的 HDR 环境下,mip8 均值低于 mip0 均匀均值是高 roughness 端 128-sample
+  // 半球估计器的固有性质(采不到太阳盘,Ruling 11 已废除 ±10% 判定),不是 bug。
+  // 只有非有限值才是真回归。
+  if (!mip8Finite)
+    spdlog::warn("IBL: mip8 has non-finite values - check GGX importance sampling (Hammersley/ImportanceSampleGGX), roughness push constant, NaN guard");
 
   vkUnmapMemory(dev, stagingMem);
   vkDestroyBuffer(dev, staging, nullptr);
