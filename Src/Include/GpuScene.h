@@ -507,6 +507,30 @@ private:
   void createResolvePipeline();
   void createLinearClampSampler();
 
+  // ---- IBL (runtime-generated, Vulkan only) ----
+  VkImage _equirectImage = VK_NULL_HANDLE;
+  VkDeviceMemory _equirectMemory = VK_NULL_HANDLE;
+  VkImageView _equirectView = VK_NULL_HANDLE;
+
+  VkImage _iblEnvCube = VK_NULL_HANDLE;
+  VkDeviceMemory _iblEnvCubeMemory = VK_NULL_HANDLE;
+  VkImageView _iblEnvCubeView = VK_NULL_HANDLE; // cube view, 9 mips
+
+  VkImage _iblDfgLut = VK_NULL_HANDLE;
+  VkDeviceMemory _iblDfgLutMemory = VK_NULL_HANDLE;
+  VkImageView _iblDfgLutView = VK_NULL_HANDLE;
+
+  VkBuffer _iblSHBuffer = VK_NULL_HANDLE;
+  VkDeviceMemory _iblSHMemory = VK_NULL_HANDLE;
+
+  VkSampler _iblSampler = VK_NULL_HANDLE; // linear/clamp, maxLod=9;Task 7 无条件绑定
+
+  bool _iblAvailable = false;
+
+  void initIBL();
+  bool createEquirectTexture(const std::filesystem::path& hdrPath);
+  void createBlackFallbackIBL();
+
   // Scatter volume (froxel-based volumetric scattering, ported from Metal)
   ScatteringVolume _scatterVolume;
   void createScatterVolume();

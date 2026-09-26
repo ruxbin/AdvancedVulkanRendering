@@ -6,6 +6,7 @@
 #include "PbrtExporter.h"
 #include "Raytracing.h"
 #include "Shadow.h"
+#include "SphericalHarmonics.h"
 #include "ThirdParty/lzfse.h"
 #include "VulkanCompat.h"
 #include "VulkanSetup.h"
@@ -13,6 +14,7 @@
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_vulkan.h"
 #include <SDL.h>
+#include <spdlog/spdlog.h>
 
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -2793,6 +2795,8 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createTextureSampler();
   createNearestClampSampler();
   createLinearClampSampler();
+
+  initIBL(); // 必须在 init_appl_descriptors/init_deferredlighting_descriptors 之前完成
 
   // auto textureRes = createTexture(applMesh->_textures[13]);
   // auto textureRes =
@@ -6079,6 +6083,207 @@ GpuScene::createTexture(const AAPLTextureData &texturedata) {
   }
 
   return std::make_pair(textureImage, currentImage);
+}
+
+// 加载 .hdr equirect 并上传为 RGBA32F 2D 纹理;失败返回 false。
+bool GpuScene::createEquirectTexture(const std::filesystem::path& hdrPath) {
+  int w = 0, h = 0, ch = 0;
+  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  if (!pixels || w <= 0 || h <= 0) {
+    spdlog::warn("IBL: failed to load {}, IBL disabled", hdrPath.generic_string());
+    return false;
+  }
+  spdlog::info("IBL: loaded equirect {} ({}x{})", hdrPath.filename().generic_string(), w, h);
+
+  const VkDeviceSize imageSize = (VkDeviceSize)w * h * 4 * sizeof(float);
+  VkBuffer staging; VkDeviceMemory stagingMem;
+  createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               staging, stagingMem);
+  void* data;
+  vkMapMemory(device.getLogicalDevice(), stagingMem, 0, imageSize, 0, &data);
+  memcpy(data, pixels, imageSize);
+  vkUnmapMemory(device.getLogicalDevice(), stagingMem);
+  stbi_image_free(pixels);
+
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.extent = {(uint32_t)w, (uint32_t)h, 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = 1;
+  imageInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  vkCreateImage(device.getLogicalDevice(), &imageInfo, nullptr, &_equirectImage);
+
+  VkMemoryRequirements memReq;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _equirectImage, &memReq);
+  VkMemoryAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocInfo.allocationSize = memReq.size;
+  allocInfo.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr, &_equirectMemory);
+  vkBindImageMemory(device.getLogicalDevice(), _equirectImage, _equirectMemory, 0);
+
+  device.transitionImageLayout(_equirectImage, imageInfo.format,
+                               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  device.copyBufferToImage(staging, _equirectImage, (uint32_t)w, (uint32_t)h);
+  device.transitionImageLayout(_equirectImage, imageInfo.format,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  vkDestroyBuffer(device.getLogicalDevice(), staging, nullptr);
+  vkFreeMemory(device.getLogicalDevice(), stagingMem, nullptr);
+
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = _equirectImage;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = imageInfo.format;
+  viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCreateImageView(device.getLogicalDevice(), &viewInfo, nullptr, &_equirectView);
+  return true;
+}
+
+// 1×1 黑色兜底:cube(6 层)+ RG16F LUT + 全零 SH UBO。
+// 黑 cube + 零 SH 使 IBL 数学贡献恒为 0,无需 shader 特判。
+void GpuScene::createBlackFallbackIBL() {
+  // --- 1x1x6 black cube ---
+  VkImageCreateInfo ci{};
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.extent = {1, 1, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 6;
+  ci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  vkCreateImage(device.getLogicalDevice(), &ci, nullptr, &_iblEnvCube);
+  VkMemoryRequirements mr;
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _iblEnvCube, &mr);
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = mr.size;
+  ai.memoryTypeIndex = device.findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &_iblEnvCubeMemory);
+  vkBindImageMemory(device.getLogicalDevice(), _iblEnvCube, _iblEnvCubeMemory, 0);
+
+  // --- 1x1 RG16F LUT ---
+  ci.arrayLayers = 1;
+  ci.flags = 0;
+  ci.format = VK_FORMAT_R16G16_SFLOAT;
+  vkCreateImage(device.getLogicalDevice(), &ci, nullptr, &_iblDfgLut);
+  vkGetImageMemoryRequirements(device.getLogicalDevice(), _iblDfgLut, &mr);
+  ai.allocationSize = mr.size;
+  ai.memoryTypeIndex = device.findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &_iblDfgLutMemory);
+  vkBindImageMemory(device.getLogicalDevice(), _iblDfgLut, _iblDfgLutMemory, 0);
+
+  // clear both to black via one-shot command buffer
+  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+  VkImageMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.srcAccessMask = 0;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  VkImageMemoryBarrier barriers[2] = {barrier, barrier};
+  barriers[0].image = _iblEnvCube;
+  barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  barriers[1].image = _iblDfgLut;
+  barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 0, nullptr, 0, nullptr, 2, barriers);
+  VkClearColorValue black = {{0.f, 0.f, 0.f, 1.f}};
+  VkImageSubresourceRange rangeCube = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  VkImageSubresourceRange rangeLut  = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdClearColorImage(cmd, _iblEnvCube, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rangeCube);
+  vkCmdClearColorImage(cmd, _iblDfgLut, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rangeLut);
+  for (auto& b : barriers) {
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  }
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       0, 0, nullptr, 0, nullptr, 2, barriers);
+  device.endSingleTimeCommands(cmd);
+
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+  vi.image = _iblEnvCube;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  vkCreateImageView(device.getLogicalDevice(), &vi, nullptr, &_iblEnvCubeView);
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = VK_FORMAT_R16G16_SFLOAT;
+  vi.image = _iblDfgLut;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCreateImageView(device.getLogicalDevice(), &vi, nullptr, &_iblDfgLutView);
+
+  // zero SH UBO(9 * float4)
+  createBuffer(9 * 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               _iblSHBuffer, _iblSHMemory);
+  void* p;
+  vkMapMemory(device.getLogicalDevice(), _iblSHMemory, 0, 9 * 16, 0, &p);
+  memset(p, 0, 9 * 16);
+  vkUnmapMemory(device.getLogicalDevice(), _iblSHMemory);
+
+  // IBL sampler(Task 7 无条件绑定;规格与 IBLGenerator 成功路径一致:linear/clamp, maxLod=9)
+  VkSamplerCreateInfo samplerInfo{};
+  samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  samplerInfo.magFilter = VK_FILTER_LINEAR;
+  samplerInfo.minFilter = VK_FILTER_LINEAR;
+  samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.maxLod = 9.0f;
+  vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr, &_iblSampler);
+}
+
+void GpuScene::initIBL() {
+  const auto hdrPath = _rootPath / "textures" / "san_giuseppe_bridge_2k.hdr";
+
+  int w = 0, h = 0, ch = 0;
+  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  if (!pixels) {
+    spdlog::warn("IBL: {} not found or unreadable, using black fallback", hdrPath.generic_string());
+    createBlackFallbackIBL();
+    _iblAvailable = false;
+    return;
+  }
+
+  SH9 sh = ComputeSH9FromEquirect(pixels, w, h);
+  stbi_image_free(pixels); // 注意:createEquirectTexture 会重新加载;为省事让它自己读。
+
+  if (!createEquirectTexture(hdrPath)) {
+    createBlackFallbackIBL();
+    _iblAvailable = false;
+    return;
+  }
+
+  // SH UBO(float4[9],w 分量置 0)
+  createBuffer(9 * 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+               _iblSHBuffer, _iblSHMemory);
+  float shGpu[9][4] = {};
+  for (int i = 0; i < 9; ++i)
+    for (int c = 0; c < 3; ++c) shGpu[i][c] = sh.c[i][c];
+  void* p;
+  vkMapMemory(device.getLogicalDevice(), _iblSHMemory, 0, sizeof(shGpu), 0, &p);
+  memcpy(p, shGpu, sizeof(shGpu));
+  vkUnmapMemory(device.getLogicalDevice(), _iblSHMemory);
+
+  _iblAvailable = true; // envCube/dfgLut 由 Task 3-5 的 IBLGenerator 填充
 }
 
 bool updated = false;
