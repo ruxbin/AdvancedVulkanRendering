@@ -6505,6 +6505,54 @@ void GpuScene::initIBL() {
   }
 
   SH9 sh = ComputeSH9FromEquirect(pixels, w, h);
+
+  // SH 半球排序启动自检(回归守卫,对应 shader 端 evaluateShCoefficients(+N)):
+  // 用与 shader 相同的浓缩基在 ±Y 极点重建辐照度。在 n=(0,±1,0) 处
+  // yx/yz/zx 项为 0,(3z²-1)=-1;x²-y²=-1 在 +Y/-Y 取值相同(都是 -c8),
+  // 排序比较中相互抵消,故按下式省略:E(+Y)=c0+c1-c6,E(-Y)=c0-c1-c6。
+  // 再与 equirect 像素直接积分的 +Y/-Y 半球均值(sinθ 加权)比对排序,
+  // 任何未来资产的符号/方向约定翻转都会在启动时暴露。
+  {
+    double eUp[3], eDown[3];
+    for (int ch = 0; ch < 3; ++ch) {
+      eUp[ch] = (double)sh.c[0][ch] + sh.c[1][ch] - sh.c[6][ch];
+      eDown[ch] = (double)sh.c[0][ch] - sh.c[1][ch] - sh.c[6][ch];
+    }
+    constexpr float kPiF = 3.1415926535897932f;
+    double sumUp[3] = {}, sumDown[3] = {}, wUp = 0.0, wDown = 0.0;
+    for (int y = 0; y < h; ++y) {
+      const float theta = ((y + 0.5f) / h) * kPiF; // 0..π,自 +Y 起
+      const double sinT = std::sin(theta);
+      const double dy = std::cos(theta);
+      double* dst = (dy > 0.0) ? sumUp : sumDown;
+      double& wDst = (dy > 0.0) ? wUp : wDown;
+      for (int x = 0; x < w; ++x) {
+        const float* px = pixels + ((size_t)y * (size_t)w + (size_t)x) * 4;
+        for (int ch = 0; ch < 3; ++ch) dst[ch] += (double)px[ch] * sinT;
+        wDst += sinT;
+      }
+    }
+    double meanUp[3] = {}, meanDown[3] = {};
+    for (int ch = 0; ch < 3; ++ch) {
+      meanUp[ch] = wUp > 0.0 ? sumUp[ch] / wUp : 0.0;
+      meanDown[ch] = wDown > 0.0 ? sumDown[ch] / wDown : 0.0;
+    }
+    spdlog::info("IBL: SH E(+Y)=({:.4f},{:.4f},{:.4f}) E(-Y)=({:.4f},{:.4f},{:.4f})",
+                 eUp[0], eUp[1], eUp[2], eDown[0], eDown[1], eDown[2]);
+    spdlog::info("IBL: equirect mean +Y=({:.4f},{:.4f},{:.4f}) -Y=({:.4f},{:.4f},{:.4f})",
+                 meanUp[0], meanUp[1], meanUp[2], meanDown[0], meanDown[1], meanDown[2]);
+    constexpr double kOrderEps = 1e-3;
+    for (int ch = 0; ch < 3; ++ch) {
+      const double dSh = eUp[ch] - eDown[ch];
+      const double dMean = meanUp[ch] - meanDown[ch];
+      if (std::abs(dSh) > kOrderEps && std::abs(dMean) > kOrderEps &&
+          (dSh > 0.0) != (dMean > 0.0)) {
+        spdlog::warn("IBL: SH hemisphere ordering mismatch vs equirect — check direction conventions");
+        break;
+      }
+    }
+  }
+
   stbi_image_free(pixels); // 注意:createEquirectTexture 会重新加载;为省事让它自己读。
 
   if (!createEquirectTexture(hdrPath)) {
