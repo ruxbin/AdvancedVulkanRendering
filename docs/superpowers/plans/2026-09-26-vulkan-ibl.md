@@ -1482,7 +1482,7 @@ float3 IBL(AAPLPixelSurfaceData surface,
            float scale,
            float specularScale)
 {
-    float3 diffuseIBL = evaluateShCoefficients(-(float3)surface.normal) * (float3)surface.albedo;
+    float3 diffuseIBL = evaluateShCoefficients((float3)surface.normal, sh) * (float3)surface.albedo;
 
     float perceptualRoughness = (float)surface.roughness;
     float NoV = max(dot((float3)surface.normal, viewDir), 0.0);
@@ -1491,6 +1491,7 @@ float3 IBL(AAPLPixelSurfaceData surface,
     const float mipLevels = 8.0; // 9 mip 链的最后一级(256..1)
     float lod = perceptualRoughness * mipLevels;
     float3 indirectSpecular = envMap.SampleLevel(samp, r, lod).rgb;
+    indirectSpecular = min(indirectSpecular, 8192.0); // fp16 RT 上限 65504:8192*1.15*4≈37.6k(见 Task 7 勘误)
 
     float2 dfg = dfgLut.SampleLevel(samp, float2(NoV, perceptualRoughness), 0);
     float3 specularColor = (float3)surface.F0 * dfg.x + dfg.y;
@@ -1499,6 +1500,11 @@ float3 IBL(AAPLPixelSurfaceData surface,
     return (diffuseIBL + specularIBL * specularScale) * scale;
 }
 ```
+
+> **勘误(实现后补录):** 本节清单相对初版计划有三处修正,已直接体现在上方代码中:
+> ① `IBL()` 调 `evaluateShCoefficients` 必须传 `sh` 参数(初版漏写,dxc 编译即报,实现期修正,Ruling 15);
+> ② SH 求值方向为 **+N**——初版照抄 Apple 的 `-N` 调用,但那只对 Apple 反号约定的硬编码系数成立;本实现系数是标准辐射投影(Task 1 单测钉死 top-heavy ⇒ c[1]>0),`-N` 会把奇次带(上下不对称项)镜像反转(全分支终审发现,fix commit cccedbc);
+> ③ 新增 `min(indirectSpecular, 8192.0)` 钳制——deferred HDR RT 是 fp16(上限 65504),未钳制时太阳像素(60000)×specularColor×iblSpecularScale(4) 可溢出为 inf,经 ACES 变 NaN 并被 TAA 历史扩散(终审 Important)。
 
 - [ ] **Step 2: deferredlighting.hlsl 修改**
 
