@@ -1,16 +1,19 @@
 ﻿// ibl.hlsl — IBL 运行时生成内核(Vulkan only,DX12 批处理不编译本文件)。
 //
 // equirect 方向约定(必须与 Src/SphericalHarmonics.h 注释逐字一致):
-//   u = atan2(dir.x, dir.z) / (2π) + 0.5
-//   v = acos(dir.y) / π            (v=0 端 = +Y)
-// 逆映射:φ=(u-0.5)*2π,θ=v*π;dir=(sinθ sinφ, cosθ, sinθ cosφ)
+//   u = atan2(-dir.x, dir.z) / (2π) + 0.5
+//   v = acos(dir.y) / π             (v=0 端 = +Y)
+// 逆映射:φ=(u-0.5)*2π,θ=v*π;dir=(-sinθ sinφ, cosθ, sinθ cosφ)
+// 注意:-dir.x(方位角镜像)是对 Apple 烘焙 KTX 的实证校准:
+// 该镜像使 san_giuseppe 环境太阳与 bistro scene.scene 的 sun_direction 同侧
+// (详见 docs/superpowers/specs/2026-09-26-vulkan-ibl-design.md 勘误)。
 #include "shadercompat.hlsl"
 
 static const float IBL_PI = 3.1415926535897932f;
 
 float2 DirectionToEquirectUV(float3 d)
 {
-    float phi = atan2(d.x, d.z);
+    float phi = atan2(-d.x, d.z);
     float theta = acos(clamp(d.y, -1.0, 1.0));
     return float2(phi / (2.0 * IBL_PI) + 0.5, theta / IBL_PI);
 }
@@ -37,9 +40,16 @@ VK_BINDING(1,0) SamplerState iblLinearSampler;
 VK_BINDING(2,0) RWTexture2DArray<float4> outputFace;
 
 // CS1/CS2 共用一个 push constant block(dxc 每个编译单元只允许一个 [[vk::push_constant]])。
-// CS1 只用 mipSize;CS2 用 mipSize + roughness。两者 C++ 侧都是 16 字节。
-struct IblPushConstants { uint mipSize; float roughness; uint _pad0; uint _pad1; };
+// CS1 用 mipSize + encodeOutput;CS2 用 mipSize + roughness。两者都是 16 字节。
+struct IblPushConstants { uint mipSize; float roughness; uint encodeOutput; uint _pad1; };
 DECLARE_PUSH_CONSTANTS(IblPushConstants, iblPc, 0);
+
+// Filament RGBM stores sqrt(linear)/16; Apple's sample decodes with 6*rgb*a.
+// Store that shader-visible value directly. Filtering must happen BEFORE this transform.
+float3 MetalEnvironmentValue(float3 linearColor)
+{
+    return 0.375 * sqrt(clamp(linearColor, 0.0, 256.0));
+}
 
 [numthreads(8, 8, 1)]
 void EquirectToCubeCS(uint3 tid : SV_DispatchThreadID)
@@ -48,8 +58,8 @@ void EquirectToCubeCS(uint3 tid : SV_DispatchThreadID)
     float2 uv = (tid.xy + 0.5) / (float)iblPc.mipSize;
     float3 dir = CubeFaceDirection(tid.z, uv);
     float3 color = equirectTex.SampleLevel(iblLinearSampler, DirectionToEquirectUV(dir), 0).rgb;
-    // R16G16B16A16_SFLOAT 上限 65504;超高动态像素(太阳)clamp 防 inf(Review Focus #2)
-    outputFace[tid] = float4(min(color, 60000.0), 1.0);
+    color = clamp(color, 0.0, 256.0);
+    outputFace[tid] = float4(iblPc.encodeOutput ? MetalEnvironmentValue(color) : color, 1.0);
 }
 
 // ---- 预过滤(GGX 重要性采样,split-sum 第一步;Epic/Karis) ----
@@ -92,7 +102,7 @@ void PrefilterSpecularCS(uint3 tid : SV_DispatchThreadID)
     float3 N = CubeFaceDirection(tid.z, uv);
     float3 V = N;
 
-    const uint SAMPLE_COUNT = 128;
+    const uint SAMPLE_COUNT = 1024;
     float totalWeight = 0.0;
     float3 prefiltered = 0.0;
     for (uint i = 0; i < SAMPLE_COUNT; ++i)
@@ -107,26 +117,19 @@ void PrefilterSpecularCS(uint3 tid : SV_DispatchThreadID)
             totalWeight += ndl;
         }
     }
-    outputFace[tid] = float4(prefiltered / max(totalWeight, 1e-4), 1.0);
+    outputFace[tid] = float4(MetalEnvironmentValue(prefiltered / max(totalWeight, 1e-4)), 1.0);
 }
 
 // ---- DFG LUT(Karis split-sum 第二步;uv = (NdotV, roughness) → (scale, bias)) ----
-float IBL_GeometrySchlickGGX(float ndv, float roughness)
+float IBL_MetalVisibility(float ndv, float ndl, float roughness)
 {
-    float a = roughness * roughness;
-    // k = a/2 = roughness²/2:必须与 shaders/lighting.hlsl evaluateBRDF 的
-    // `alpha = roughness²; k = alpha/2` 一致(IBL 与直接光用同一 BRDF),
-    // 也是 Karis/LearnOpenGL split-sum 的标准 IBL k。写成 (a*a)/2 会双重平方,
-    // 与 Apple 烘焙参考的 MAE 从 ~0.025 恶化到 ~0.10。
-    float k = a / 2.0;
-    return ndv / (ndv * (1.0 - k) + k);
-}
-
-float IBL_GeometrySmith(float3 n, float3 v, float3 l, float roughness)
-{
-    float ndv = saturate(dot(n, v));
-    float ndl = saturate(dot(n, l));
-    return IBL_GeometrySchlickGGX(ndv, roughness) * IBL_GeometrySchlickGGX(ndl, roughness);
+    // Empirically matches Apple's DFGLUT.ktx: height-correlated Smith with
+    // alpha=roughness here, while the GGX sampling NDF uses alpha=roughness^2.
+    // This is an asset compatibility convention, not the direct-light BRDF.
+    float a2 = roughness * roughness;
+    float gv = ndl * sqrt(ndv * ndv * (1.0 - a2) + a2);
+    float gl = ndv * sqrt(ndl * ndl * (1.0 - a2) + a2);
+    return 0.5 / max(gv + gl, 1e-7);
 }
 
 // binding 0 与 CS1 的 equirect 同号但类型不同(STORAGE_IMAGE)——CS3 用自己的 set layout,无冲突。
@@ -150,7 +153,7 @@ void DfgLutCS(uint3 tid : SV_DispatchThreadID)
 
     float a = 0.0;
     float b = 0.0;
-    const uint SAMPLE_COUNT = 128;
+    const uint SAMPLE_COUNT = 4096;
     for (uint i = 0; i < SAMPLE_COUNT; ++i)
     {
         float2 xi = IBL_Hammersley(i, SAMPLE_COUNT);
@@ -161,8 +164,8 @@ void DfgLutCS(uint3 tid : SV_DispatchThreadID)
         {
             float ndh = saturate(hv.z);
             float vdh = saturate(dot(v, hv));
-            float g = IBL_GeometrySmith(n, v, l, roughness);
-            float gVis = (g * vdh) / max(ndh * ndv, 1e-4); // Review Focus #3
+            float visibility = IBL_MetalVisibility(ndv, ndl, roughness);
+            float gVis = 4.0 * visibility * ndl * vdh / max(ndh, 1e-7);
             float fc = pow(1.0 - vdh, 5.0);
             a += (1.0 - fc) * gVis;
             b += fc * gVis;

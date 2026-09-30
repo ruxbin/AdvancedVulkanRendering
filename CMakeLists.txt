@@ -69,9 +69,7 @@ include_directories(${CMAKE_CURRENT_LIST_DIR}/ThirdParty/json/single_include)
 add_subdirectory(Src/)
 #add_subdirectory(Examples/)
 
-#include(CTest)
-#enable_testing()
-
-#if (BUILD_TESTS)
-#    add_subdirectory(Tests)
-#endif()
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(Tests)
+endif()

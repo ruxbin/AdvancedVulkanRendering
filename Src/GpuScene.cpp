@@ -6504,7 +6504,7 @@ void GpuScene::initIBL() {
     return;
   }
 
-  SH9 sh = ComputeSH9FromEquirect(pixels, w, h);
+  SH9 sh = ComputeMetalSH9FromEquirect(pixels, w, h);
 
   // SH 半球排序启动自检(回归守卫,对应 shader 端 evaluateShCoefficients(+N)):
   // 用与 shader 相同的浓缩基在 ±Y 极点重建辐照度。在 n=(0,±1,0) 处

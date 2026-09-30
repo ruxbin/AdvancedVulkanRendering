@@ -1,6 +1,7 @@
 ﻿#include "SphericalHarmonics.h"
 
 #include <cmath>
+#include <vector>
 
 namespace {
 constexpr float kPi = 3.1415926535897932f;
@@ -54,7 +55,8 @@ SH9 ComputeSH9FromEquirect(const float* rgba, int width, int height) {
         for (int sx = 0; sx < kSubSamples; ++sx) {
           const float u = (x + (sx + 0.5f) / kSubSamples) / width;
           const float phi = (u - 0.5f) * 2.0f * kPi;
-          const float dx = sinTheta * std::sin(phi);
+          // 方位角镜像(对 Apple 烘焙 KTX 的实证校准,见头文件约定注释)
+          const float dx = -sinTheta * std::sin(phi);
           const float dy = cosTheta;
           const float dz = sinTheta * std::cos(phi);
 
@@ -78,5 +80,17 @@ SH9 ComputeSH9FromEquirect(const float* rgba, int width, int height) {
   for (int i = 0; i < 9; ++i)
     for (int ch = 0; ch < 3; ++ch)
       sh.c[i][ch] = (float)(kA[i] * kY[i] * proj[i][ch] * norm);
+  return sh;
+}
+
+SH9 ComputeMetalSH9FromEquirect(const float* rgba, int width, int height) {
+  if (!rgba || width <= 0 || height <= 0) return SH9{};
+  std::vector<float> bounded(rgba, rgba + size_t(width) * height * 4);
+  for (float& v : bounded) v = v < 0.0f ? 0.0f : (v > 256.0f ? 256.0f : v);
+  SH9 sh = ComputeSH9FromEquirect(bounded.data(), width, height);
+  for (int i = 0; i < 9; ++i) {
+    const float sign = (i == 2 || i == 5 || i == 7) ? -1.0f : 1.0f;
+    for (int c = 0; c < 3; ++c) sh.c[i][c] *= sign / (kPi * kY[i]);
+  }
   return sh;
 }

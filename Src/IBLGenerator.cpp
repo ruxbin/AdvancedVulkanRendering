@@ -1,6 +1,8 @@
 ﻿#include "IBLGenerator.h"
 
 #include "Common.h"       // readFile
+#include "KtxTexture.h"   // KTX1 解析(Apple 烘焙 cube 对拍)
+#include "SphericalHarmonics.h" // SH9 计算(SH E(n) 对拍)
 #include "VulkanSetup.h"  // VulkanDevice
 
 #include <spdlog/spdlog.h>
@@ -8,7 +10,9 @@
 // STB_IMAGE_IMPLEMENTATION 已在 GpuScene.cpp 定义;此处仅声明。
 #include "stb_image.h"
 
+#include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -118,6 +122,12 @@ void createHostBuffer(const VulkanDevice& device, VkDeviceSize size, VkBufferUsa
 
 struct Vec3 { float x, y, z; };
 
+Vec3 normalizeVec3(Vec3 v) {
+  const float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  const float inv = len > 0.0f ? 1.0f / len : 0.0f;
+  return {v.x * inv, v.y * inv, v.z * inv};
+}
+
 constexpr float kPiF = 3.1415926535897932f;
 
 // 与 shaders/ibl.hlsl CubeFaceDirection 逐字一致(含 normalize)。
@@ -152,9 +162,10 @@ uint32_t faceForDirection(Vec3 d, float& sc, float& tc) {
   sc = -d.x / az; tc = -d.y / az; return 5;
 }
 
-// 与 DirectionToEquirectUV 逐字一致:u = atan2(x,z)/(2π)+0.5,v = acos(y)/π。
+// 与 DirectionToEquirectUV 逐字一致:u = atan2(-x,z)/(2π)+0.5,v = acos(y)/π。
+// (方位角镜像 = 对 Apple 烘焙 KTX 的实证校准,见 SphericalHarmonics.h 约定注释)
 void directionToEquirectUV(Vec3 d, float& u, float& v) {
-  float phi = std::atan2(d.x, d.z);
+  float phi = std::atan2(-d.x, d.z);
   float cy = d.y < -1.0f ? -1.0f : (d.y > 1.0f ? 1.0f : d.y);
   float theta = std::acos(cy);
   u = phi / (2.0f * kPiF) + 0.5f;
@@ -283,7 +294,7 @@ void validateCubeChainAgainstCpu(const VulkanDevice& device, VkImage envCube,
     gpuTexel(0, face, x, y, kSize, gpuV);
     const float* cpuf = &cpu.x;
     for (int c = 0; c < 3; ++c) {
-      float expect = cpuf[c] < 60000.0f ? cpuf[c] : 60000.0f; // CS1 的 clamp
+      float expect = 0.375f * std::sqrt((std::max)(0.0f, (std::min)(cpuf[c], 256.0f)));
       float denom = std::fabs(expect) > 1e-3f ? std::fabs(expect) : 1e-3f;
       double rel = std::fabs((double)gpuV[c] - expect) / denom;
       if (rel > maxRelErr) { maxRelErr = rel; worstFace = face; worstX = x; worstY = y; }
@@ -316,9 +327,8 @@ void validateCubeChainAgainstCpu(const VulkanDevice& device, VkImage envCube,
   }
   spdlog::info("IBL: cube-chain validation mip8 mean = ({:.4f}, {:.4f}, {:.4f}) vs mip0 mean = ({:.4f}, {:.4f}, {:.4f}), finite={}, max dev = {:.2f}%",
                mean8[0], mean8[1], mean8[2], mean0[0], mean0[1], mean0[2], mip8Finite, maxMeanDev * 100.0);
-  // 注意:含小太阳的 HDR 环境下,mip8 均值低于 mip0 均匀均值是高 roughness 端 128-sample
-  // 半球估计器的固有性质(采不到太阳盘,Ruling 11 已废除 ±10% 判定),不是 bug。
-  // 只有非有限值才是真回归。
+  // These means use different direction sets after a nonlinear output transform;
+  // equality is not an invariant. Numerical parity is checked per mip below.
   if (!mip8Finite)
     spdlog::warn("IBL: mip8 has non-finite values - check GGX importance sampling (Hammersley/ImportanceSampleGGX), roughness push constant, NaN guard");
 
@@ -334,6 +344,21 @@ void validateDfgAgainstReference(const VulkanDevice& device, VkImage dfgImage,
   VkDevice dev = device.getLogicalDevice();
   constexpr uint32_t kSize = 256;
   constexpr VkDeviceSize kBytes = (VkDeviceSize)kSize * kSize * 4; // RG16F = 4B/texel
+
+  KtxTexture ktx;
+  std::string error;
+  if (!ktx.load(refPath, error)) {
+    spdlog::warn("IBL: DFG validation skipped: {}", error);
+    return;
+  }
+  const auto& header = ktx.header();
+  const auto reference = ktx.faceImage(0, 0);
+  if (header.glType != 0x140B || header.glTypeSize != 2 || header.glFormat != 0x8227 ||
+      header.glInternalFormat != 0x822F || header.width != kSize || header.height != kSize ||
+      header.faces != 1 || header.mipLevels != 1 || reference.size != kBytes) {
+    spdlog::warn("IBL: DFG reference must be a 256x256 RG16F 2D KTX, skip validation");
+    return;
+  }
 
   // 1) readback:SHADER_READ_ONLY → TRANSFER_SRC,copy → staging,转回
   VkBuffer staging; VkDeviceMemory stagingMem;
@@ -354,52 +379,258 @@ void validateDfgAgainstReference(const VulkanDevice& device, VkImage dfgImage,
   device.endSingleTimeCommands(cmd);
 
   uint16_t* gpu = nullptr;
-  vkMapMemory(dev, stagingMem, 0, kBytes, 0, (void**)&gpu);
-
-  // 2) 解析 KTX1:64B 头(12B identifier + 13×uint32)→ keyValue → per-mip(uint32 size + data)
-  // uint32 字段序:[0]endianness [1]glType [2]glTypeSize [3]glFormat [4]glInternalFormat
-  //               [5]glBaseInternalFormat [6]width [7]height [8]depth [9]arrayElements
-  //               [10]faces [11]mipLevels [12]bytesOfKeyValueData
-  std::vector<char> ktx = readFile(refPath.generic_string());
-  if (ktx.size() < 64) {
-    spdlog::warn("IBL: reference KTX too small ({} bytes), skip validation", ktx.size());
-    vkUnmapMemory(dev, stagingMem);
+  if (vkMapMemory(dev, stagingMem, 0, kBytes, 0, (void**)&gpu) != VK_SUCCESS) {
     vkDestroyBuffer(dev, staging, nullptr);
     vkFreeMemory(dev, stagingMem, nullptr);
+    spdlog::warn("IBL: DFG readback mapping failed, skip validation");
     return;
   }
-  const uint32_t* header = reinterpret_cast<const uint32_t*>(ktx.data() + 12);
-  uint32_t glInternalFormat = header[4]; // 期望 0x822F (GL_RG16F)
-  uint32_t width = header[6];
-  uint32_t height = header[7];
-  uint32_t mipLevels = header[11];
-  uint32_t kvBytes = header[12];
-  // 解析前边界校验:dev-only 校验,超差直接 warn + skip(不 throw)。
-  if (glInternalFormat != 0x822F || width != kSize || height != kSize || mipLevels != 1 ||
-      (uint64_t)64 + kvBytes + 4 + kBytes > (uint64_t)ktx.size()) {
-    spdlog::warn("IBL: reference KTX format unexpected (internal=0x{:x}, w={}, h={}, mips={}, size={}), skip validation",
-                 glInternalFormat, width, height, mipLevels, ktx.size());
-  } else {
-    const uint16_t* ref = reinterpret_cast<const uint16_t*>(ktx.data() + 64 + kvBytes + 4);
+
+  // Reference payload was validated before allocating GPU readback resources.
+  {
     double mae = 0.0;
     uint32_t nanCount = 0;
     for (uint32_t i = 0; i < kSize * kSize * 2; ++i) {
       float a = halfToFloat(gpu[i]);
-      float b = halfToFloat(ref[i]);
-      if (std::isnan(a)) ++nanCount;
+      uint16_t bits;
+      std::memcpy(&bits, reference.data + i * sizeof(bits), sizeof(bits));
+      float b = halfToFloat(bits);
+      if (!std::isfinite(a) || !std::isfinite(b)) { ++nanCount; continue; }
       mae += std::fabs(a - b);
     }
     mae /= (double)(kSize * kSize * 2);
-    spdlog::info("IBL: DFG LUT vs Apple reference MAE={:.5f}, NaN count={}", mae, nanCount);
-    // 容差说明:Apple 的 DFGLUT.ktx 与其自身运行时 BRDF(AAPLLightingCommon.h:
-    // alpha=roughness², k=alpha/2,与本工程 shaders/lighting.hlsl 相同)的收敛解析积分
-    // 偏差就有 ~0.025(掠射角能量损失 + 粗糙度轴非线性扭曲;65536-sample 收敛积分对比
-    // 该文件 MAE≈0.0275)。即该文件不是 0.02 级别的解析真值,任何标准实现
-    // (Schlick/Smith/UE4-Vis/Walter/Cook-Torrance × k∈{r/2,r²/2,r⁴/2,(r+1)²/8})
-    // 对它就位 MAE 均 ≥ 0.024。因此本校验的意义是捕捉实现级错误(错误 k、错误
-    // Hammersley、NaN),阈值放在 0.04:超过即说明实现(而非参考文件)有问题。
-    if (mae > 0.04 || nanCount > 0)
-      spdlog::warn("IBL: DFG LUT validation out of tolerance — check k=a/2 (a=roughness^2) in IBL_GeometrySchlickGGX, Hammersley sequence, sample count");
+    spdlog::info("IBL: DFG LUT vs Apple reference MAE={:.5f}, non-finite count={}", mae, nanCount);
+    // The reference matches correlated Smith with alpha=r in visibility and
+    // alpha=r^2 in the sampling NDF. Do not infer this LUT from direct lighting.
+    if (mae >= 0.003 || nanCount > 0)
+      spdlog::warn("IBL: DFG LUT MAE exceeds 0.003 or contains non-finite data; check Metal visibility convention and sampling");
+  }
+
+  vkUnmapMemory(dev, stagingMem);
+  vkDestroyBuffer(dev, staging, nullptr);
+  vkFreeMemory(dev, stagingMem, nullptr);
+}
+
+} // namespace
+
+namespace {
+
+// 与 Apple 烘焙的预过滤 cube(san_giuseppe_bridge_4k_ibl.ktx,RGBA8 RGBM 打包)
+// 逐 mip 对比,并与 Metal 硬编码 SH 常数做「求值后辐照度」E(n) 对比(约定无关)。
+// RGBM 输出范围为 [0,6],本项目保留 HDR。排除任一侧 >=5.5 的颜色分量,
+// 同时报绝对误差与统一曝光归一后的结构误差。参考烘焙源/曝光/预过滤流程未知,
+// 因此该对拍只用于排查朝向,不能作为逐像素等价性判定。
+void validateEnvCubeAgainstAppleKtx(const VulkanDevice& device, VkImage envCube,
+                                    const std::filesystem::path& refPath,
+                                    const std::filesystem::path& hdrPath) {
+  KtxTexture ktx;
+  std::string kerr;
+  if (!ktx.load(refPath, kerr)) {
+    spdlog::warn("IBL: Apple KTX validation skipped: {}", kerr);
+    return;
+  }
+  if (ktx.header().width != IBLGenerator::kEnvMapSize ||
+      ktx.header().height != IBLGenerator::kEnvMapSize || ktx.header().faces != 6 ||
+      ktx.header().mipLevels != IBLGenerator::kEnvMipCount) {
+    spdlog::warn("IBL: Apple KTX layout unexpected, skip validation");
+    return;
+  }
+
+  // ---- 1) 全 mip 回读我们的 cube ----
+  constexpr uint32_t kMips = IBLGenerator::kEnvMipCount;
+  std::array<std::array<std::vector<float>, 6>, kMips> reference;
+  for (uint32_t m = 0; m < kMips; ++m)
+    for (uint32_t f = 0; f < 6; ++f) {
+      uint32_t w = 0, h = 0;
+      const uint32_t size = IBLGenerator::kEnvMapSize >> m;
+      if (!ktx.decodeFaceRGBM(m, f, reference[m][f], w, h) || w != size || h != size) {
+        spdlog::warn("IBL: invalid RGBM reference at mip {} face {}, skip validation", m, f);
+        return;
+      }
+    }
+  VkDeviceSize offsets[kMips] = {};
+  VkDeviceSize total = 0;
+  for (uint32_t m = 0; m < kMips; ++m) {
+    offsets[m] = total;
+    const uint32_t s = IBLGenerator::kEnvMapSize >> m;
+    total += (VkDeviceSize)s * s * 6 * 8; // RGBA16F
+  }
+  VkDevice dev = device.getLogicalDevice();
+  VkBuffer staging; VkDeviceMemory stagingMem;
+  createHostBuffer(device, total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, staging, stagingMem);
+  VkCommandBuffer cmd = device.beginSingleTimeCommands();
+  transitionRange(cmd, envCube, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, kMips, 6,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+  VkBufferImageCopy regions[kMips] = {};
+  for (uint32_t m = 0; m < kMips; ++m) {
+    const uint32_t s = IBLGenerator::kEnvMapSize >> m;
+    regions[m].bufferOffset = offsets[m];
+    regions[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 6};
+    regions[m].imageExtent = {s, s, 1};
+  }
+  vkCmdCopyImageToBuffer(cmd, envCube, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, kMips, regions);
+  transitionRange(cmd, envCube, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, kMips, 6,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+  device.endSingleTimeCommands(cmd);
+  const uint16_t* gpu = nullptr;
+  if (vkMapMemory(dev, stagingMem, 0, total, 0, (void**)&gpu) != VK_SUCCESS) {
+    vkDestroyBuffer(dev, staging, nullptr);
+    vkFreeMemory(dev, stagingMem, nullptr);
+    spdlog::warn("IBL: env reference readback mapping failed, skip validation");
+    return;
+  }
+
+  // ---- 2) 逐 mip 图像对比 ----
+  spdlog::info("IBL: env cube vs Apple KTX (sat = excluded RGB components >=5.5 on either side):");
+  for (uint32_t m = 0; m < kMips; ++m) {
+    const uint32_t s = IBLGenerator::kEnvMapSize >> m;
+    double sumRel = 0.0, sumOurs = 0.0, sumApple = 0.0;
+    uint64_t unsat = 0, sat = 0, nonFinite = 0;
+    double worstFaceErr = -1.0;
+    uint32_t worstFace = 0;
+    for (uint32_t f = 0; f < 6; ++f) {
+      const auto& apple = reference[m][f];
+      const uint16_t* base = gpu + offsets[m] / 2; // uint16 元素
+      for (uint32_t y = 0; y < s; ++y)
+        for (uint32_t x = 0; x < s; ++x) {
+          const size_t ti = (size_t)(y * s + x);
+          for (int c = 0; c < 3; ++c) {
+            const float a = apple[ti * 3 + c];
+            const float o = halfToFloat(base[(((size_t)f * s + y) * s + x) * 4 + c]);
+            if (!std::isfinite(o)) { ++nonFinite; continue; }
+            // Saturated RGB components are reported separately.
+            if (a >= 5.5f) { ++sat; continue; }
+            if (o >= 5.5f) { ++sat; continue; }
+            ++unsat;
+            const double rel = std::fabs((double)o - a) / (a > 0.1f ? a : 0.1f);
+            sumRel += rel;
+            sumOurs += o; sumApple += a;
+          }
+        }
+    }
+    const double meanRel = unsat ? sumRel / (double)unsat : 0.0;
+    const double meanOurs = unsat ? sumOurs / unsat : 0.0;
+    const double meanApple = unsat ? sumApple / unsat : 0.0;
+    // 第二遍:所有面共用同一个曝光比例,单面和整体采用相同统计口径。
+    double sumPattern = 0.0;
+    if (unsat && meanOurs > 1e-3) {
+      const double k = meanApple / meanOurs;
+      for (uint32_t f = 0; f < 6; ++f) {
+        const auto& apple = reference[m][f];
+        double facePattern = 0.0;
+        uint64_t faceUnsat = 0;
+        const uint16_t* base = gpu + offsets[m] / 2;
+        for (uint32_t y = 0; y < s; ++y)
+          for (uint32_t x = 0; x < s; ++x) {
+            const size_t ti = (size_t)(y * s + x);
+            for (int c = 0; c < 3; ++c) {
+              const float a = apple[ti * 3 + c];
+              const float o = halfToFloat(base[(((size_t)f * s + y) * s + x) * 4 + c]);
+              if (!std::isfinite(o) || a >= 5.5f || o >= 5.5f) continue;
+              const double rel = std::fabs(o * k - a) / (a > 0.1f ? a : 0.1f);
+              sumPattern += rel;
+              facePattern += rel;
+              ++faceUnsat;
+            }
+          }
+        if (faceUnsat && facePattern / faceUnsat > worstFaceErr) {
+          worstFaceErr = facePattern / faceUnsat;
+          worstFace = f;
+        }
+      }
+    }
+    const double patternRel = unsat ? sumPattern / (double)unsat : 0.0;
+    spdlog::info("IBL:   mip{} ({}x{}): meanRelErr={:.2f}%  patternErr={:.2f}%  meanOurs={:.3f}  meanApple={:.3f}  sat={}  nonFinite={}  worstPatternFace={}({:.2f}%)",
+                 m, s, s, meanRel * 100.0, patternRel * 100.0, meanOurs, meanApple,
+                 sat, nonFinite, worstFace, worstFaceErr * 100.0);
+    if (nonFinite || !unsat || meanOurs <= 1e-3)
+      spdlog::warn("IBL: mip{} comparison invalid: nonFinite={}, usable={}, meanOurs={}",
+                   m, nonFinite, unsat, meanOurs);
+    if (meanRel >= 0.05)
+      spdlog::warn("IBL: mip{} raw relative error {:.2f}% exceeds 5% vs Apple reference", m, meanRel * 100.0);
+  }
+
+  // ---- 3) SH 辐照度 E(n) 对比(约定无关:直接比求值结果)----
+  // Apple 运行时数据 = AAPLLightingCommon.h 硬编码常数,求值 E(n)=Σ M_i·f_i(-n)。
+  // (KTX 的 "sh" 元数据与 Metal 常数存在逐带符号/量级差异——band1 符号相反,
+  //  不用作基准;Metal 硬编码常数才是其运行时真值。)
+  static const float kAppleSh[9][3] = {
+      { 1.614944507896493f,  1.541036092763475f,  1.571013589299304f},
+      {-0.253877086046911f, -0.429470071197213f, -0.690516354135927f},
+      { 0.169490208844630f,  0.354603612695152f,  0.470313910537248f},
+      { 0.097116881286676f,  0.266256657319848f,  0.359295544072626f},
+      {-0.068539142976241f, -0.113442880787374f, -0.144920974765986f},
+      {-0.155764013783923f, -0.197141784218826f, -0.219866180869429f},
+      { 0.048072946052602f,  0.047616845245505f,  0.028245382387344f},
+      { 0.222550351872431f,  0.198626269418641f,  0.175229058057126f},
+      { 0.025198626854623f, -0.020106073808714f, -0.063087948829664f},
+  };
+  int w = 0, h = 0, ch = 0;
+  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  if (pixels) {
+    // Physical and clamp-to-6 variants are diagnostics only. The application
+    // uploads ComputeMetalSH9FromEquirect, which uses the RGBM source bound 256.
+    std::vector<float> clamped((size_t)w * h * 4);
+    for (size_t i = 0; i < (size_t)w * h * 4; ++i)
+      clamped[i] = pixels[i] < 6.0f ? pixels[i] : 6.0f;
+    const SH9 physicalSh = ComputeSH9FromEquirect(pixels, w, h);
+    const SH9 metalSh = ComputeMetalSH9FromEquirect(pixels, w, h);
+    const SH9 clampedSh = ComputeSH9FromEquirect(clamped.data(), w, h);
+    stbi_image_free(pixels);
+    auto evalSh = [](const float c[9][3], float nx, float ny, float nz, float out[3]) {
+      const float b[9] = {1.0f, ny, nz, nx, ny * nx, ny * nz,
+                          3.0f * nz * nz - 1.0f, nz * nx, nx * nx - ny * ny};
+      for (int ch2 = 0; ch2 < 3; ++ch2) {
+        float v = 0.0f;
+        for (int i = 0; i < 9; ++i) v += c[i][ch2] * b[i];
+        out[ch2] = v;
+      }
+    };
+    // 26 个确定方向:6 轴 + 8 角 + 12 棱中点
+    std::vector<Vec3> dirs = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    for (int i = -1; i <= 1; i += 2)
+      for (int j = -1; j <= 1; j += 2)
+        for (int k = -1; k <= 1; k += 2)
+          dirs.push_back(normalizeVec3({(float)i, (float)j, (float)k}));
+    const int edges[12][3] = {{1,1,0},{1,-1,0},{-1,1,0},{-1,-1,0},
+                              {1,0,1},{1,0,-1},{-1,0,1},{-1,0,-1},
+                              {0,1,1},{0,1,-1},{0,-1,1},{0,-1,-1}};
+    for (auto& e : edges) dirs.push_back(normalizeVec3({(float)e[0], (float)e[1], (float)e[2]}));
+
+    for (int variant = 0; variant < 3; ++variant) {
+      const SH9& sh = variant == 0 ? physicalSh : (variant == 1 ? clampedSh : metalSh);
+      const char* label = variant == 0 ? "physical HDR diagnostic" :
+                          (variant == 1 ? "clamp-to-6 diagnostic" : "runtime Metal-compatible");
+      double sumRel = 0.0, sumRelNorm = 0.0, meanOurs = 0.0, meanApple = 0.0;
+      std::vector<std::array<float,3>> eOurs, eApple;
+      for (const Vec3& d : dirs) {
+        float eo[3], ea[3];
+        evalSh(sh.c, d.x, d.y, d.z, eo);
+        evalSh(kAppleSh, -d.x, -d.y, -d.z, ea);
+        eOurs.push_back({eo[0], eo[1], eo[2]});
+        eApple.push_back({ea[0], ea[1], ea[2]});
+        for (int c = 0; c < 3; ++c) { meanOurs += eo[c]; meanApple += ea[c]; }
+      }
+      meanOurs /= (dirs.size() * 3); meanApple /= (dirs.size() * 3);
+      for (size_t i = 0; i < dirs.size(); ++i)
+        for (int c = 0; c < 3; ++c) {
+          const double a = eApple[i][c];
+          sumRel += std::fabs(eOurs[i][c] - a) / (std::fabs(a) > 0.05 ? std::fabs(a) : 0.05);
+          const double an = a / meanApple, on = eOurs[i][c] / meanOurs;
+          sumRelNorm += std::fabs(on - an) / (std::fabs(an) > 0.05 ? std::fabs(an) : 0.05);
+        }
+      const double n = (double)(dirs.size() * 3);
+      spdlog::info("IBL: SH E(n), {}, vs Apple constants ({} dirs): meanRelErr={:.2f}%  pattern(normalized)={:.2f}%  meanOurs={:.3f} meanApple={:.3f}",
+                   label, dirs.size(), sumRel / n * 100.0, sumRelNorm / n * 100.0, meanOurs, meanApple);
+      if (variant == 2 && (!std::isfinite(sumRel) || sumRel / n >= 0.02))
+        spdlog::warn("IBL: runtime SH relative error exceeds 2% vs Apple reference");
+    }
+  } else {
+    spdlog::warn("IBL: SH-vs-Apple validation skipped, cannot reload {}", hdrPath.generic_string());
   }
 
   vkUnmapMemory(dev, stagingMem);
@@ -694,6 +925,18 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
     // 各 mip 只写一次、输入恒为 mip0,dispatch 间无需 barrier
   }
 
+  // All prefilters have consumed linear mip0. Now replace mip0 with the
+  // Apple shader-visible value, matching the already encoded mip1..8.
+  transitionRange(cmd, out.envCube, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                  0, 1, 6, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                  VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cs1Pipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cs1Layout, 0, 1, &cs1Set, 0, nullptr);
+  pc[2] = 1;
+  vkCmdPushConstants(cmd, cs1Layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+  vkCmdDispatch(cmd, kEnvMapSize / 8, kEnvMapSize / 8, 6);
+
   // === Task 5:DfgLutCS 生成 Karis split-sum DFG LUT(256x256 RG16F,无 push constants)===
   transitionRange(cmd, out.dfgLut, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                   0, 1, 1,
@@ -739,10 +982,16 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   validateCubeChainAgainstCpu(device, out.envCube,
                               rootPath / "textures" / "san_giuseppe_bridge_2k.hdr");
 
-  // DFG LUT 对拍校验(Apple 烘焙参考;存在时才跑)
-  const std::filesystem::path dfgRef = R"(D:\ModernRenderingWithMetal\Assets\DFGLUT.ktx)";
-  if (std::filesystem::exists(dfgRef))
-    validateDfgAgainstReference(device, out.dfgLut, dfgRef);
+  // Optional local reference data; no machine-specific path or asset distribution required.
+  const char* referenceDir = std::getenv("AVR_IBL_REFERENCE_DIR");
+  if (referenceDir && *referenceDir) {
+    const std::filesystem::path refs(referenceDir);
+    spdlog::info("IBL: using reference directory {}", refs.generic_string());
+    validateDfgAgainstReference(device, out.dfgLut, refs / "DFGLUT.ktx");
+    validateEnvCubeAgainstAppleKtx(device, out.envCube,
+        refs / "san_giuseppe_bridge_4k_ibl.ktx",
+        rootPath / "textures" / "san_giuseppe_bridge_2k.hdr");
+  }
 
   return out;
 }

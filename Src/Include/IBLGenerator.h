@@ -16,6 +16,7 @@ class VulkanDevice;
 
 // IBLGenerator 的输出资源(所有权归调用方,负责最终销毁)。
 struct IBLResources {
+  // All cube mips store Apple shader-visible RGBM-decoded values (6/16)*sqrt(L).
   VkImage envCube = VK_NULL_HANDLE;        // 256x256x6, 9 mips, R16G16B16A16_SFLOAT
   VkDeviceMemory envCubeMemory = VK_NULL_HANDLE;
   VkImageView envCubeView = VK_NULL_HANDLE; // VK_IMAGE_VIEW_TYPE_CUBE, 全 mip
@@ -26,7 +27,7 @@ struct IBLResources {
 };
 
 // 一次性 compute 链:equirect→cube mip0(Task 3)→ GGX 预过滤 mip1-8(Task 4)
-// → DFG LUT(Task 5)。在单个 one-shot command buffer 内完成全部 dispatch 与
+// → mip0 输出转换 → DFG LUT。在单个 one-shot command buffer 内完成全部 dispatch 与
 // layout 转换,返回时所有输出已处 SHADER_READ_ONLY_OPTIMAL。
 class IBLGenerator {
 public:

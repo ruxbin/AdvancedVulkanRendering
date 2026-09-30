@@ -1,7 +1,7 @@
 # Vulkan IBL(基于图像的照明)设计
 
 日期:2026-09-26
-状态:已获设计批准,待实现
+状态:已实现；2026-09-30 完成 Apple KTX 数值对齐，验证记录见下文
 范围:**仅 Vulkan 后端**;deferred lighting pass + forward transparent pass。DX12 后端与 RT 路径不在本次范围内,但不得被本改动破坏。
 
 ## 背景与目标
@@ -41,6 +41,7 @@ textures/san_giuseppe_bridge_2k.hdr (新增资产, Polyhaven CC0)
             ▼  Src/IBLGenerator.cpp(一次性, init 阶段)
    CS1 ibl_equirect_to_cube.cs   → envCube mip0
    CS2 ibl_prefilter_specular.cs → envCube mip1..8(每 mip 一次 dispatch, roughness=mip/8)
+   CS1 再次执行                → 将线性 mip0 转换为最终 Apple shader 显示值
    CS3 ibl_dfg_lut.cs            → dfgLut 256×256 RG16F
             │
             ▼  全部 transition → SHADER_READ_ONLY_OPTIMAL
@@ -53,7 +54,7 @@ textures/san_giuseppe_bridge_2k.hdr (新增资产, Polyhaven CC0)
 | 资源 | 格式 | 尺寸 | 说明 |
 |---|---|---|---|
 | equirect | `R32G32B32A32_SFLOAT` | 2048×1024, 1 mip | stb 直接上传,staging 后可释放(保留也无妨) |
-| envCube | `R16G16B16A16_SFLOAT` | 256×256, 6 层, **9 mip** | `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT`;usage = SAMPLED \| STORAGE \| TRANSFER_DST;生成期经 **2D-array storage view**(每 mip 一个)写入,采样用 `VK_IMAGE_VIEW_TYPE_CUBE` view。**直接存线性 HDR,无 RGBM 打包** |
+| envCube | `R16G16B16A16_SFLOAT` | 256×256, 6 层, **9 mip** | `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT`;usage = SAMPLED \| STORAGE \| TRANSFER_DST \| TRANSFER_SRC;生成期经 **2D-array storage view** 写入,采样用 cube view。最终存储 `0.375*sqrt(L)` 的 Apple shader 显示值，无 RGBM 打包；过滤输入为线性 HDR |
 | dfgLut | `R16G16_SFLOAT` | 256×256, 1 mip | usage = SAMPLED \| STORAGE |
 | SH UBO | uniform buffer | 9×vec4 = 144B | host-visible+coherent,init 写一次 |
 | iblSampler | sampler | — | mag/min/mip 全部 LINEAR,address CLAMP_TO_EDGE |
@@ -74,11 +75,14 @@ textures/san_giuseppe_bridge_2k.hdr (新增资产, Polyhaven CC0)
 // 基函数 1, y, z, x, yx, yz, 3z^2-1, zx, x^2-y^2,归一化常数已折入)。
 // 积分权重为立体角 dω = sin(θ) dθ dφ;结果即辐照度 SH。
 struct SH9 { vec3 c[9]; };
-SH9 ComputeSH9FromEquirect(const float* rgba, int width, int height);
+SH9 ComputeSH9FromEquirect(const float* rgba, int width, int height); // 标准物理辐照度
+SH9 ComputeMetalSH9FromEquirect(const float* rgba, int width, int height); // 运行时使用
 ```
 
 - equirect 方向映射必须与 CS1 的 cube 方向映射一致(见 4.2)。
 - 验证锚点:对 san_giuseppe_bridge 环境,结果应与 Metal 硬编码常数量级一致(x/z 相关项符号取决于朝向约定,以本实现内部自洽为准)。
+
+2026-09-30 数值勘误：标准物理系数不能直接替代示例的硬编码系数。兼容 API 限制输入到 `[0,256]`，除以 `π*Y_i` 并翻转 Z 相关项，按 `+N` 求值；标准 API 保持物理含义。详见验证记录中的推导与解析回归测试。
 
 **`Src/Include/IBLGenerator.h` / `Src/IBLGenerator.cpp`** — 持有生成管线和输出资源。
 
@@ -102,14 +106,16 @@ public:
   1. envCube 全 mip 转 `GENERAL`(storage 写);equirect 已处 SHADER_READ。
   2. CS1:dispatch (256/8, 256/8, 6),写 mip0 的 2D-array storage view。
   3. barrier:mip0 STORAGE_WRITE → SHADER_READ(image 保持 GENERAL,配 access/pipeline stage barrier;或将 mip0 单独转 SHADER_READ_ONLY,mip1-8 留 GENERAL)。
-  4. CS2 × 8:mip = 1..8,push constant 传 `roughness = mip/8.0` 与输出尺寸,读 mip0,写对应 mip 的 storage view;每次 dispatch 前加写后读 barrier。
+  4. CS2 × 8:mip = 1..8,push constant 传 `roughness = mip/8.0` 与输出尺寸,读线性 mip0,写对应 mip 的最终显示值，各 dispatch 输入不依赖前一个输出。完成后添加 compute 读/写→写 barrier，再执行 CS1 转换 mip0。
   5. CS3:dispatch (256/8, 256/8, 1),写 dfgLut(GENERAL)。
   6. envCube 全 mip + dfgLut → `SHADER_READ_ONLY_OPTIMAL`。
 - CS pipeline 各自的 set layout 为生成专用(equirect SRV + cube UAV;cube SRV + cube UAV + push constants;LUT UAV),与主渲染管线无关。
 
 ### 4.2 方向约定(Vulkan cube 规则)
 
-CS1 对每个 face/uv 生成世界方向 `dir`,再用 `u = atan2(dir.z, dir.x)/(2π)+0.5`、`v = acos(dir.y)/π`(或等价式)采样 equirect。face→轴映射遵循 Vulkan 规范(`+X,-X,+Y,-Y,+Z,-Z` 层序)。CS2 与 SH 积分复用同一映射(提取为共享函数)。验证:RenderDoc 中 envCube mip0 应呈现与 equirect 一致的画面(允许整体水平旋转/镜像差异,但 SH 与 cube 必须同约定,否则 diffuse 与 specular 光源方向不一致)。
+CS1 对每个 face/uv 生成世界方向 `dir`,再用 `u = atan2(-dir.x, dir.z)/(2π)+0.5`、`v = acos(dir.y)/π` 采样 equirect。face→轴映射为 `+X,-X,+Y,-Y,+Z,-Z` 层序。SH 投影使用逆映射 `dir=(-sinθ sinφ, cosθ, sinθ cosφ)`，其中 `φ=(u-0.5)*2π`、`θ=v*π`。运行时以 `+N` 求值本项目 SH；Apple 的硬编码系数以 `-N` 求值，不能直接比较两套系数的符号。
+
+2026-09-29 勘误：原设计中的 `atan2(z,x)` 以及早期实现的 `atan2(x,z)` 均被上述映射替代。方向回归测试使用独立定义的 +X/+Z/-Z 半球环境。2026-09-30 进一步修正了 Cube、SH 和 DFG 的数值约定；DFG 采用相关 Smith，可见性 alpha=roughness、采样 NDF alpha=roughness²，属于参考资产兼容。对拍指标、已知限制和复现方式见 [KTX 对拍验证记录](../../ibl-ktx-validation.md)。
 
 ### 4.3 Shader 改动
 
@@ -205,7 +211,7 @@ float _padIbl0, _padIbl1;// → sizeof 144
 1. **单元级**:`SphericalHarmonics` 纯函数测试(参照 Tests/ 现有 gtest 风格):
    - 恒定辐射环境(全 1.0)→ L00 ≈ 常数、其余系数 ≈ 0;
    - 对 san_giuseppe hdr,与 Metal 硬编码 9 常数量级对比(容差内,符号按约定说明)。
-2. **数值级**:生成的 DFG LUT 与 Apple `DFGLUT.ktx`(开发期临时解析,不入库)逐像素对比,MAE 在容差内(半浮点 + 采样数差异,预期 < 0.02)。
+2. **数值级**:生成的 DFG LUT 与 Apple `DFGLUT.ktx`(开发期解析,不入库)逐像素对比，MAE < 0.003；Cube 各 mip 原始相对误差 < 5%，SH 求值原始相对误差 < 2%。自动检查使用 `Tests/validate_ibl_log.py`。
 3. **渲染级**:编译运行 bistro 场景,ImGui 开关/拉条截屏对比;RenderDoc 抓帧确认:envCube 内容与 equirect 一致、9 mip 逐级变糊、binding 18-21 / 5-8 全部绑定。
 4. **回归**:DX12 后端编译运行画面与改动前一致;现有 Vulkan 路径(TAA/scatter/RT 开关)无回归。
 
@@ -214,5 +220,5 @@ float _padIbl0, _padIbl1;// → sizeof 144
 - DX12 后端的 IBL(后续单独移植;ifdef 已预留)。
 - RT 路径(rt_lighting.hlsl)miss shader 换环境贴图天空。
 - 环境图运行时切换/多环境插值(Metal 的 day/evening/night 体系)。
-- KTX 加载器(决策为运行时生成,不需要)。
+- 以 KTX 替代运行时生成的 IBL 资产。开发期对拍使用独立的最小 KTX1 解析器，仅在指定参考目录时读取外部资产。
 - 天空盒渲染环境图(Metal 原版天空即纯色,保持解耦)。

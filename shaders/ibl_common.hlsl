@@ -1,9 +1,8 @@
 ﻿// ibl_common.hlsl — IBL 采样(deferred/forward 共用;后端中立,
 // 调用方自行用 #ifndef DX12_BACKEND 保护,DX12 移植完成后移除 guard)。
 // 数学与 Apple AAPLLightingCommon.h 的 evaluateShCoefficients + IBL() 一致,
-// 差异:env cube 直接存线性 HDR,无 RGBM 6.0*rgb*a 解码;
-// 且本移植的 SH 系数由标准辐亮度投影得到(ComputeSH9FromEquirect),
-// 因此按 +N 求值——Apple 硬编码系数是取反约定才需要 -N。
+// env cube 存储 Apple RGBM 解码后的值，采样时不再次解码。
+// ComputeMetalSH9FromEquirect 已将 Apple 的基函数和 -N 约定转换为 +N 求值。
 
 float3 evaluateShCoefficients(float3 n, float4 sh[9])
 {
