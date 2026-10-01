@@ -2,6 +2,7 @@
 
 #include "Common.h"       // readFile
 #include "KtxTexture.h"   // KTX1 解析(Apple 烘焙 cube 对拍)
+#include "IBLComparison.h"
 #include "SphericalHarmonics.h" // SH9 计算(SH E(n) 对拍)
 #include "VulkanSetup.h"  // VulkanDevice
 
@@ -485,11 +486,10 @@ void validateEnvCubeAgainstAppleKtx(const VulkanDevice& device, VkImage envCube,
   }
 
   // ---- 2) 逐 mip 图像对比 ----
-  spdlog::info("IBL: env cube vs Apple KTX (sat = excluded RGB components >=5.5 on either side):");
+  spdlog::info("IBL: env cube vs Apple KTX (all finite RGB components included; sat counts components >=5.5 on either side):");
   for (uint32_t m = 0; m < kMips; ++m) {
     const uint32_t s = IBLGenerator::kEnvMapSize >> m;
-    double sumRel = 0.0, sumOurs = 0.0, sumApple = 0.0;
-    uint64_t unsat = 0, sat = 0, nonFinite = 0;
+    IBLComparison raw;
     double worstFaceErr = -1.0;
     uint32_t worstFace = 0;
     for (uint32_t f = 0; f < 6; ++f) {
@@ -501,28 +501,20 @@ void validateEnvCubeAgainstAppleKtx(const VulkanDevice& device, VkImage envCube,
           for (int c = 0; c < 3; ++c) {
             const float a = apple[ti * 3 + c];
             const float o = halfToFloat(base[(((size_t)f * s + y) * s + x) * 4 + c]);
-            if (!std::isfinite(o)) { ++nonFinite; continue; }
-            // Saturated RGB components are reported separately.
-            if (a >= 5.5f) { ++sat; continue; }
-            if (o >= 5.5f) { ++sat; continue; }
-            ++unsat;
-            const double rel = std::fabs((double)o - a) / (a > 0.1f ? a : 0.1f);
-            sumRel += rel;
-            sumOurs += o; sumApple += a;
+            raw.add(o, a);
           }
         }
     }
-    const double meanRel = unsat ? sumRel / (double)unsat : 0.0;
-    const double meanOurs = unsat ? sumOurs / unsat : 0.0;
-    const double meanApple = unsat ? sumApple / unsat : 0.0;
+    const double meanRel = raw.meanRelativeError();
+    const double meanOurs = raw.meanActual();
+    const double meanApple = raw.meanReference();
     // 第二遍:所有面共用同一个曝光比例,单面和整体采用相同统计口径。
     double sumPattern = 0.0;
-    if (unsat && meanOurs > 1e-3) {
+    if (raw.count && meanOurs > 1e-3) {
       const double k = meanApple / meanOurs;
       for (uint32_t f = 0; f < 6; ++f) {
         const auto& apple = reference[m][f];
-        double facePattern = 0.0;
-        uint64_t faceUnsat = 0;
+        IBLComparison facePattern;
         const uint16_t* base = gpu + offsets[m] / 2;
         for (uint32_t y = 0; y < s; ++y)
           for (uint32_t x = 0; x < s; ++x) {
@@ -530,26 +522,23 @@ void validateEnvCubeAgainstAppleKtx(const VulkanDevice& device, VkImage envCube,
             for (int c = 0; c < 3; ++c) {
               const float a = apple[ti * 3 + c];
               const float o = halfToFloat(base[(((size_t)f * s + y) * s + x) * 4 + c]);
-              if (!std::isfinite(o) || a >= 5.5f || o >= 5.5f) continue;
-              const double rel = std::fabs(o * k - a) / (a > 0.1f ? a : 0.1f);
-              sumPattern += rel;
-              facePattern += rel;
-              ++faceUnsat;
+              facePattern.add(o * k, a);
             }
           }
-        if (faceUnsat && facePattern / faceUnsat > worstFaceErr) {
-          worstFaceErr = facePattern / faceUnsat;
+        sumPattern += facePattern.sumRelativeError;
+        if (facePattern.count && facePattern.meanRelativeError() > worstFaceErr) {
+          worstFaceErr = facePattern.meanRelativeError();
           worstFace = f;
         }
       }
     }
-    const double patternRel = unsat ? sumPattern / (double)unsat : 0.0;
+    const double patternRel = raw.count ? sumPattern / (double)raw.count : 0.0;
     spdlog::info("IBL:   mip{} ({}x{}): meanRelErr={:.2f}%  patternErr={:.2f}%  meanOurs={:.3f}  meanApple={:.3f}  sat={}  nonFinite={}  worstPatternFace={}({:.2f}%)",
                  m, s, s, meanRel * 100.0, patternRel * 100.0, meanOurs, meanApple,
-                 sat, nonFinite, worstFace, worstFaceErr * 100.0);
-    if (nonFinite || !unsat || meanOurs <= 1e-3)
+                 raw.saturated, raw.nonFinite, worstFace, worstFaceErr * 100.0);
+    if (raw.nonFinite || !raw.count || meanOurs <= 1e-3)
       spdlog::warn("IBL: mip{} comparison invalid: nonFinite={}, usable={}, meanOurs={}",
-                   m, nonFinite, unsat, meanOurs);
+                   m, raw.nonFinite, raw.count, meanOurs);
     if (meanRel >= 0.05)
       spdlog::warn("IBL: mip{} raw relative error {:.2f}% exceeds 5% vs Apple reference", m, meanRel * 100.0);
   }
