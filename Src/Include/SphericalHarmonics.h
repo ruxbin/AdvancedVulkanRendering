@@ -7,6 +7,32 @@ struct SH9 {
   float c[9][3];
 };
 
+// —— VLM 共享物理约定(值与 ComputeSH9FromEquirect 内部常量逐字相同,行为不变)——
+// kSh9Y:实数 SH 基归一化常数;kSh9A:辐照度卷积权重(π, 2π/3×3, π/4×5)。
+inline constexpr float kSh9Y[9] = {
+    0.282095f,
+    0.488603f, 0.488603f, 0.488603f,
+    1.092548f, 1.092548f, 0.315392f, 1.092548f, 0.546274f,
+};
+inline constexpr float kSh9A[9] = {
+    3.1415926535897932f,
+    2.0943951023931953f, 2.0943951023931953f, 2.0943951023931953f,
+    0.7853981633974483f, 0.7853981633974483f, 0.7853981633974483f,
+    0.7853981633974483f, 0.7853981633974483f,
+};
+// 逐方向基求值,顺序:常量、y、z、x、yx、yz、3z²-1、zx、x²-y²(kSh9Y 已折入)。
+inline void EvalSh9Basis(float dx, float dy, float dz, float out[9]) {
+  out[0] = kSh9Y[0];
+  out[1] = kSh9Y[1] * dy;
+  out[2] = kSh9Y[2] * dz;
+  out[3] = kSh9Y[3] * dx;
+  out[4] = kSh9Y[4] * dy * dx;
+  out[5] = kSh9Y[5] * dy * dz;
+  out[6] = kSh9Y[6] * (3.0f * dz * dz - 1.0f);
+  out[7] = kSh9Y[7] * dz * dx;
+  out[8] = kSh9Y[8] * (dx * dx - dy * dy);
+}
+
 // rgba: width*height*4 的 float 像素(stbi_loadf 的 STBI_rgb_alpha 输出)。
 // 标准物理辐照度：A_l(π, 2π/3×3, π/4×5)与 Y_lm 常数折入 c[i]。
 // 方向约定(必须与 shaders/ibl.hlsl 的 DirectionToEquirectUV 逐字一致):
