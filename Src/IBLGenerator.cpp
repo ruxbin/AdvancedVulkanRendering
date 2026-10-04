@@ -968,6 +968,7 @@ IBLResources IBLGenerator::generate(const VulkanDevice& device, VkImageView equi
   // CPU-vs-GPU cube 链校验(Ruling 9/10;envCube 已处 SHADER_READ_ONLY)
   // 注意:此处的 hdr 路径必须与 GpuScene::initIBL 选用的环境贴图保持一致
   // (GpuScene.cpp initIBL 的 hdrPath);换资产时两处需同步修改。
+  // 与 GpuScene.cpp HdrEnvPath 同源,换资产需同步。
   validateCubeChainAgainstCpu(device, out.envCube,
                               rootPath / "textures" / "san_giuseppe_bridge_2k.hdr");
 

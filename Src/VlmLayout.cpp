@@ -11,8 +11,11 @@ VlmUniformLayout VlmMakeUniformLayout(const float bmin[3], const float bmax[3], 
   VlmUniformLayout L{};
   for (int i = 0; i < 3; ++i) {
     const float extent = bmax[i] - bmin[i];
+    // 最近整数取 cells(spacing 是目标间距,step 重算贴回 extent)。
+    // 不能用 ceil:bmin/bmax 由 camera±size/2 经 float 往返,extent 可能
+    // 比整数倍 spacing 多出 ~1e-6(如 4.0000038),ceil 会错误地多开一个 cell。
     const uint32_t cells = extent > 0.0f
-        ? (uint32_t)std::max(1.0f, std::ceil(extent / spacing))
+        ? (uint32_t)std::max(1.0f, std::floor(extent / spacing + 0.5f))
         : 1u;
     L.cells[i] = cells;
     L.step[i] = extent / (float)cells; // 重算使 bmin+step*cells == bmax 精确成立

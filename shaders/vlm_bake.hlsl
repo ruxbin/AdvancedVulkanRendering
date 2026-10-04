@@ -58,9 +58,10 @@ float3 envRadiance(float3 dir) {
 
 // Fibonacci 球面 + Cranley-Patterson 旋转(按 probeId/batchId 扰乱,规格 §6)。
 // 与 Tests/VlmShTests.cpp 的 FibonacciDir 同基序列;均匀球面 pdf 恒 1/(4π)。
-float3 sampleSphereDir(uint s, uint n, inout uint rng) {
-    float r1 = rngF(rng);
-    float r2 = rngF(rng);
+// CP 旋转:r1/r2 每个 (probe,batch) 只抽一次、整批共享同一随机平移,保持
+// 低差异序列的分层性质(逐样本各自抖动会退化成 √N 白噪声,常量天空下
+// 4096 样本的 maxRelErr 会从 ~1e-3 恶化到 ~7e-2)。
+float3 sampleSphereDir(uint s, uint n, float r1, float r2) {
     float u = (float(s) + r1) / float(n);
     float z = 1.0f - 2.0f * u;
     float phi = TWO_PI * frac(float(s) * 0.61803398875f + r2);
@@ -100,11 +101,14 @@ void VlmProbeRayGen() {
     pcgNext(rng); pcgNext(rng); // warm up
 
     const float invPdf = 4.0f * PI; // 1/pdf,pdf=1/(4π)
+    // Cranley-Patterson 旋转量:每个 (probe,batch) 一对,整批样本共享。
+    const float cpR1 = rngF(rng);
+    const float cpR2 = rngF(rng);
     float3 acc[9];
     [unroll] for (int j = 0; j < 9; ++j) acc[j] = (float3)0;
 
     for (uint s = 0; s < pc.samplesThisBatch; ++s) {
-        float3 dir0 = sampleSphereDir(s, pc.samplesThisBatch, rng);
+        float3 dir0 = sampleSphereDir(s, pc.samplesThisBatch, cpR1, cpR2);
         float3 Li;
 
         if (pc.flags & VLM_BAKE_SKY_ONLY) {

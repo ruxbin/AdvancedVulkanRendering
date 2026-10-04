@@ -9,6 +9,7 @@
 #include "Shadow.h"
 #include "SphericalHarmonics.h"
 #include "ThirdParty/lzfse.h"
+#include "VlmBaker.h"
 #include "VulkanCompat.h"
 #include "VulkanSetup.h"
 #include "imgui.h"
@@ -27,7 +28,15 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <vector>
+
+namespace {
+// 场景 HDR 环境贴图路径(IBL 与 VLM 烘焙共用;换资产需与 IBLGenerator.cpp 同步)。
+std::filesystem::path HdrEnvPath(const std::filesystem::path& root) {
+  return root / "textures" / "san_giuseppe_bridge_2k.hdr";
+}
+}
 
 
 // USE_CPU_ENCODE_DRAWPARAM removed: GPU indirect draw is now the default path
@@ -2347,8 +2356,11 @@ GpuScene::~GpuScene() {
   }
 }
 
-GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
+GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
+                   const VlmCommandLine *vlmCmd)
     : device(deviceref), modelScale(1.f), _rootPath(root) {
+
+  if (vlmCmd) { _vlmCmdStorage = *vlmCmd; _vlmCmdValid = true; }
 
   createSyncObjects();
   createUniformBuffer();
@@ -3761,6 +3773,13 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   }
   if (!device.isRayTracingSupported())
     useRayTracing = false;
+
+  // VLM 一次性烘焙挂钩(RT 初始化完成后,首帧 record 期间同步执行)。
+  if (_vlmCmdValid && _vlmCmdStorage.bakeRequested && !_vlmBakeDone && _raytracing) {
+    _vlmBakeDone = true; // 失败也只试一次,避免每帧重烘
+    RunVlmBake();
+    if (_vlmCmdStorage.exitAfterBake) _vlmQuitRequested = true;
+  }
 
     {
   uint32_t opaqueCount = applMesh->_opaqueChunkCount;
@@ -6493,7 +6512,7 @@ void GpuScene::createBlackFallbackIBL() {
 }
 
 void GpuScene::initIBL() {
-  const auto hdrPath = _rootPath / "textures" / "san_giuseppe_bridge_2k.hdr";
+  const auto hdrPath = HdrEnvPath(_rootPath);
 
   int w = 0, h = 0, ch = 0;
   float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
@@ -6584,6 +6603,138 @@ void GpuScene::initIBL() {
   _iblSampler = ibl.sampler;
 
   _iblAvailable = true; // envCube/dfgLut 由 Task 3-5 的 IBLGenerator 填充
+}
+
+uint64_t GpuScene::ComputeVlmSceneHash() const {
+  uint64_t h = kVlmFnv1aBasis;
+  const std::string sceneText = sceneFile.dump(); // 覆盖 sun/point_lights/spot_lights
+  h = VlmFnv1a64(sceneText.data(), sceneText.size(), h);
+  std::error_code ec;
+  const auto meshSize = std::filesystem::file_size(_rootPath / "bistro.dxt.bin", ec);
+  h = VlmFnv1a64(&meshSize, sizeof(meshSize), h);
+  const uint32_t counts[3] = {
+      applMesh ? (uint32_t)applMesh->_opaqueChunkCount : 0,
+      applMesh ? (uint32_t)applMesh->_alphaMaskedChunkCount : 0,
+      applMesh ? (uint32_t)applMesh->_vertexCount : 0,
+  };
+  h = VlmFnv1a64(counts, sizeof(counts), h);
+  const std::string hdrPath = HdrEnvPath(_rootPath).generic_string();
+  std::ifstream hdr(hdrPath, std::ios::binary);
+  if (hdr.good()) {
+    const std::vector<char> bytes((std::istreambuf_iterator<char>(hdr)), {});
+    h = VlmFnv1a64(bytes.data(), bytes.size(), h);
+  }
+  return h;
+}
+
+namespace {
+// "camera,sx,sy,sz" 或 "x0,y0,z0,x1,y1,z1" → bmin/bmax;失败返回 false。
+bool ParseVlmVolumeSpec(const std::string& spec, const nlohmann::json& sceneFile,
+                        float outBmin[3], float outBmax[3]) {
+  if (spec.rfind("camera,", 0) == 0) {
+    float size[3];
+    if (std::sscanf(spec.c_str() + 7, "%f,%f,%f", &size[0], &size[1], &size[2]) != 3) return false;
+    const auto& cam = sceneFile["camera_position"];
+    const float c[3] = {cam[0].get<float>(), cam[1].get<float>(), cam[2].get<float>()};
+    for (int i = 0; i < 3; ++i) {
+      outBmin[i] = c[i] - size[i] * 0.5f;
+      outBmax[i] = c[i] + size[i] * 0.5f;
+    }
+    return true;
+  }
+  float v[6];
+  if (std::sscanf(spec.c_str(), "%f,%f,%f,%f,%f,%f",
+                  &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return false;
+  for (int i = 0; i < 3; ++i) {
+    outBmin[i] = std::fmin(v[i], v[i + 3]);
+    outBmax[i] = std::fmax(v[i], v[i + 3]);
+  }
+  return true;
+}
+}
+
+void GpuScene::RunVlmBake() {
+  // 已知限制(规格 §3):首版不支持同一发光体双重计能——bistro 中若发光材质与
+  // 解析点/聚光共位,其能量会被 emission 命中与 NEE 各计一次。阶段 1 接受该偏差
+  // (验收场景以太阳/环境为主);阶段 2 需在 bake 设置中显式指定唯一照明来源。
+  // 另一限制:透明材质策略为引擎既有 alpha-cutout(已写入 settingsHash),
+  // 不把玻璃当正确透射(规格 §6)。
+  const VlmCommandLine& cmd = _vlmCmdStorage;
+  if (!device.isRayTracingSupported() || !_raytracing || _raytracing->GetTlas() == VK_NULL_HANDLE) {
+    spdlog::error("vlm bake: FAILED (ray tracing not available)");
+    return;
+  }
+  float bmin[3], bmax[3];
+  if (cmd.bakeVolume.empty() ||
+      !ParseVlmVolumeSpec(cmd.bakeVolume, sceneFile, bmin, bmax)) {
+    spdlog::error("vlm bake: FAILED (--vlm-bake-volume required: camera,sx,sy,sz | x0,y0,z0,x1,y1,z1)");
+    return;
+  }
+  if (!cmd.bakeConstEnv && _equirectView == VK_NULL_HANDLE) {
+    spdlog::error("vlm bake: FAILED (equirect env missing; use --vlm-bake-const-env or fix hdr path)");
+    return;
+  }
+
+  VlmBaker::Settings s;
+  s.layout = VlmMakeUniformLayout(bmin, bmax, cmd.bakeSpacing);
+  s.samplesPerProbe = cmd.bakeSamples;
+  s.batchSamples = cmd.bakeBatchSamples;
+  s.maxBounces = cmd.bakeMaxBounces;
+  s.skyOnly = cmd.bakeSkyOnly;
+  s.constEnv = cmd.bakeConstEnv;
+  s.constEnvRGB[0] = cmd.constEnvRGB[0];
+  s.constEnvRGB[1] = cmd.constEnvRGB[1];
+  s.constEnvRGB[2] = cmd.constEnvRGB[2];
+  s.sunIsEnvironment = cmd.sunIsEnvironment;
+  s.sunScale = cmd.sunScale;
+  s.envScale = cmd.envScale;
+  s.localLightScale = cmd.localLightScale;
+  s.hdrPathForReference = HdrEnvPath(_rootPath);
+
+  VlmAssetData asset;
+  asset.sceneHash = ComputeVlmSceneHash();
+  asset.envHash = asset.sceneHash; // env 字节已折入 sceneHash;分开字段留待阶段 2 细粒度化
+  {
+    const std::string lt = sceneFile["point_lights"].dump() +
+                           sceneFile["spot_lights"].dump() +
+                           sceneFile["sun_direction"].dump();
+    asset.lightHash = VlmFnv1a64(lt.data(), lt.size(), kVlmFnv1aBasis);
+  }
+  for (int i = 0; i < 3; ++i) {
+    asset.bmin[i] = s.layout.bmin[i];
+    asset.step[i] = s.layout.step[i];
+    asset.cells[i] = s.layout.cells[i];
+  }
+  asset.bandWidth = std::fmin(asset.step[0], std::fmin(asset.step[1], asset.step[2])); // 一层粗 cell(规格 §8.3)
+  asset.unitScale = 1.0f;
+  asset.samplesPerProbe = s.samplesPerProbe;
+  asset.integratorVersion = kVlmIntegratorVersion;
+  {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "n=%u;b=%u;sky=%d;ce=%d;sem=%d;ss=%.3f;es=%.3f;lls=%.3f;sp=%.4f;v=%s;alpha=cutout",
+                  s.samplesPerProbe, s.maxBounces, (int)s.skyOnly, (int)s.constEnv,
+                  (int)s.sunIsEnvironment, s.sunScale, s.envScale, s.localLightScale,
+                  cmd.bakeSpacing, cmd.bakeVolume.c_str());
+    asset.settingsHash = VlmFnv1a64(buf, std::strlen(buf), kVlmFnv1aBasis);
+  }
+  const uint64_t probes = s.layout.ProbeCount();
+  asset.validity.assign((size_t)probes, 1);
+  asset.shFp16.resize((size_t)probes * 28);
+
+  spdlog::info("vlm bake: volume=({:.2f},{:.2f},{:.2f})..({:.2f},{:.2f},{:.2f}) cells={}x{}x{}",
+               bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2],
+               asset.cells[0], asset.cells[1], asset.cells[2]);
+
+  VlmBaker baker(const_cast<VulkanDevice&>(device), *this);
+  baker.Init(_equirectView);
+  if (!baker.Bake(s, asset)) return; // 失败原因已由其内部日志输出,不发布资产
+
+  if (!VlmSaveAsset(cmd.bakeOutPath, asset)) {
+    spdlog::error("vlm bake: FAILED (write {})", cmd.bakeOutPath);
+    return;
+  }
+  const uint64_t bytes = 132ull + probes * 57ull;
+  spdlog::info("vlm bake: wrote {} ({} probes, {} bytes)", cmd.bakeOutPath, probes, bytes);
 }
 
 bool updated = false;

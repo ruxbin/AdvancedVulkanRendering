@@ -1,6 +1,7 @@
 #include "Common.h"
 #include "GpuScene.h"
 #include "SDL.h"
+#include "VlmCommandLine.h"
 #include "VulkanSetup.h"
 #include "spdlog/spdlog.h"
 #include <chrono>
@@ -41,6 +42,9 @@ int main(int nargs, char **args) {
   if (useDX12) spdlog::info("Using DX12 rendering backend");
   else spdlog::info("Using Vulkan rendering backend");
 #endif
+
+  VlmCommandLine vlmCmd;
+  ParseVlmCommandLine(nargs, args, vlmCmd);
 
 #ifdef __ANDROID__
   // Query display size for fullscreen on Android
@@ -164,7 +168,7 @@ int main(int nargs, char **args) {
     // --- Vulkan Path ---
     VulkanDevice vk(window);
 
-  GpuScene gpuScene(currentPath, vk);
+  GpuScene gpuScene(currentPath, vk, &vlmCmd);
   gpuScene.InitImGui(window);
 
   SDL_Event e;
@@ -312,6 +316,7 @@ int main(int nargs, char **args) {
       // if (std::chrono::system_clock::now() - lastTime >
       // std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
       { gpuScene.Draw(); }
+      if (gpuScene.QuitRequested()) quit = true;
     }
 
     std::chrono::time_point<std::chrono::system_clock> time_checkpoint3 =

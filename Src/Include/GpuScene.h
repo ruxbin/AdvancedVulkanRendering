@@ -5,6 +5,7 @@
 #include "Light.h"
 #include "Matrix.h"
 #include "ScatteringVolume.h"
+#include "VlmCommandLine.h"
 #include "VulkanSetup.h"
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
@@ -427,6 +428,14 @@ private:
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
 
+  // VLM 烘焙命令行与一次性烘焙状态(ctor 传入时有效)。
+  VlmCommandLine _vlmCmdStorage{};       // 仅当 ctor 传入时有效
+  bool _vlmCmdValid = false;
+  bool _vlmBakeDone = false;
+  bool _vlmQuitRequested = false;
+  void RunVlmBake();
+  uint64_t ComputeVlmSceneHash() const;
+
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;
   VkDeviceMemory _hizMemory = VK_NULL_HANDLE;
@@ -628,7 +637,8 @@ private:
   void recreateSwapChainResources();
 
 public:
-  GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref);
+  GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
+           const VlmCommandLine *vlmCmd = nullptr);
   ~GpuScene();
   GpuScene() = delete;
   GpuScene(const GpuScene &) = delete;
@@ -636,6 +646,7 @@ public:
   void recreateSwapChain();
   void setFramebufferResized(bool resized) { framebufferResized = resized; }
   const std::filesystem::path &RootPath() const { return _rootPath; }
+  bool QuitRequested() const { return _vlmQuitRequested; }
   void InitImGui(SDL_Window *window) { initImGui(window); }
   void ProcessImGuiEvent(SDL_Event *event);
 
@@ -990,6 +1001,7 @@ public:
   friend class SpotLight;
   friend class LightCuller;
   friend class RayTracing;
+  friend class VlmBaker;
   friend class PbrtExporter;
   FrameConstants frameConstants{
       vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),  // sunDirection
