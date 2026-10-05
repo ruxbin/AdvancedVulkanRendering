@@ -2,6 +2,9 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
 #include "ibl_common.hlsl"
+#ifndef DX12_BACKEND
+#include "vlm_common.hlsl"
+#endif
 
 
 
@@ -46,6 +49,9 @@ VK_BINDING(18,1) Texture2D<float2> dfgLutTex;
 VK_BINDING(19,1) TextureCube envMap;
 VK_BINDING(20,1) SamplerState iblSampler;
 VK_BINDING(21,1) cbuffer SHCoefficients { float4 shCoefs[9]; };
+VK_BINDING(22,1) cbuffer VlmParamsCB { VlmParams vlmParams; };
+VK_BINDING(23,1) StructuredBuffer<float4> vlmShData;
+VK_BINDING(24,1) cbuffer VlmSkySH { float4 vlmSkySh[9]; };
 #endif
 
 struct VSOutput
@@ -152,18 +158,28 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 #ifndef DX12_BACKEND
     // IBL:(sun*shadow + IBL) * AO —— 对齐 Apple AAPLLightingCommon.h 的顺序。
     // sky 像素(depth≈0)不加:随后的 sky 分支会整体覆盖 result。
-    if (frameConstants.iblScale > 0.0f && depth >= 0.0001f)
-    {
-        float3 camPosIBL = float3(cameraParams.invViewMatrix._m03,
-                                  cameraParams.invViewMatrix._m13,
-                                  cameraParams.invViewMatrix._m23);
-        float3 viewDirIBL = normalize(camPosIBL - worldPosition.xyz);
-        result += (half3)IBL(surfaceData, envMap, dfgLutTex, iblSampler, shCoefs,
-                             viewDirIBL, frameConstants.iblScale, frameConstants.iblSpecularScale);
+    float3 vlmLighting=0;
+    if(depth>=0.0001f) {
+        float3 camera=float3(cameraParams.invViewMatrix._m03,cameraParams.invViewMatrix._m13,cameraParams.invViewMatrix._m23);
+        float3 viewDir=normalize(camera-worldPosition.xyz);
+        if(frameConstants.vlmFlags>0.5f && frameConstants.vlmScale>0) {
+            float3 g=cross(ddy(worldPosition.xyz),ddx(worldPosition.xyz));
+            g=dot(g,g)>1e-12 ? normalize(g) : float3(surfaceData.normal);
+            if(dot(g,float3(surfaceData.normal))<0) g=-g;
+            vlmLighting=VlmIndirect(surfaceData,worldPosition.xyz,g,viewDir,vlmParams,vlmShData,
+                vlmSkySh,envMap,dfgLutTex,iblSampler,frameConstants.vlmScale,frameConstants.iblScale,
+                frameConstants.iblSpecularScale*ao);
+        } else if(frameConstants.iblScale>0) {
+            result+=(half3)IBL(surfaceData,envMap,dfgLutTex,iblSampler,shCoefs,viewDir,
+                frameConstants.iblScale,frameConstants.iblSpecularScale);
+        }
     }
 #endif
 
     result *= (half)ao;
+#ifndef DX12_BACKEND
+    result += (half3)vlmLighting; // VLM already contains static occlusion; no extra AO.
+#endif
 
     // Phase F: for sky pixels (no geometry, depth == 0 in reverse-Z far plane)
     // use the skyColor as the base surface colour so the scatter volume composites
@@ -187,11 +203,11 @@ half4 DeferredLighting(VSOutput input) : SV_Target
         const float SCATTERING_RANGE = 100.0;
         float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
         float4 viewPos = mul(cameraParams.invProjectionMatrix, ndcPos);
-        float  viewZ   = -viewPos.z / viewPos.w;
+        float  viewZ   = viewPos.z / viewPos.w;
         float sliceF = log2(clamp(viewZ, 0.001, SCATTERING_RANGE) / SCATTERING_RANGE * 7.0 + 1.0) / 3.0;
         float3 uvw = float3(input.TextureUV.x, input.TextureUV.y, sliceF);
         float4 scatter = scatterAccumVolume.SampleLevel(linearClampSampler, uvw, 0);
-        result = result * (half) scatter.a + (half3) scatter.rgb;
+        result = result * (half) scatter.a + (half3) scatter.rgb * frameConstants.scatterScale;
     }
 
     if(useClusterLighting)

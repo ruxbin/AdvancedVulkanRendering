@@ -1,3 +1,4 @@
+#include "VlmRuntime.h"
 
 #include "GpuScene.h"
 #include "AssetLoader.h"
@@ -9,6 +10,7 @@
 #include "Shadow.h"
 #include "SphericalHarmonics.h"
 #include "ThirdParty/lzfse.h"
+#include "VlmBaker.h"
 #include "VulkanCompat.h"
 #include "VulkanSetup.h"
 #include "imgui.h"
@@ -27,7 +29,15 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <vector>
+
+namespace {
+// 场景 HDR 环境贴图路径(IBL 与 VLM 烘焙共用;换资产需与 IBLGenerator.cpp 同步)。
+std::filesystem::path HdrEnvPath(const std::filesystem::path& root) {
+  return root / "textures" / "san_giuseppe_bridge_2k.hdr";
+}
+}
 
 
 // USE_CPU_ENCODE_DRAWPARAM removed: GPU indirect draw is now the default path
@@ -1339,6 +1349,9 @@ void GpuScene::init_deferredlighting_descriptors() {
   shUboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   shUboBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  VkDescriptorSetLayoutBinding vlmParamsBinding{22, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+  VkDescriptorSetLayoutBinding vlmShBinding{23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+  VkDescriptorSetLayoutBinding vlmSkyBinding{24, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
   VkDescriptorSetLayoutBinding bindings[] = {albedoBinding,
                                              normalBinding,
                                              emessiveBinding,
@@ -1360,7 +1373,7 @@ void GpuScene::init_deferredlighting_descriptors() {
                                              dfgLutBinding,
                                              envCubeBinding,
                                              iblSamplerBinding,
-                                             shUboBinding};
+                                             shUboBinding, vlmParamsBinding, vlmShBinding, vlmSkyBinding};
 
   VkDescriptorSetLayoutCreateInfo setinfo = {};
   setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1382,7 +1395,7 @@ void GpuScene::init_deferredlighting_descriptors() {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16 * framesInFlight}, // 0-4,6,10,13,16,18,19 + headroom
       {VK_DESCRIPTOR_TYPE_SAMPLER, 5 * framesInFlight},        // 5,7,14,17,20
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * framesInFlight}, // 8,9,11,12,15 + headroom
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 * framesInFlight}, // 21
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 * framesInFlight}, // IBL SH, VLM params, physical sky
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -1518,6 +1531,7 @@ void GpuScene::init_deferredlighting_descriptors() {
   } // end per-frame loop
 
   
+  _vlmRuntime->WriteDeferredDescriptors(deferredLightingDescriptorSet);
 }
 
 void GpuScene::init_drawparams_descriptors() {
@@ -1808,11 +1822,14 @@ void GpuScene::init_appl_descriptors() {
   shBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   shBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  VkDescriptorSetLayoutBinding vlmParamsBinding{9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+  VkDescriptorSetLayoutBinding vlmShBinding{10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+  VkDescriptorSetLayoutBinding vlmSkyBinding{11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
   VkDescriptorSetLayoutBinding bindings[] = {
       matBinding,        samplerBinding,
       textureBinding,       meshChunksBinding, chunkIndexBinding,
       dfgLutBinding,     envMapBinding,
-      iblSamplerBinding,  shBinding};
+      iblSamplerBinding,  shBinding, vlmParamsBinding, vlmShBinding, vlmSkyBinding};
 
   constexpr int bindingcount = sizeof(bindings) / sizeof(bindings[0]);
 
@@ -2000,7 +2017,7 @@ void GpuScene::init_appl_descriptors() {
     setSH.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     setSH.pBufferInfo = &shInfo;
 
-    std::array<VkWriteDescriptorSet, bindingcount> writes = {
+    std::array<VkWriteDescriptorSet, 9> writes = {
         WriteMaterialToSet,        setSampler,
         setWriteTexture, meshChunksWrite, chunkIndexBufferWrite,
         setDfg,           setEnv,
@@ -2009,6 +2026,7 @@ void GpuScene::init_appl_descriptors() {
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(),
                            writes.data(), 0, nullptr);
   }
+  _vlmRuntime->WriteApplDescriptors(applDescriptorSets);
 }
 
 void GpuScene::init_GlobaldescriptorSet() {
@@ -2297,6 +2315,7 @@ GpuScene::~GpuScene() {
   // IBL 资源销毁(Task 9):view 先于 image;窗口关闭时可能仍有帧在飞,
   // 先等设备空闲再销毁。
   vkDeviceWaitIdle(device.getLogicalDevice());
+  delete _vlmRuntime; _vlmRuntime=nullptr;
   if (_equirectView != VK_NULL_HANDLE) {
     vkDestroyImageView(device.getLogicalDevice(), _equirectView, nullptr);
     _equirectView = VK_NULL_HANDLE;
@@ -2347,8 +2366,11 @@ GpuScene::~GpuScene() {
   }
 }
 
-GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
+GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
+                   const VlmCommandLine *vlmCmd)
     : device(deviceref), modelScale(1.f), _rootPath(root) {
+
+  if (vlmCmd) { _vlmCmdStorage = *vlmCmd; _vlmCmdValid = true; }
 
   createSyncObjects();
   createUniformBuffer();
@@ -3013,7 +3035,22 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref)
   createNearestClampSampler();
   createLinearClampSampler();
 
-  initIBL(); // 必须在 init_appl_descriptors/init_deferredlighting_descriptors 之前完成
+  initIBL(); // VLM shares the physical, unencoded HDR sky.
+  if (_vlmCmdStorage.bakeConstEnv) {
+    _vlmPhysicalSky = {};
+    for(int c=0;c<3;++c) _vlmPhysicalSky.c[0][c]=3.14159265358979f*_vlmCmdStorage.constEnvRGB[c];
+  }
+  for(auto& coeff:_vlmPhysicalSky.c) for(float& v:coeff) v*=_vlmCmdStorage.envScale;
+  _vlmRuntime = new VlmRuntime(const_cast<VulkanDevice&>(device), _vlmPhysicalSky);
+  if (!_vlmCmdStorage.loadPath.empty()) {
+    try {
+      if (_vlmRuntime->LoadFromFile(_vlmCmdStorage.loadPath,ComputeVlmSceneHash())) {
+        frameConstants.vlmScale=1; frameConstants.vlmFlags=_vlmCmdStorage.sunIsEnvironment ? 2.0f : 1.0f;
+      }
+    } catch(const std::exception& e) {
+      spdlog::warn("vlm: asset disabled: {}",e.what());
+    }
+  }
 
   // auto textureRes = createTexture(applMesh->_textures[13]);
   // auto textureRes =
@@ -3762,6 +3799,14 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   if (!device.isRayTracingSupported())
     useRayTracing = false;
 
+  // VLM 一次性烘焙挂钩(RT 初始化完成后,首帧 record 期间同步执行)。
+  if (_vlmCmdValid && _vlmCmdStorage.bakeRequested && !_vlmBakeDone) {
+    _vlmBakeDone = true; // 失败也只试一次,避免每帧重烘
+    try { _vlmBakeSucceeded = RunVlmBake(); }
+    catch(const std::exception& e) { spdlog::error("vlm bake: FAILED ({})",e.what()); _vlmBakeSucceeded=false; }
+    if (_vlmCmdStorage.exitAfterBake) _vlmQuitRequested = true;
+  }
+
     {
   uint32_t opaqueCount = applMesh->_opaqueChunkCount;
   uint32_t alphaMaskedCount = applMesh->_alphaMaskedChunkCount;
@@ -3875,8 +3920,6 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   {_shadow->RenderShadowMap(commandBuffer, *this, device); }
   {_shadow->RenderSpotShadowMaps(commandBuffer, *this, device); }
 
-  // Scatter volume: runs after shadow maps, before GBuffer (needs shadow map + camera UBO)
-  _scatterVolume.dispatch(commandBuffer, currentFrame);
 
   // Draw occluders first for Hi-Z generation
   DrawOccluders(commandBuffer);
@@ -3999,6 +4042,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                            1, &memBarrier, 0, nullptr, 0, nullptr);
     }
   }
+
+  // Scatter volume: runs after shadow maps, before GBuffer (needs shadow map + camera UBO)
+  _scatterVolume.dispatch(commandBuffer, currentFrame);
 
   // SAO: generate depth pyramid from full scene depth, then dispatch SAO compute
   {
@@ -4310,7 +4356,9 @@ void GpuScene::Draw() {
   vkResetCommandBuffer(currentCmdBuffer, /*VkCommandBufferResetFlagBits*/ 0);
 
   // Texture streaming: compute required mips and apply completed swaps
-  UpdateTextureStreaming(_syncSlot);
+  // Bake the deterministic permanent mip snapshot before requesting/retiring any
+  // streamed images. Resume normal streaming on the next frame after the bake.
+  if(!(_vlmCmdStorage.bakeRequested && !_vlmBakeDone)) UpdateTextureStreaming(_syncSlot);
 
   recordCommandBuffer(imageIndex, currentCmdBuffer);
 
@@ -6493,7 +6541,7 @@ void GpuScene::createBlackFallbackIBL() {
 }
 
 void GpuScene::initIBL() {
-  const auto hdrPath = _rootPath / "textures" / "san_giuseppe_bridge_2k.hdr";
+  const auto hdrPath = HdrEnvPath(_rootPath);
 
   int w = 0, h = 0, ch = 0;
   float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
@@ -6505,6 +6553,7 @@ void GpuScene::initIBL() {
   }
 
   SH9 sh = ComputeMetalSH9FromEquirect(pixels, w, h);
+  _vlmPhysicalSky = ComputeSH9FromEquirect(pixels, w, h);
 
   // SH 半球排序启动自检(回归守卫,对应 shader 端 evaluateShCoefficients(+N)):
   // 用与 shader 相同的浓缩基在 ±Y 极点重建辐照度。在 n=(0,±1,0) 处
@@ -6584,6 +6633,164 @@ void GpuScene::initIBL() {
   _iblSampler = ibl.sampler;
 
   _iblAvailable = true; // envCube/dfgLut 由 Task 3-5 的 IBLGenerator 填充
+}
+
+uint64_t GpuScene::ComputeVlmSceneHash() const {
+  uint64_t h = kVlmFnv1aBasis;
+  const std::string sceneText = sceneFile.dump(); // 覆盖 sun/point_lights/spot_lights
+  h = VlmFnv1a64(sceneText.data(), sceneText.size(), h);
+  // The packed scene contains geometry, materials and embedded textures. Size/counts
+  // alone miss same-size edits. Hash its bytes without an additional scene-sized allocation.
+  if (!VlmHashFile((_rootPath / "bistro.dxt.bin").string(), h, h))
+    throw std::runtime_error("vlm identity: packed scene is unreadable");
+  const uint32_t counts[3] = {
+      applMesh ? (uint32_t)applMesh->_opaqueChunkCount : 0,
+      applMesh ? (uint32_t)applMesh->_alphaMaskedChunkCount : 0,
+      applMesh ? (uint32_t)applMesh->_vertexCount : 0,
+  };
+  h = VlmFnv1a64(counts, sizeof(counts), h);
+  if (!_vlmCmdStorage.bakeConstEnv &&
+      !VlmHashFile(HdrEnvPath(_rootPath).string(), h, h))
+    throw std::runtime_error("vlm identity: HDR environment is unreadable");
+  const auto& cmd = _vlmCmdStorage;
+  const nlohmann::json effective = {
+      {"integrator", kVlmIntegratorVersion}, {"texturePolicy", "permanent64-frozen-cutout"},
+      {"constEnv", cmd.bakeConstEnv}, {"constRGB", cmd.bakeConstEnv ? nlohmann::json(cmd.constEnvRGB) : nlohmann::json(nullptr)},
+      {"envScale", cmd.envScale}, {"sunMode", cmd.sunIsEnvironment},
+      {"sunScale", cmd.sunScale}, {"localLightScale", cmd.localLightScale},
+      {"skyOnly", cmd.bakeSkyOnly}, {"emissiveScale", frameConstants.emissiveScale},
+      {"sunColor", {frameConstants.sunColor.x, frameConstants.sunColor.y, frameConstants.sunColor.z}},
+      {"localLightIntensity", frameConstants.localLightIntensity}};
+  const std::string identity = effective.dump();
+  h = VlmFnv1a64(identity.data(), identity.size(), h);
+  return h;
+}
+
+namespace {
+// "camera,sx,sy,sz" 或 "x0,y0,z0,x1,y1,z1" → bmin/bmax;失败返回 false。
+bool ParseVlmVolumeSpec(const std::string& spec, const nlohmann::json& sceneFile,
+                        float outBmin[3], float outBmax[3]) {
+  if (spec.rfind("camera,", 0) == 0) {
+    float size[3];
+    int consumed=0;
+    if (std::sscanf(spec.c_str() + 7, "%f,%f,%f%n", &size[0], &size[1], &size[2], &consumed) != 3 ||
+        spec[7+consumed]!='\0') return false;
+    for(float v:size) if(!std::isfinite(v) || v<=0) return false;
+    const auto& cam = sceneFile["camera_position"];
+    const float c[3] = {cam[0].get<float>(), cam[1].get<float>(), cam[2].get<float>()};
+    for (int i = 0; i < 3; ++i) {
+      outBmin[i] = c[i] - size[i] * 0.5f;
+      outBmax[i] = c[i] + size[i] * 0.5f;
+    }
+    return true;
+  }
+  float v[6];
+  int consumed=0;
+  if (std::sscanf(spec.c_str(), "%f,%f,%f,%f,%f,%f%n",
+                  &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &consumed) != 6 ||
+      spec[consumed]!='\0') return false;
+  for(float f:v) if(!std::isfinite(f)) return false;
+  for (int i = 0; i < 3; ++i) {
+    outBmin[i] = std::fmin(v[i], v[i + 3]);
+    outBmax[i] = std::fmax(v[i], v[i + 3]);
+  }
+  return true;
+}
+}
+
+bool GpuScene::RunVlmBake() {
+  // 已知限制(规格 §3):首版不支持同一发光体双重计能——bistro 中若发光材质与
+  // 解析点/聚光共位,其能量会被 emission 命中与 NEE 各计一次。阶段 1 接受该偏差
+  // (验收场景以太阳/环境为主);阶段 2 需在 bake 设置中显式指定唯一照明来源。
+  // 另一限制:透明材质策略为引擎既有 alpha-cutout(已写入 settingsHash),
+  // 不把玻璃当正确透射(规格 §6)。
+  const VlmCommandLine& cmd = _vlmCmdStorage;
+  if (!device.isRayTracingSupported() || !_raytracing || _raytracing->GetTlas() == VK_NULL_HANDLE) {
+    spdlog::error("vlm bake: FAILED (ray tracing not available)");
+    return false;
+  }
+  float bmin[3], bmax[3];
+  if (cmd.bakeVolume.empty() ||
+      !ParseVlmVolumeSpec(cmd.bakeVolume, sceneFile, bmin, bmax)) {
+    spdlog::error("vlm bake: FAILED (--vlm-bake-volume required: camera,sx,sy,sz | x0,y0,z0,x1,y1,z1)");
+    return false;
+  }
+  if (!cmd.bakeConstEnv && _equirectView == VK_NULL_HANDLE) {
+    spdlog::error("vlm bake: FAILED (equirect env missing; use --vlm-bake-const-env or fix hdr path)");
+    return false;
+  }
+
+  VlmBaker::Settings s;
+  s.layout = VlmMakeUniformLayout(bmin, bmax, cmd.bakeSpacing);
+  s.samplesPerProbe = cmd.bakeSamples;
+  s.batchSamples = cmd.bakeBatchSamples;
+  s.maxBounces = cmd.bakeMaxBounces;
+  s.skyOnly = cmd.bakeSkyOnly;
+  s.constEnv = cmd.bakeConstEnv;
+  s.constEnvRGB[0] = cmd.constEnvRGB[0];
+  s.constEnvRGB[1] = cmd.constEnvRGB[1];
+  s.constEnvRGB[2] = cmd.constEnvRGB[2];
+  s.sunIsEnvironment = cmd.sunIsEnvironment;
+  s.sunScale = cmd.sunScale;
+  s.envScale = cmd.envScale;
+  s.localLightScale = cmd.localLightScale;
+  s.hdrPathForReference = HdrEnvPath(_rootPath);
+
+  VlmAssetData asset;
+  asset.sceneHash = ComputeVlmSceneHash();
+  asset.envHash = asset.sceneHash; // env 字节已折入 sceneHash;分开字段留待阶段 2 细粒度化
+  {
+    const std::string lt = sceneFile["point_lights"].dump() +
+                           sceneFile["spot_lights"].dump() +
+                           sceneFile["sun_direction"].dump();
+    asset.lightHash = VlmFnv1a64(lt.data(), lt.size(), kVlmFnv1aBasis);
+  }
+  for (int i = 0; i < 3; ++i) {
+    asset.bmin[i] = s.layout.bmin[i];
+    asset.step[i] = s.layout.step[i];
+    asset.cells[i] = s.layout.cells[i];
+  }
+  asset.bandWidth = std::fmin(asset.step[0], std::fmin(asset.step[1], asset.step[2])); // 一层粗 cell(规格 §8.3)
+  asset.unitScale = 1.0f;
+  asset.samplesPerProbe = s.samplesPerProbe;
+  asset.integratorVersion = kVlmIntegratorVersion;
+  {
+    const nlohmann::json settings = {
+        {"samples",s.samplesPerProbe}, {"batchSamples",s.batchSamples}, {"bounces",s.maxBounces},
+        {"skyOnly",s.skyOnly}, {"constEnv",s.constEnv}, {"constRGB",s.constEnvRGB},
+        {"sunEnvironment",s.sunIsEnvironment}, {"sunScale",s.sunScale},
+        {"envScale",s.envScale}, {"localLightScale",s.localLightScale},
+        {"boundsMin",asset.bmin}, {"step",asset.step}, {"cells",asset.cells},
+        {"integrator",kVlmIntegratorVersion}, {"texturePolicy","permanent64-frozen-cutout"}};
+    const std::string text=settings.dump();
+    asset.settingsHash = VlmFnv1a64(text.data(), text.size(), kVlmFnv1aBasis);
+  }
+  const uint64_t probes = s.layout.ProbeCount();
+  if (!probes || probes>1000000) { spdlog::error("vlm bake: FAILED (invalid volume or >1M probe budget)"); return false; }
+  asset.validity.assign((size_t)probes, 1);
+  asset.shFp16.resize((size_t)probes * 28);
+
+  spdlog::info("vlm bake: volume=({:.2f},{:.2f},{:.2f})..({:.2f},{:.2f},{:.2f}) cells={}x{}x{}",
+               bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2],
+               asset.cells[0], asset.cells[1], asset.cells[2]);
+  spdlog::info("vlm bake: texture snapshot=permanent64 (streaming suspended for bake)");
+
+  VlmBaker baker(const_cast<VulkanDevice&>(device), *this);
+  baker.Init(_equirectView);
+  if (!baker.Bake(s, asset)) return false; // 失败原因已由其内部日志输出,不发布资产
+
+  if (!VlmSaveAsset(cmd.bakeOutPath, asset)) {
+    spdlog::error("vlm bake: FAILED (write {})", cmd.bakeOutPath);
+    return false;
+  }
+  const uint64_t bytes = 132ull + probes * 57ull;
+  spdlog::info("vlm bake: wrote {} ({} probes, {} bytes)", cmd.bakeOutPath, probes, bytes);
+  if(_vlmRuntime && _vlmRuntime->LoadFromAsset(asset)) {
+    frameConstants.vlmScale=1; frameConstants.vlmFlags=cmd.sunIsEnvironment ? 2.0f : 1.0f;
+    _vlmRuntime->WriteDeferredDescriptors(deferredLightingDescriptorSet);
+    _vlmRuntime->WriteApplDescriptors(applDescriptorSets);
+  }
+  return true;
 }
 
 bool updated = false;
@@ -9102,6 +9309,10 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
 
   if (ImGui::CollapsingHeader("IBL")) {
     ImGui::SliderFloat("IBL Scale", &frameConstants.iblScale, 0.0f, 2.0f);
+    if(_vlmRuntime && _vlmRuntime->IsActive()) {
+      ImGui::SliderFloat("VLM Scale", &frameConstants.vlmScale, 0.0f, 2.0f);
+      ImGui::Text("VLM: %u probes",_vlmRuntime->ProbeCount());
+    }
     ImGui::SliderFloat("IBL Specular Scale", &frameConstants.iblSpecularScale, 0.0f, 8.0f);
     if (!_iblAvailable) ImGui::TextDisabled("env map missing - using black fallback");
   }

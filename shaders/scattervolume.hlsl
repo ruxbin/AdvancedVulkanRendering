@@ -51,6 +51,8 @@ VK_BINDING(11,0) SamplerComparisonState                 spotShadowSampler    REG
 VK_BINDING(12,0) StructuredBuffer<float4x4>             spotViewProjMatrices REGISTER_SRV(12,0);
 VK_BINDING(13,0) Texture3D<float>                       perlinNoiseTex       REGISTER_SRV(13,0);
 VK_BINDING(14,0) SamplerState                           linearSampler        REGISTER_SAMPLER(14,0);
+VK_BINDING(15,0) Texture2D<float> inDepth                                    REGISTER_SRV(15,0);
+VK_BINDING(16,0) SamplerState _NearestClampSampler REGISTER_SAMPLER(16,0);
 #endif // !ACCUM_PASS
 
 // ============================================================
@@ -116,10 +118,10 @@ float heightFogDensity(float worldY, float offset, float falloff) {
 #ifndef ACCUM_PASS
 float3 froxelToWorldPos(uint3 coord, float viewZ) {
     float2 uv = (float2(coord.xy) + 0.5f) / float2(pc.volumeWidth, pc.volumeHeight);
-    float4 ndcRay = float4(uv * 2.0f - 1.0f, 0.0f, 1.0f);
+    float4 ndcRay = float4(uv * 2.0f - 1.0f, 1.0f, 1.0f);
     float4 viewRay = mul(cameraParams.invProjectionMatrix, ndcRay);
     viewRay /= viewRay.w;
-    float scale = viewZ / (-viewRay.z);
+    float scale = viewZ / (viewRay.z);
     float4 worldPos = mul(cameraParams.invViewMatrix, float4(viewRay.xyz * scale, 1.0f));
     return worldPos.xyz;
 }
@@ -241,6 +243,13 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
 
     float viewZ = sliceToViewZ(float(DTid.z) + 0.5f + jitter * 0.5f);
 
+    float2 uv = (float2(DTid.xy) + 0.5f) / float2(pc.volumeWidth, pc.volumeHeight);
+    float4 ndc = float4(uv * 2.0f - 1.0f, inDepth.SampleLevel(_NearestClampSampler, uv, 0), 1.0f);
+    float4 viewPos = mul(cameraParams.invProjectionMatrix, ndc);
+    //viewPos /= viewPos.w;
+    float4 worldPosDebug = mul(cameraParams.invViewMatrix, viewPos);
+    worldPosDebug /= worldPosDebug.w;
+
     float3 worldPos = froxelToWorldPos(DTid, viewZ);
 
     // ---- coefficients: EXACT Metal match (AAPLScatterVolume.metal:190-198) ----
@@ -259,6 +268,7 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
     float3 viewDir = normalize(camPos - worldPos);
     float  cosSun  = -dot(normalize(frameConstants.sunDirection), viewDir);
     float  shadow  = evalShadow(float4(worldPos, 1.0f));
+    float  shadowDebug = evalShadow(worldPosDebug);
 
     float3 scattering = frameConstants.skyColor; // ambient
     scattering += frameConstants.sunColor * M_PI_F * shadow * schlickPhase(cosSun, 0.3f);
@@ -315,6 +325,7 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
     }
 
     scatterOut[DTid] = current;
+//    scatterOut[DTid] = float4(shadow,shadow,shadow,shadow);
 }
 #endif // !ACCUM_PASS
 

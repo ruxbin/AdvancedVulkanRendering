@@ -1,10 +1,12 @@
 #pragma once
+#include "SphericalHarmonics.h"
 #include "Camera.h"
 #include "Common.h"
 #include "AssetLoader.h"
 #include "Light.h"
 #include "Matrix.h"
 #include "ScatteringVolume.h"
+#include "VlmCommandLine.h"
 #include "VulkanSetup.h"
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
@@ -427,6 +429,17 @@ private:
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
 
+  // VLM 烘焙命令行与一次性烘焙状态(ctor 传入时有效)。
+  VlmCommandLine _vlmCmdStorage{};       // 仅当 ctor 传入时有效
+  bool _vlmCmdValid = false;
+  bool _vlmBakeDone = false;
+  bool _vlmQuitRequested = false;
+  bool RunVlmBake();
+  bool _vlmBakeSucceeded = false;
+  class VlmRuntime* _vlmRuntime = nullptr;
+  SH9 _vlmPhysicalSky{};
+  uint64_t ComputeVlmSceneHash() const;
+
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;
   VkDeviceMemory _hizMemory = VK_NULL_HANDLE;
@@ -628,7 +641,8 @@ private:
   void recreateSwapChainResources();
 
 public:
-  GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref);
+  GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
+           const VlmCommandLine *vlmCmd = nullptr);
   ~GpuScene();
   GpuScene() = delete;
   GpuScene(const GpuScene &) = delete;
@@ -636,6 +650,8 @@ public:
   void recreateSwapChain();
   void setFramebufferResized(bool resized) { framebufferResized = resized; }
   const std::filesystem::path &RootPath() const { return _rootPath; }
+  bool QuitRequested() const { return _vlmQuitRequested; }
+  int VlmExitCode() const { return _vlmCmdStorage.bakeRequested && !_vlmBakeSucceeded ? 1 : 0; }
   void InitImGui(SDL_Window *window) { initImGui(window); }
   void ProcessImGuiEvent(SDL_Event *event);
 
@@ -990,6 +1006,7 @@ public:
   friend class SpotLight;
   friend class LightCuller;
   friend class RayTracing;
+  friend class VlmBaker;
   friend class PbrtExporter;
   FrameConstants frameConstants{
       vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),  // sunDirection
@@ -997,7 +1014,7 @@ public:
       vec3(0.4f, 0.6f, 1.0f),    // skyColor
       1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
       0.1f, 1000.f,              // nearPlane, farPlane
-      1.0f,                      // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
+      2.0f,                      // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
       0u,                        // frameCounter (per-frame fill)
       vec2(),                    // physicalSize (per-frame fill)
       vec2(),                    // invPhysicalSize (per-frame fill)

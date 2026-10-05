@@ -1,6 +1,9 @@
 #include "commonstruct.hlsl"
 #include "lighting.hlsl"
 #include "ibl_common.hlsl"
+#ifndef DX12_BACKEND
+#include "vlm_common.hlsl"
+#endif
 #include "shadercompat.hlsl"
 
 
@@ -69,6 +72,9 @@ VK_BINDING(5,1) Texture2D<float2> dfgLutTex;
 VK_BINDING(6,1) TextureCube envMap;
 VK_BINDING(7,1) SamplerState iblSampler;
 VK_BINDING(8,1) cbuffer SHCoefficients { float4 shCoefs[9]; };
+VK_BINDING(9,1) cbuffer VlmParamsCB { VlmParams vlmParams; };
+VK_BINDING(10,1) StructuredBuffer<float4> vlmShData;
+VK_BINDING(11,1) cbuffer VlmSkySH { float4 vlmSkySh[9]; };
 #endif
 
 
@@ -298,14 +304,19 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
 
     half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
 #ifndef DX12_BACKEND
-    if (frameConstants.iblScale > 0.0f)
+    if (frameConstants.iblScale > 0.0f || (frameConstants.vlmFlags > 0.5f && frameConstants.vlmScale > 0))
     {
         float3 camPosIBL = float3(cameraParams.invViewMatrix._m03,
                                   cameraParams.invViewMatrix._m13,
                                   cameraParams.invViewMatrix._m23);
         float3 viewDirIBL = normalize(camPosIBL - input.wsPosition.xyz);
-        res += (half3)IBL(surfaceData, envMap, dfgLutTex, iblSampler, shCoefs,
-                          viewDirIBL, frameConstants.iblScale, frameConstants.iblSpecularScale);
+        if(frameConstants.vlmFlags>0.5f && frameConstants.vlmScale>0)
+            res+=(half3)VlmIndirect(surfaceData,input.wsPosition.xyz,normalize(float3(input.normal)),
+                viewDirIBL,vlmParams,vlmShData,vlmSkySh,envMap,dfgLutTex,iblSampler,
+                frameConstants.vlmScale,frameConstants.iblScale,frameConstants.iblSpecularScale);
+        else
+            res+=(half3)IBL(surfaceData,envMap,dfgLutTex,iblSampler,shCoefs,viewDirIBL,
+                frameConstants.iblScale,frameConstants.iblSpecularScale);
     }
 #endif
     return half4(res, surfaceData.alpha);
@@ -393,14 +404,19 @@ half4 RenderSceneForwardPSIndirect(VSOutput input) : SV_Target
 
     half3 res = lightingShader(surfaceData, 0, input.wsPosition, frameConstants, cameraParams);
 #ifndef DX12_BACKEND
-    if (frameConstants.iblScale > 0.0f)
+    if (frameConstants.iblScale > 0.0f || (frameConstants.vlmFlags > 0.5f && frameConstants.vlmScale > 0))
     {
         float3 camPosIBL = float3(cameraParams.invViewMatrix._m03,
                                   cameraParams.invViewMatrix._m13,
                                   cameraParams.invViewMatrix._m23);
         float3 viewDirIBL = normalize(camPosIBL - input.wsPosition.xyz);
-        res += (half3)IBL(surfaceData, envMap, dfgLutTex, iblSampler, shCoefs,
-                          viewDirIBL, frameConstants.iblScale, frameConstants.iblSpecularScale);
+        if(frameConstants.vlmFlags>0.5f && frameConstants.vlmScale>0)
+            res+=(half3)VlmIndirect(surfaceData,input.wsPosition.xyz,normalize(float3(input.normal)),
+                viewDirIBL,vlmParams,vlmShData,vlmSkySh,envMap,dfgLutTex,iblSampler,
+                frameConstants.vlmScale,frameConstants.iblScale,frameConstants.iblSpecularScale);
+        else
+            res+=(half3)IBL(surfaceData,envMap,dfgLutTex,iblSampler,shCoefs,viewDirIBL,
+                frameConstants.iblScale,frameConstants.iblSpecularScale);
     }
 #endif
     return half4(res, surfaceData.alpha);

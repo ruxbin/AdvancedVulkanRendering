@@ -39,6 +39,12 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/AssetLoader.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Raytracing.cpp
     ${CMAKE_CURRENT_LIST_DIR}/PbrtExporter.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmSh.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmLayout.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmAsset.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmBaker.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmEnvironment.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmRuntime.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

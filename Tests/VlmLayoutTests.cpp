@@ -108,6 +108,12 @@ void TestBoundaryWeight() {
 } // namespace
 
 int main() {
+  const float lo[3] = {0,0,0}, hi[3] = {2.1f,2.1f,2.1f};
+  const auto fractional = VlmMakeUniformLayout(lo, hi, 1.0f);
+  expectTrue(fractional.cells[0] == 3, "spacing is a maximum, not nearest cell size");
+  expectTrue(VlmMakeUniformLayout(lo, hi, 0).ProbeCount() == 0, "zero spacing rejected");
+  expectTrue(VlmMakeUniformLayout(lo, hi, NAN).ProbeCount() == 0, "NaN spacing rejected");
+  expectTrue(VlmMakeUniformLayout(lo, lo, 1).ProbeCount() == 0, "degenerate volume rejected");
   TestMakeLayout();
   TestTinyExtent();
   TestIndexRoundTrip();

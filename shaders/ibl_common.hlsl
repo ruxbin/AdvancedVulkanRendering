@@ -1,4 +1,4 @@
-﻿// ibl_common.hlsl — IBL 采样(deferred/forward 共用;后端中立,
+// ibl_common.hlsl — IBL 采样(deferred/forward 共用;后端中立,
 // 调用方自行用 #ifndef DX12_BACKEND 保护,DX12 移植完成后移除 guard)。
 // 数学与 Apple AAPLLightingCommon.h 的 evaluateShCoefficients + IBL() 一致,
 // env cube 存储 Apple RGBM 解码后的值，采样时不再次解码。
@@ -17,16 +17,14 @@ float3 evaluateShCoefficients(float3 n, float4 sh[9])
          + sh[8].rgb * (n.x * n.x - n.y * n.y);
 }
 
-float3 IBL(AAPLPixelSurfaceData surface,
+float3 IBLSpecular(AAPLPixelSurfaceData surface,
            TextureCube envMap,
            Texture2D<float2> dfgLut,
            SamplerState samp,
-           float4 sh[9],
            float3 viewDir,
            float scale,
            float specularScale)
 {
-    float3 diffuseIBL = evaluateShCoefficients((float3)surface.normal, sh) * (float3)surface.albedo;
 
     float perceptualRoughness = (float)surface.roughness;
     float NoV = max(dot((float3)surface.normal, viewDir), 0.0);
@@ -43,5 +41,11 @@ float3 IBL(AAPLPixelSurfaceData surface,
     float3 specularColor = (float3)surface.F0 * dfg.x + dfg.y;
 
     float3 specularIBL = indirectSpecular * specularColor;
-    return (diffuseIBL + specularIBL * specularScale) * scale;
+    return specularIBL * specularScale * scale;
+}
+
+float3 IBL(AAPLPixelSurfaceData surface, TextureCube envMap, Texture2D<float2> dfgLut,
+           SamplerState samp, float4 sh[9], float3 viewDir, float scale, float specularScale) {
+    return evaluateShCoefficients(float3(surface.normal),sh)*float3(surface.albedo)*scale
+         + IBLSpecular(surface,envMap,dfgLut,samp,viewDir,scale,specularScale);
 }
