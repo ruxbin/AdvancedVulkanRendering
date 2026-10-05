@@ -56,6 +56,9 @@ public:
 
   bool IsBuilt() const { return _tlas != VK_NULL_HANDLE; }
 
+  // VLM 烘焙共享静态 TLAS(规格 §2:提取共享静态追踪资源视图)。
+  VkAccelerationStructureKHR GetTlas() const { return _tlas; }
+
 private:
   // helpers
   VkDeviceAddress getBufferDeviceAddress(VkBuffer buffer) const;

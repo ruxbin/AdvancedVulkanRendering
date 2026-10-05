@@ -2943,6 +2943,8 @@ git commit -m "feat: VLM runtime sampling in deferred + forward (uniform grid ga
 
 ### Task 9: 全量回归 + 文档收尾
 
+> 2026-10-05 执行更新：当前实现裁决与验收记录见 `docs/vlm-phase1-validation.md`。本文后续原始代码片段/命令保留作为计划历史；最终脚本为 `Tests/run_vlm_smoke.ps1` 和 `Tests/validate_vlm_log.py`。首段 HDR 环境混合采样、默认 environment sun、integrator 3、固定永久 mip，以及有暗场基线的叠加检验均已取代原始草案。不能将三日志线性检验或启动成功视为完整光照所有权/画面验收。
+
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-01-volumetric-lightmap-design.md`(状态行)
 

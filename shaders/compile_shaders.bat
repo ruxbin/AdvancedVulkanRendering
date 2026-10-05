@@ -74,6 +74,9 @@ D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -E ScalableAmbientObscurance sao.hlsl 
 REM Hardware ray tracing — single library SPV with raygen + miss + closest-hit + any-hit entries
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T lib_6_3 rt_lighting.hlsl -fspv-target-env=vulkan1.2 -fspv-extension=SPV_KHR_ray_tracing -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-extension=SPV_KHR_non_semantic_info -fspv-extension=SPV_EXT_descriptor_indexing -Fo rt_lighting.lib.spv
 
+REM VLM probe bake — single library SPV (raygen VlmProbeRayGen + miss VlmMissPrimary; shared entries from rt_path_common.hlsl)
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T lib_6_3 vlm_bake.hlsl -fspv-target-env=vulkan1.2 -fspv-extension=SPV_KHR_ray_tracing -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-extension=SPV_KHR_non_semantic_info -fspv-extension=SPV_EXT_descriptor_indexing -Fo vlm_bake.lib.spv
+
 REM Screen-space decal
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 decal.hlsl -E DecalVS -Fo decal.vs.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 decal.hlsl -E DecalPS -Fo decal.ps.spv

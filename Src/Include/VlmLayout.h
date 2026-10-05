@@ -10,7 +10,8 @@ struct VlmUniformLayout {
   uint32_t cells[3];
 
   uint64_t ProbeCount() const {
-    return (uint64_t)(cells[0] + 1) * (uint64_t)(cells[1] + 1) * (uint64_t)(cells[2] + 1);
+    for (auto c : cells) if (!c || c > 4096) return 0;
+    return (uint64_t(cells[0]) + 1) * (uint64_t(cells[1]) + 1) * (uint64_t(cells[2]) + 1);
   }
 };
 

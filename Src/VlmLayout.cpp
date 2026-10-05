@@ -9,11 +9,16 @@ float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : 
 
 VlmUniformLayout VlmMakeUniformLayout(const float bmin[3], const float bmax[3], float spacing) {
   VlmUniformLayout L{};
+  if (!std::isfinite(spacing) || spacing <= 0) return {};
   for (int i = 0; i < 3; ++i) {
     const float extent = bmax[i] - bmin[i];
-    const uint32_t cells = extent > 0.0f
-        ? (uint32_t)std::max(1.0f, std::ceil(extent / spacing))
-        : 1u;
+    if (!std::isfinite(bmin[i]) || !std::isfinite(bmax[i]) || !std::isfinite(extent) || extent <= 0) return {};
+    const double ratio = double(extent) / spacing;
+    // Only absorb floating point roundoff near an integer, never an arbitrary fraction.
+    const double rounded = std::round(ratio);
+    const double adjusted = std::fabs(ratio - rounded) <= 1e-5 * std::max(1.0, ratio) ? rounded : ratio;
+    if (adjusted > 4096) return {};
+    const uint32_t cells = static_cast<uint32_t>(std::max(1.0, std::ceil(adjusted)));
     L.cells[i] = cells;
     L.step[i] = extent / (float)cells; // 重算使 bmin+step*cells == bmax 精确成立
     L.bmin[i] = bmin[i];
@@ -55,6 +60,7 @@ bool VlmInside(const VlmUniformLayout& L, const float pos[3]) {
 }
 
 float VlmBoundaryWeight(const VlmUniformLayout& L, const float pos[3], float bandWidth) {
+  if (!L.ProbeCount() || !VlmInside(L, pos) || !std::isfinite(bandWidth)) return 0;
   float dMin = 1e30f;
   for (int i = 0; i < 3; ++i) {
     const float hi = L.bmin[i] + L.step[i] * (float)L.cells[i];

@@ -93,8 +93,8 @@ struct FrameConstants {
   float noiseSpeed; // retained for padding; set to 0
   float iblScale;          // IBL 总强度(0 = 关闭);ImGui 可调,默认 1.0
   float iblSpecularScale;  // 仅 IBL 高光额外倍率;默认 4.0(对齐 Metal)
-  float _padIbl0;
-  float _padIbl1;
+  float vlmScale;
+  float vlmFlags;          // 0 disabled, 1 analytic sun, 2 environment sun
 };
 static_assert(sizeof(FrameConstants) == 144, "FrameConstants size mismatch vs AAPLFrameConstants (ibl fields appended)");
 // Field-offset checks against the HLSL SPIR-V layout (wetness=44, exposure=96, taaEnabled=100).
@@ -105,6 +105,8 @@ static_assert(offsetof(FrameConstants, taaEnabled)       == 100, "taaEnabled off
 static_assert(offsetof(FrameConstants, globalNoiseOffset)== 112, "globalNoiseOffset offset mismatch vs HLSL Offset(112)");
 static_assert(offsetof(FrameConstants, iblScale)         == 128, "iblScale offset mismatch vs HLSL Offset(128)");
 static_assert(offsetof(FrameConstants, iblSpecularScale) == 132, "iblSpecularScale offset mismatch vs HLSL Offset(132)");
+static_assert(offsetof(FrameConstants, vlmScale) == 136, "vlmScale offset mismatch vs HLSL");
+static_assert(offsetof(FrameConstants, vlmFlags) == 140, "vlmFlags offset mismatch vs HLSL");
 
 struct FrameData {
   uniformBufferData camConstants;
@@ -175,3 +177,6 @@ struct AAPLSpotLightCullingData {
   float cosInnerAngle;
   float _padSpot0, _padSpot1, _padSpot2;
 };
+
+static_assert(offsetof(FrameConstants, vlmScale)==136);
+static_assert(offsetof(FrameConstants, vlmFlags)==140);
