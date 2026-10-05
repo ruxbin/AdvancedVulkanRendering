@@ -93,8 +93,8 @@ struct AAPLFrameConstants
     float  noiseSpeed;
     float iblScale;         // offset 128
     float iblSpecularScale; // offset 132
-    float _padIbl0;
-    float _padIbl1;
+    float vlmScale;
+    float vlmFlags;
 };
 
 struct CameraParamsBuffer

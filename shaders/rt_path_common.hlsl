@@ -162,12 +162,18 @@ float3 sampleBRDF(float3 N, float3 V, float3 albedo, float3 F0, float roughness,
         wi = sampleGGX(V, N, roughness, xi, valid);
         if (!valid || dot(wi, N) <= 0.0f) return (float3)0;
         float pdf = specularPdf(N, V, wi, roughness) * pSpec;
+#ifdef VLM_PHYSICAL_BSDF
+        pdf += diffusePdf(N, wi) * (1.0f - pSpec);
+#endif
         if (pdf < 1e-6f) return (float3)0;
         return evalBRDF(N, V, wi, albedo, F0, roughness) / pdf;
     } else {
         wi = sampleDiffuse(N, xi);
         if (dot(wi, N) <= 0.0f) return (float3)0;
         float pdf = diffusePdf(N, wi) * (1.0f - pSpec);
+#ifdef VLM_PHYSICAL_BSDF
+        pdf += specularPdf(N, V, wi, roughness) * pSpec;
+#endif
         if (pdf < 1e-6f) return (float3)0;
         return evalBRDF(N, V, wi, albedo, F0, roughness) / pdf;
     }

@@ -13,7 +13,7 @@ inline constexpr uint32_t kVlmVersion = 1;
 inline constexpr uint32_t kVlmEndianMarker = 0x01020304u;
 inline constexpr uint32_t kVlmEncodingIrradiancePolynomialSH9V1 = 1;
 inline constexpr uint32_t kVlmLayoutUniform = 1;
-inline constexpr uint32_t kVlmIntegratorVersion = 1;
+inline constexpr uint32_t kVlmIntegratorVersion = 3; // BSDF mixture + terminal segment + primary environment mixture
 
 struct VlmAssetData {
   uint64_t sceneHash = 0, envHash = 0, lightHash = 0, settingsHash = 0;
@@ -29,11 +29,13 @@ struct VlmAssetData {
   std::vector<uint16_t> shFp16;  // probeCount × 28
 
   uint64_t ProbeCount() const {
-    return (uint64_t)(cells[0] + 1) * (uint64_t)(cells[1] + 1) * (uint64_t)(cells[2] + 1);
+    for (auto c : cells) if (!c || c > 4096) return 0;
+    return (uint64_t(cells[0]) + 1) * (uint64_t(cells[1]) + 1) * (uint64_t(cells[2]) + 1);
   }
 };
 
 bool VlmSaveAsset(const std::string& path, const VlmAssetData& asset);
+bool VlmValidateAsset(const VlmAssetData& asset);
 
 enum class VlmLoadResult { Ok, Stale, Rejected };
 VlmLoadResult VlmLoadAsset(const std::string& path, VlmAssetData& out,
@@ -42,3 +44,5 @@ VlmLoadResult VlmLoadAsset(const std::string& path, VlmAssetData& out,
 uint32_t VlmCrc32(const void* data, size_t size);
 inline constexpr uint64_t kVlmFnv1aBasis = 1469598103934665603ull;
 uint64_t VlmFnv1a64(const void* data, size_t size, uint64_t seed);
+// Streaming content identity; missing/unreadable input must never look like a valid snapshot.
+bool VlmHashFile(const std::string& path, uint64_t seed, uint64_t& hash);

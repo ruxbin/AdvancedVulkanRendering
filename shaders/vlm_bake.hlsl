@@ -2,7 +2,8 @@
 // 每 lane 一个 probe:批量低差异方向 × 迭代路径追踪,首段方向做 SH9 投影,
 // FP32 累加进 shAccum[probe*27 .. +27)(lane 独占 probe,无需原子)。
 // 与相机 PT 的差异(规格 §2/§6):
-//   - 首段为均匀球面低差异序列(pdf=1/(4π)),探针无接收法线,不用余弦半球;
+//   - HDR 首段混合均匀球面低差异序列与环境重要性采样;常量天空用均匀球面;
+//     探针无接收法线,不用余弦半球,投影除完整混合 PDF;
 //   - miss 采样原始线性 HDR equirect(非程序化天空);
 //   - 局部灯 NEE 在所有命中执行(相机 PT 仅 bounce==0);
 //   - 不继承 FIREFLY_CLAMP;NaN/Inf 置 errorFlags 并丢弃样本,CPU 判整批失败;
@@ -15,21 +16,24 @@
 //        -fspv-extension=SPV_KHR_ray_tracing -fspv-extension=SPV_KHR_non_semantic_info
 //        -fspv-extension=SPV_EXT_descriptor_indexing -Fo vlm_bake.lib.spv
 
+#define VLM_PHYSICAL_BSDF 1 // Full mixture PDF; preserve the legacy camera path.
 #include "rt_path_common.hlsl"
+#include "vlm_env_sampling.hlsl"
 
 // --- VLM 自有绑定(set1 追加)---
 [[vk::binding(14,1)]] Texture2D<float4>       envTex;
 [[vk::binding(15,1)]] SamplerState            envSampler;
 [[vk::binding(16,1)]] RWStructuredBuffer<float> shAccum;    // probeCount × 27
 [[vk::binding(17,1)]] RWStructuredBuffer<uint>  errorFlags; // 1 uint
+[[vk::binding(18,1)]] StructuredBuffer<float> envCdf;
 
 // --- Push constants(112 B,与 C++ VlmBakePC 逐字段一致)---
 struct VlmBakePushConsts {
     uint  probeCount; uint  samplesThisBatch; uint  batchSeed; uint  maxBounces; // 0..15
     uint  pointLightCount; uint spotLightCount; uint flags; uint cellsX;         // 16..31
     uint  cellsY; uint cellsZ; float sunConeRadius; float sunScale;              // 32..47
-    float envScale; float localLightScale; float pad0; float pad1;               // 48..63
-    float3 constEnvRGB; float pad2;   // 64..79
+    float envScale; float localLightScale; uint probeBase; uint envWidth;        // 48..63
+    float3 constEnvRGB; uint envHeight; // 64..79
     float3 bmin; float pad3;          // 80..95
     float3 step; float pad4;          // 96..111
 };
@@ -93,14 +97,13 @@ float3 probeWorldPos(uint probeIdx) {
 
 [shader("raygeneration")]
 void VlmProbeRayGen() {
-    uint probeIdx = DispatchRaysIndex().x;
+    uint probeIdx = pc.probeBase + DispatchRaysIndex().x;
     if (probeIdx >= pc.probeCount) return;
 
     float3 probePos = probeWorldPos(probeIdx);
     uint rng = (probeIdx * 2654435761u) ^ (pc.batchSeed * 805459861u);
     pcgNext(rng); pcgNext(rng); // warm up
 
-    const float invPdf = 4.0f * PI; // 1/pdf,pdf=1/(4π)
     // Cranley-Patterson 旋转量:每个 (probe,batch) 一对,整批样本共享。
     const float cpR1 = rngF(rng);
     const float cpR2 = rngF(rng);
@@ -109,6 +112,15 @@ void VlmProbeRayGen() {
 
     for (uint s = 0; s < pc.samplesThisBatch; ++s) {
         float3 dir0 = sampleSphereDir(s, pc.samplesThisBatch, cpR1, cpR2);
+        float pdf=1.0f/(4.0f*PI);
+        if(pc.envWidth>0 && pc.envHeight>0) {
+            if(rngF(rng)<.5) {
+                float3 xi=float3(rngF(rng),rngF(rng),rngF(rng));
+                dir0=VlmSampleEnv(pc.envWidth,pc.envHeight,envCdf,xi);
+            }
+            pdf=.5*pdf+.5*VlmEnvPdf(dir0,pc.envWidth,pc.envHeight,envCdf);
+        }
+        float invPdf=1.0f/pdf;
         float3 Li;
 
         if (pc.flags & VLM_BAKE_SKY_ONLY) {
@@ -124,7 +136,9 @@ void VlmProbeRayGen() {
             ray.TMin      = 1e-3f;
             ray.TMax      = 1e30f;
 
-            for (uint bounce = 0; bounce < max(1u, pc.maxBounces); ++bounce) {
+            // maxBounces counts surface scatterings. Trace the terminal segment
+            // as well so the last sampled direction can reach sky/emission.
+            for (uint bounce = 0; bounce <= pc.maxBounces; ++bounce) {
                 PrimaryPayload p;
                 p.hit = false; p.wsPos = 0; p.normal = 0; p.albedo = 0;
                 p.F0 = 0.04f; p.roughness = 1.0f; p.emissive = 0; p.alpha = 1; p.hitT = 0;
@@ -138,6 +152,7 @@ void VlmProbeRayGen() {
 
                 // 自发光出射(规格 §3:命中发光表面记录其出射 emission)
                 Li += throughput * p.emissive * frameConstants.emissiveScale;
+                if (bounce == pc.maxBounces) break;
 
                 float3 N = normalize(p.normal);
                 float3 V = -ray.Direction;

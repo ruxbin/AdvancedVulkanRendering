@@ -1,4 +1,5 @@
 #pragma once
+#include "SphericalHarmonics.h"
 #include "Camera.h"
 #include "Common.h"
 #include "AssetLoader.h"
@@ -433,7 +434,10 @@ private:
   bool _vlmCmdValid = false;
   bool _vlmBakeDone = false;
   bool _vlmQuitRequested = false;
-  void RunVlmBake();
+  bool RunVlmBake();
+  bool _vlmBakeSucceeded = false;
+  class VlmRuntime* _vlmRuntime = nullptr;
+  SH9 _vlmPhysicalSky{};
   uint64_t ComputeVlmSceneHash() const;
 
   // Hi-Z Occlusion Culling (Stage 3)
@@ -647,6 +651,7 @@ public:
   void setFramebufferResized(bool resized) { framebufferResized = resized; }
   const std::filesystem::path &RootPath() const { return _rootPath; }
   bool QuitRequested() const { return _vlmQuitRequested; }
+  int VlmExitCode() const { return _vlmCmdStorage.bakeRequested && !_vlmBakeSucceeded ? 1 : 0; }
   void InitImGui(SDL_Window *window) { initImGui(window); }
   void ProcessImGuiEvent(SDL_Event *event);
 

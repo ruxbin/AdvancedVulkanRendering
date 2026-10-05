@@ -4,6 +4,21 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <array>
+
+bool VlmHashFile(const std::string& path, uint64_t seed, uint64_t& hash) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return false;
+  std::array<char, 65536> block;
+  uint64_t h = seed;
+  while (input) {
+    input.read(block.data(), block.size());
+    h = VlmFnv1a64(block.data(), static_cast<size_t>(input.gcount()), h);
+  }
+  if (!input.eof() || input.bad()) return false;
+  hash = h;
+  return true;
+}
 
 #ifdef _WIN32
 #include <windows.h>
@@ -59,6 +74,8 @@ bool writeFileAtomic(const std::string& path, const std::vector<uint8_t>& bytes)
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     f.write((const char*)bytes.data(), (std::streamsize)bytes.size());
+    f.flush();
+    f.close();
     if (!f.good()) { std::remove(tmp.c_str()); return false; }
   }
 #ifdef _WIN32
@@ -102,9 +119,23 @@ uint64_t VlmFnv1a64(const void* data, size_t size, uint64_t seed) {
   return h;
 }
 
-bool VlmSaveAsset(const std::string& path, const VlmAssetData& a) {
+bool VlmValidateAsset(const VlmAssetData& a) {
   const uint64_t probes = a.ProbeCount();
-  if (probes == 0 || a.validity.size() != probes || a.shFp16.size() != probes * 28) return false;
+  if (!probes || probes > 1000000 || a.validity.size() != probes || a.shFp16.size() != probes * 28) return false;
+  if (a.integratorVersion != kVlmIntegratorVersion || !a.samplesPerProbe || a.flags != 0) return false;
+  for (int i = 0; i < 3; ++i)
+    if (!std::isfinite(a.bmin[i]) || !std::isfinite(a.step[i]) || a.step[i] <= 0 ||
+        !std::isfinite(a.bmin[i] + a.step[i] * a.cells[i])) return false;
+  if (!std::isfinite(a.bandWidth) || a.bandWidth < 0 || !std::isfinite(a.unitScale) || a.unitScale <= 0) return false;
+  for (auto v : a.validity) if (v > 1) return false;
+  for (size_t i = 0; i < a.shFp16.size(); ++i)
+    if ((a.shFp16[i] & 0x7c00) == 0x7c00 || (i % 28 == 27 && a.shFp16[i] != 0)) return false;
+  return true;
+}
+
+bool VlmSaveAsset(const std::string& path, const VlmAssetData& a) {
+  if (!VlmValidateAsset(a)) return false;
+  const uint64_t probes = a.ProbeCount();
 
   std::vector<uint8_t> o;
   o.reserve(132 + (size_t)probes * 57);
@@ -154,10 +185,13 @@ VlmLoadResult VlmLoadAsset(const std::string& path, VlmAssetData& out,
     return VlmLoadResult::Rejected;
   };
 
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f.good()) return reject("file not readable");
-  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), {});
-  if (bytes.size() < 132) return reject("file too small");
+  const auto length=f.tellg();
+  if(length<132 || length>132+57ll*1000000) return reject("file size outside probe budget");
+  std::vector<uint8_t> bytes(static_cast<size_t>(length));
+  f.seekg(0); f.read(reinterpret_cast<char*>(bytes.data()),length);
+  if(!f.good()) return reject("file read failed");
 
   Reader r{bytes.data(), bytes.size()};
   if (r.u32() != kVlmMagic) return reject("bad magic");
@@ -186,7 +220,7 @@ VlmLoadResult VlmLoadAsset(const std::string& path, VlmAssetData& out,
 
   if (totalLength != bytes.size()) return reject("totalLength != file size");
   if (VlmCrc32(bytes.data() + 64, bytes.size() - 64) != crc) return reject("crc32 mismatch");
-  if (probeCount == 0 || probeCount != out.ProbeCount()) return reject("probeCount mismatch");
+  if (probeCount == 0 || probeCount > 1000000 || probeCount != out.ProbeCount()) return reject("probeCount mismatch or budget exceeded");
   for (int i = 0; i < 3; ++i)
     if (out.cells[i] < 1 || out.cells[i] > 4096) return reject("cells out of range");
   for (int i = 0; i < 3; ++i)
@@ -203,6 +237,7 @@ VlmLoadResult VlmLoadAsset(const std::string& path, VlmAssetData& out,
   for (size_t i = 0; i < out.shFp16.size(); ++i)
     out.shFp16[i] = (uint16_t)sp[i * 2] | ((uint16_t)sp[i * 2 + 1] << 8);
   out.flags = 0;
+  if (!VlmValidateAsset(out)) return reject("invalid coefficients, validity, metadata or integrator version");
 
   if (out.sceneHash != expectedSceneHash) {
     err = "vlm load: scene hash mismatch (stale asset)";

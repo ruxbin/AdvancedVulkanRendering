@@ -5,6 +5,7 @@
 #include "Raytracing.h"
 #include "SphericalHarmonics.h"
 #include "VlmSh.h"
+#include "VlmEnvironment.h"
 #include "stb_image.h"
 
 #include <spdlog/spdlog.h>
@@ -26,14 +27,16 @@ struct VlmBakePC {
   uint32_t probeCount, samplesThisBatch, batchSeed, maxBounces;      // 0..15
   uint32_t pointLightCount, spotLightCount, flags, cellsX;           // 16..31
   uint32_t cellsY, cellsZ; float sunConeRadius, sunScale;            // 32..47
-  float envScale, localLightScale, pad0, pad1;                       // 48..63
-  float constEnvRGB[3]; float pad2;                                  // 64..79
+  float envScale, localLightScale; uint32_t probeBase, envWidth;      // 48..63
+  float constEnvRGB[3]; uint32_t envHeight;                            // 64..79
   float bmin[3]; float pad3;                                         // 80..95
   float step[3]; float pad4;                                         // 96..111
 };
 static_assert(sizeof(VlmBakePC) == 112, "VlmBakePC must stay 112 bytes (push constant)");
 static_assert(offsetof(VlmBakePC, flags) == 24);
 static_assert(offsetof(VlmBakePC, sunConeRadius) == 40);
+static_assert(offsetof(VlmBakePC, envWidth) == 60);
+static_assert(offsetof(VlmBakePC, envHeight) == 76);
 static_assert(offsetof(VlmBakePC, constEnvRGB) == 64);
 static_assert(offsetof(VlmBakePC, bmin) == 80);
 static_assert(offsetof(VlmBakePC, step) == 96);
@@ -68,6 +71,7 @@ VlmBaker::~VlmBaker() {
   };
   destroyBuf(_shAccum, _shAccumMemory);
   destroyBuf(_errorFlags, _errorFlagsMemory);
+  destroyBuf(_envCdf, _envCdfMemory);
   destroyBuf(_sbtBuffer, _sbtMemory);
   if (_envFallbackView != VK_NULL_HANDLE) vkDestroyImageView(dev, _envFallbackView, nullptr);
   if (_envFallback != VK_NULL_HANDLE) vkDestroyImage(dev, _envFallback, nullptr);
@@ -107,7 +111,8 @@ void VlmBaker::ensureHostBuffer(VkDeviceSize bytes, VkBuffer& buffer, VkDeviceMe
       mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   if (vkAllocateMemory(dev, &ai, nullptr, &memory) != VK_SUCCESS)
     throw std::runtime_error("VlmBaker: failed to allocate buffer memory");
-  vkBindBufferMemory(dev, buffer, memory, 0);
+  if(vkBindBufferMemory(dev, buffer, memory, 0)!=VK_SUCCESS)
+    throw std::runtime_error("VlmBaker: failed to bind buffer memory");
 }
 
 // binding 16/17 重绑(Init 末尾先以 16 B 占位 buffer 调用一次,Bake 重建后再次调用)。
@@ -202,10 +207,10 @@ void VlmBaker::Init(VkImageView equirectView) {
     envView = _envFallbackView;
   }
 
-  // 4) set1 layout,16 个 binding(编号与 rt_path_common.hlsl/vlm_bake.hlsl 一致;
+  // 4) set1 layout,17 个 binding(编号与 rt_path_common.hlsl/vlm_bake.hlsl 一致;
   //    1/12 为相机 PT 的 storage image,VLM 不用,留空)
   const uint32_t bindlessCount = (uint32_t)_scene.textures.size();
-  constexpr uint32_t bindingCount = 16;
+  constexpr uint32_t bindingCount = 17;
   VkDescriptorSetLayoutBinding b[bindingCount]{};
   auto fill = [](VkDescriptorSetLayoutBinding& x, uint32_t binding,
                  VkDescriptorType type, uint32_t count, VkShaderStageFlags stages) {
@@ -231,6 +236,7 @@ void VlmBaker::Init(VkImageView equirectView) {
   fill(b[13], 15, VK_DESCRIPTOR_TYPE_SAMPLER,                    1, rtAllStages);
   fill(b[14], 16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, rtAllStages);
   fill(b[15], 17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, rtAllStages);
+  fill(b[16], 18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, rtAllStages);
 
   VkDescriptorBindingFlags bf[bindingCount]{};
   bf[9] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT; // binding 10 纹理数组
@@ -247,10 +253,10 @@ void VlmBaker::Init(VkImageView equirectView) {
   if (vkCreateDescriptorSetLayout(dev, &slInfo, nullptr, &_setLayout) != VK_SUCCESS)
     throw std::runtime_error("VlmBaker: failed to create descriptor set layout");
 
-  // 5) pool(maxSets=1;STORAGE_BUFFER×11 = binding 2..9/13/16/17)
+  // 5) pool(maxSets=1;STORAGE_BUFFER×12 = binding 2..9/13/16/17/18)
   std::vector<VkDescriptorPoolSize> poolSizes = {
       {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, bindlessCount + 1},
       {VK_DESCRIPTOR_TYPE_SAMPLER, 2}};
   VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -365,6 +371,12 @@ void VlmBaker::Init(VkImageView equirectView) {
   ensureHostBuffer(16, _shAccum, _shAccumMemory);
   ensureHostBuffer(16, _errorFlags, _errorFlagsMemory);
   writeAccumDescriptors();
+  ensureHostBuffer(16,_envCdf,_envCdfMemory);
+  VkDescriptorBufferInfo cdfInfo{_envCdf,0,VK_WHOLE_SIZE};
+  VkWriteDescriptorSet cdfWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  cdfWrite.dstSet=_set; cdfWrite.dstBinding=18; cdfWrite.descriptorCount=1;
+  cdfWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; cdfWrite.pBufferInfo=&cdfInfo;
+  vkUpdateDescriptorSets(dev,1,&cdfWrite,0,nullptr);
 
   // 8) pipeline layout:set0 = globalSetLayout(camera UBO),set1 = 本 layout;
   //    push constant 112 B(VlmBakePC)
@@ -526,11 +538,13 @@ void VlmBaker::Init(VkImageView equirectView) {
         req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (vkAllocateMemory(dev, &ai, nullptr, &_sbtMemory) != VK_SUCCESS)
       throw std::runtime_error("VlmBaker: vkAllocateMemory(SBT) failed");
-    vkBindBufferMemory(dev, _sbtBuffer, _sbtMemory, 0);
+    if(vkBindBufferMemory(dev, _sbtBuffer, _sbtMemory, 0)!=VK_SUCCESS)
+      throw std::runtime_error("VlmBaker: failed to bind SBT memory");
   }
 
   uint8_t* sbtMapped = nullptr;
-  vkMapMemory(dev, _sbtMemory, 0, sbtSize, 0, (void**)&sbtMapped);
+  if(vkMapMemory(dev, _sbtMemory, 0, sbtSize, 0, (void**)&sbtMapped)!=VK_SUCCESS)
+    throw std::runtime_error("VlmBaker: SBT map failed");
   std::memset(sbtMapped, 0, sbtSize);
 
   uint8_t* p = sbtMapped;
@@ -562,6 +576,12 @@ void VlmBaker::Init(VkImageView equirectView) {
 }
 
 bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
+  if (!s.layout.ProbeCount() || s.layout.ProbeCount() > 1000000 || !s.samplesPerProbe ||
+      s.samplesPerProbe > 16777216 || !s.batchSamples || s.batchSamples > 4096 ||
+      !s.maxBounces || s.maxBounces > 32 || out.shFp16.size() != s.layout.ProbeCount() * 28) {
+    spdlog::error("vlm bake: FAILED (invalid settings or probe memory budget)");
+    return false;
+  }
   const uint32_t probes = (uint32_t)s.layout.ProbeCount();
   if (probes == 0 || _pipeline == VK_NULL_HANDLE) {
     spdlog::error("vlm bake: FAILED (not initialized)");
@@ -569,6 +589,26 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
   }
 
   const VkDevice dev = _device.getLogicalDevice();
+  VlmEnvironmentDistribution distribution;
+  if(!s.constEnv) {
+    int width=0,height=0;
+    float* pixels=stbi_loadf(s.hdrPathForReference.string().c_str(),&width,&height,nullptr,4);
+    const bool valid=VlmBuildEnvironmentDistribution(pixels,width,height,distribution);
+    if(pixels) stbi_image_free(pixels);
+    if(!valid) { spdlog::error("vlm bake: FAILED (invalid environment distribution)"); return false; }
+    const VkDeviceSize bytes=distribution.cdf.size()*sizeof(float);
+    ensureHostBuffer(bytes,_envCdf,_envCdfMemory);
+    void* mapped=nullptr;
+    if(vkMapMemory(dev,_envCdfMemory,0,bytes,0,&mapped)!=VK_SUCCESS)
+      throw std::runtime_error("VlmBaker: environment CDF map failed");
+    std::memcpy(mapped,distribution.cdf.data(),bytes); vkUnmapMemory(dev,_envCdfMemory);
+    VkDescriptorBufferInfo info{_envCdf,0,bytes};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet=_set; write.dstBinding=18; write.descriptorCount=1;
+    write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; write.pBufferInfo=&info;
+    vkUpdateDescriptorSets(dev,1,&write,0,nullptr);
+    spdlog::info("vlm bake: primary sampling=50% uniform + 50% environment ({}x{})",width,height);
+  }
   const VkDeviceSize shBytes = (VkDeviceSize)probes * 27 * sizeof(float);
   // shAccum/errorFlags 尺寸依赖 layout,在 Bake 开头按需(重)建并清零。
   // 注意:buffer 重建后原 descriptor 指向已销毁对象,必须立即重绑 16/17。
@@ -577,10 +617,12 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
   writeAccumDescriptors();
   {
     void* p = nullptr;
-    vkMapMemory(dev, _shAccumMemory, 0, shBytes, 0, &p);
+    if(vkMapMemory(dev, _shAccumMemory, 0, shBytes, 0, &p)!=VK_SUCCESS)
+      throw std::runtime_error("VlmBaker: accumulation map failed");
     std::memset(p, 0, (size_t)shBytes);
     vkUnmapMemory(dev, _shAccumMemory);
-    vkMapMemory(dev, _errorFlagsMemory, 0, 16, 0, &p);
+    if(vkMapMemory(dev, _errorFlagsMemory, 0, 16, 0, &p)!=VK_SUCCESS)
+      throw std::runtime_error("VlmBaker: error flags map failed");
     std::memset(p, 0, 16);
     vkUnmapMemory(dev, _errorFlagsMemory);
   }
@@ -591,7 +633,6 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
                probes, total, batches, s.batchSamples);
   const auto t0 = std::chrono::steady_clock::now();
 
-  VkCommandBuffer cmdBuf = _device.beginSingleTimeCommands();
   for (uint32_t batch = 0, done = 0; done < total; ++batch) {
     const uint32_t n = std::min(s.batchSamples, total - done);
     VlmBakePC pc{};
@@ -614,6 +655,11 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
     pc.constEnvRGB[2] = s.constEnvRGB[2];
     for (int i = 0; i < 3; ++i) { pc.bmin[i] = s.layout.bmin[i]; pc.step[i] = s.layout.step[i]; }
 
+    // Submit bounded probe/sample tiles instead of one enormous command buffer.
+    for (uint32_t base = 0; base < probes; base += 256) {
+    VkCommandBuffer cmdBuf = _device.beginSingleTimeCommands();
+    pc.probeBase = base;
+    pc.envWidth=distribution.width; pc.envHeight=distribution.height;
     vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, _pipeline);
     VkDescriptorSet sets[2] = {_scene.globalDescriptorSets[_scene.currentFrame], _set};
     vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
@@ -623,18 +669,20 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
                            VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
                        0, sizeof(pc), &pc);
     pfnCmdTraceRays(cmdBuf, &_rgenRegion, &_missRegion, &_hitRegion, &_callRegion,
-                    probes, 1, 1);
-    done += n;
-    if (done < total) {
+                    std::min(256u, probes - base), 1, 1);
+    {
       // 跨 dispatch 的 RMW 依赖:写 → 读|写
       VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-      mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT;
       vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                           VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, &mb, 0, nullptr, 0, nullptr);
+                           VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_HOST_BIT,
+                           0, 1, &mb, 0, nullptr, 0, nullptr);
     }
+    _device.endSingleTimeCommands(cmdBuf);
+    }
+    done += n;
   }
-  _device.endSingleTimeCommands(cmdBuf);
 
   const auto t1 = std::chrono::steady_clock::now();
   spdlog::info("vlm bake: gpu dispatch wall time {:.2f}s",
@@ -642,7 +690,8 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
 
   // --- 错误检查(Review Focus #3)---
   uint32_t* flags = nullptr;
-  vkMapMemory(dev, _errorFlagsMemory, 0, 4, 0, (void**)&flags);
+  if(vkMapMemory(dev, _errorFlagsMemory, 0, 4, 0, (void**)&flags)!=VK_SUCCESS)
+    throw std::runtime_error("VlmBaker: error readback map failed");
   const bool nanFail = flags && *flags != 0;
   vkUnmapMemory(dev, _errorFlagsMemory);
   if (nanFail) {
@@ -652,7 +701,8 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
 
   // --- readback + finalize + pack ---
   float* sums = nullptr;
-  vkMapMemory(dev, _shAccumMemory, 0, shBytes, 0, (void**)&sums);
+  if(vkMapMemory(dev, _shAccumMemory, 0, shBytes, 0, (void**)&sums)!=VK_SUCCESS)
+    throw std::runtime_error("VlmBaker: accumulation readback map failed");
 
   std::vector<SH9> finalized(probes);
   for (uint32_t i = 0; i < probes; ++i) {
@@ -693,7 +743,7 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
     }
     spdlog::info("vlm validate quantization: maxRelErr={:.6f} (threshold 0.010000)", qMax);
   }
-  if (s.constEnv) {
+  if (s.constEnv && s.skyOnly) {
     static const float kNormals[6][3] = {
         {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     double maxRel = 0.0, sumRel = 0.0;
@@ -703,7 +753,7 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
         float E[3];
         VlmShEvaluate(finalized[i], n, E);
         for (int c = 0; c < 3; ++c) {
-          const double expect = kPi * (double)s.constEnvRGB[c];
+          const double expect = kPi * (double)s.constEnvRGB[c] * s.envScale;
           const double rel = expect > 1e-9 ? std::fabs(E[c] - expect) / expect : std::fabs(E[c]);
           maxRel = std::max(maxRel, rel);
           sumRel += rel;
@@ -718,17 +768,22 @@ bool VlmBaker::Bake(const Settings& s, VlmAssetData& out) {
     float* px = stbi_loadf(s.hdrPathForReference.generic_string().c_str(), &w, &h, nullptr, 4);
     if (px) {
       SH9 ref = ComputeSH9FromEquirect(px, w, h);
+      for (auto& coeff : ref.c) for (float& value : coeff) value *= s.envScale;
       stbi_image_free(px);
-      double c0Rel = 0.0, sumRef = 0.0, sumDiff = 0.0;
+      double c0Rel = 0.0, sumRef = 0.0, weightedRel = 0.0;
       for (int j = 0; j < 9; ++j)
-        for (int c = 0; c < 3; ++c) {
-          sumRef += std::fabs(ref.c[j][c]);
-          sumDiff += std::fabs(finalized[0].c[j][c] - ref.c[j][c]);
-          if (j == 0) c0Rel = std::max(c0Rel, (double)std::fabs(finalized[0].c[0][c] - ref.c[0][c]) /
-                                                  std::max(1e-6, (double)std::fabs(ref.c[0][c])));
+        for (int c = 0; c < 3; ++c) sumRef += std::fabs(ref.c[j][c]);
+      for(uint32_t i=0;i<probes;++i) {
+        double sumDiff=0;
+        for(int j=0;j<9;++j) for(int c=0;c<3;++c) {
+          sumDiff+=std::fabs(finalized[i].c[j][c]-ref.c[j][c]);
+          if(j==0) c0Rel=std::max(c0Rel,(double)std::fabs(finalized[i].c[0][c]-ref.c[0][c]) /
+                                                std::max(1e-6,(double)std::fabs(ref.c[0][c])));
         }
+        weightedRel=std::max(weightedRel,sumDiff/std::max(1e-6,sumRef));
+      }
       spdlog::info("vlm validate direction: c0RelErr={:.6f} weightedRelErr={:.6f} (thresholds 0.010000/0.050000)",
-                   c0Rel, sumDiff / std::max(1e-6, sumRef));
+                   c0Rel, weightedRel);
     } else {
       spdlog::warn("vlm validate direction: skipped (hdr not readable: {})",
                    s.hdrPathForReference.generic_string());

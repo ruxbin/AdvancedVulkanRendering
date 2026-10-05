@@ -43,6 +43,8 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/VlmLayout.cpp
     ${CMAKE_CURRENT_LIST_DIR}/VlmAsset.cpp
     ${CMAKE_CURRENT_LIST_DIR}/VlmBaker.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmEnvironment.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/VlmRuntime.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

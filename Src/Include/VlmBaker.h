@@ -21,7 +21,7 @@ public:
     bool skyOnly = false;
     bool constEnv = false;
     float constEnvRGB[3] = {1, 1, 1};
-    bool sunIsEnvironment = false;
+    bool sunIsEnvironment = true;
     float sunScale = 1.0f;
     float envScale = 1.0f;
     float localLightScale = 1.0f;
@@ -63,6 +63,8 @@ private:
   VkDeviceMemory _shAccumMemory = VK_NULL_HANDLE;
   VkBuffer _errorFlags = VK_NULL_HANDLE;
   VkDeviceMemory _errorFlagsMemory = VK_NULL_HANDLE;
+  VkBuffer _envCdf = VK_NULL_HANDLE;
+  VkDeviceMemory _envCdfMemory = VK_NULL_HANDLE;
   VkSampler _envSampler = VK_NULL_HANDLE;
   VkImage _envFallback = VK_NULL_HANDLE;
   VkDeviceMemory _envFallbackMemory = VK_NULL_HANDLE;

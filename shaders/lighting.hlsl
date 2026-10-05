@@ -1,4 +1,5 @@
 //shared by forward and deferred lighting pass
+#include "vlm_flags.hlsl"
 
 
 
@@ -62,6 +63,11 @@ half3 lightingShader(AAPLPixelSurfaceData surfaceData,
     half3 viewDir = (half3) normalize(tocamera2); //TODO:m03,m13,m23
     half3 lightDirection = (half3) frameData.sunDirection;
     half3 light = (half3) (frameData.sunColor * M_PI_F);
+#ifndef DX12_BACKEND
+    // Flags: 1 = analytic sun, 2 = sun owned by the physical HDR environment.
+    // The environment sun is already part of probe/fallback irradiance.
+    if (VlmEnvironmentSun(frameData.vlmFlags, frameData.vlmScale)) light = 0;
+#endif
     
     
     half3 result = evaluateBRDF(surfaceData, viewDir, lightDirection) * light;

@@ -29,6 +29,7 @@ int WINDOW_HEIGHT = 0;
 
 
 int main(int nargs, char **args) {
+  int applicationExitCode=0;
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     spdlog::error("SDL init failed");
   }
@@ -44,7 +45,11 @@ int main(int nargs, char **args) {
 #endif
 
   VlmCommandLine vlmCmd;
-  ParseVlmCommandLine(nargs, args, vlmCmd);
+  if (!ParseVlmCommandLine(nargs, args, vlmCmd)) {
+    spdlog::error("{}", vlmCmd.error);
+    SDL_Quit();
+    return 2;
+  }
 
 #ifdef __ANDROID__
   // Query display size for fullscreen on Android
@@ -170,6 +175,7 @@ int main(int nargs, char **args) {
 
   GpuScene gpuScene(currentPath, vk, &vlmCmd);
   gpuScene.InitImGui(window);
+  uint32_t vlmValidationFrames=0;
 
   SDL_Event e;
   bool quit = false;
@@ -316,7 +322,10 @@ int main(int nargs, char **args) {
       // if (std::chrono::system_clock::now() - lastTime >
       // std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
       { gpuScene.Draw(); }
-      if (gpuScene.QuitRequested()) quit = true;
+      if (gpuScene.QuitRequested()) { quit=true; applicationExitCode=gpuScene.VlmExitCode(); }
+      if(vlmCmd.validationFrames && ++vlmValidationFrames>=vlmCmd.validationFrames) {
+        spdlog::info("vlm validation: rendered {} frames",vlmValidationFrames); quit=true;
+      }
     }
 
     std::chrono::time_point<std::chrono::system_clock> time_checkpoint3 =
@@ -338,6 +347,7 @@ int main(int nargs, char **args) {
       checkpoint_sum2 = std::chrono::milliseconds(0);
     }
   } // end while loop
+  if(vlmCmd.bakeRequested) applicationExitCode=gpuScene.VlmExitCode();
   } // end Vulkan path
 
   if (window)
@@ -345,5 +355,5 @@ int main(int nargs, char **args) {
 
   SDL_Quit();
 
-  return 0;
+  return applicationExitCode;
 }
