@@ -4,7 +4,7 @@
 #elif defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined(__gnu_linux__)
-#define VK_USE_PLATFORM_WAYLAND_KHR
+#define VK_USE_PLATFORM_XLIB_KHR
 #endif
 #include "vulkan/vulkan.h"
 #include <algorithm>
@@ -139,7 +139,7 @@ VkDebugUtilsMessengerEXT debugMessenger;
 #elif defined(_WIN32)
       "VK_KHR_win32_surface"
 #elif defined(__gnu_linux__)
-	      "VK_KHR_wayland_surface"
+	      "VK_KHR_xlib_surface"
 #endif
   };
   constexpr static const char *const deviceExtensionNames[] = {
@@ -250,13 +250,13 @@ VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME
                                          availableExtensions.data());
 
     for (size_t i = 0; i < count; ++i) {
-      bool found = false;
+        bool found = false;
       for (const auto& extension : availableExtensions) {
         if (strcmp(names[i], extension.extensionName) == 0) {
-          found = true;
-          break;
+            found = true;
+            break;
+          }
         }
-      }
       if (!found) return false;
     }
     return true;

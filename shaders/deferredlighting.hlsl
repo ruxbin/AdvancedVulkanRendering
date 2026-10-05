@@ -187,11 +187,11 @@ half4 DeferredLighting(VSOutput input) : SV_Target
         const float SCATTERING_RANGE = 100.0;
         float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
         float4 viewPos = mul(cameraParams.invProjectionMatrix, ndcPos);
-        float  viewZ   = -viewPos.z / viewPos.w;
+        float  viewZ   = viewPos.z / viewPos.w;
         float sliceF = log2(clamp(viewZ, 0.001, SCATTERING_RANGE) / SCATTERING_RANGE * 7.0 + 1.0) / 3.0;
         float3 uvw = float3(input.TextureUV.x, input.TextureUV.y, sliceF);
         float4 scatter = scatterAccumVolume.SampleLevel(linearClampSampler, uvw, 0);
-        result = result * (half) scatter.a + (half3) scatter.rgb;
+        result = result * (half) scatter.a + (half3) scatter.rgb * frameConstants.scatterScale;
     }
 
     if(useClusterLighting)

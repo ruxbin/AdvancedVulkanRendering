@@ -997,7 +997,7 @@ public:
       vec3(0.4f, 0.6f, 1.0f),    // skyColor
       1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
       0.1f, 1000.f,              // nearPlane, farPlane
-      1.0f,                      // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
+      2.0f,                      // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
       0u,                        // frameCounter (per-frame fill)
       vec2(),                    // physicalSize (per-frame fill)
       vec2(),                    // invPhysicalSize (per-frame fill)

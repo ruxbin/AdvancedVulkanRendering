@@ -83,6 +83,8 @@ private:
     // Linear clamp sampler shared by history + Perlin.
     VkSampler _linearSampler = VK_NULL_HANDLE;
 
+    VkSampler _nearestSampler = VK_NULL_HANDLE; 
+
     // Scatter pipeline (bindings 0-14, per-frame descriptor sets).
     VkDescriptorPool      _scatterPool      = VK_NULL_HANDLE;
     VkDescriptorSetLayout _scatterSetLayout = VK_NULL_HANDLE;

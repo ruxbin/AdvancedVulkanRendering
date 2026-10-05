@@ -137,12 +137,12 @@ VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
 #endif
 #ifdef __gnu_linux__
 
-  VkWaylandSurfaceCreateInfoKHR surfaceCreatInfo = {
-      .sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+ VkXlibSurfaceCreateInfoKHR surfaceCreatInfo = {
+      .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
       .pNext = nullptr,
-      .display = wmInfo.info.wl.display,
-      .surface = wmInfo.info.wl.surface};
-  VkResult res = vkCreateWaylandSurfaceKHR(vkInstance, &surfaceCreatInfo, nullptr,
+      .dpy = wmInfo.info.x11.display,
+      .window = wmInfo.info.x11.window};
+  VkResult res = vkCreateXlibSurfaceKHR(vkInstance, &surfaceCreatInfo, nullptr,
                                         &wsiSurface);
 
   if (res == VK_ERROR_INITIALIZATION_FAILED) {

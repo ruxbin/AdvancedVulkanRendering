@@ -304,6 +304,27 @@ void ScatteringVolume::createSampler(const VulkanDevice& device) {
     ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     ci.minLod = 0.0f; ci.maxLod = VK_LOD_CLAMP_NONE;
     vkCreateSampler(device.getLogicalDevice(), &ci, nullptr, &_linearSampler);
+
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    // samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+    // samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+    if (vkCreateSampler(device.getLogicalDevice(), &samplerInfo, nullptr,
+                        &_nearestSampler) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create nearest clamp sampler!");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +354,7 @@ void ScatteringVolume::createScatterDescriptors(
     uint32_t framesInFlight)
 {
     // --- layout ---
-    std::array<VkDescriptorSetLayoutBinding, 15> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 17> bindings{};
     auto mkB = [](uint32_t b, VkDescriptorType t) {
         VkDescriptorSetLayoutBinding r{};
         r.binding = b; r.descriptorType = t; r.descriptorCount = 1;
@@ -354,6 +375,8 @@ void ScatteringVolume::createScatterDescriptors(
     bindings[12] = mkB(12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     bindings[13] = mkB(13, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
     bindings[14] = mkB(14, VK_DESCRIPTOR_TYPE_SAMPLER);
+    bindings[15] = mkB(15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+    bindings[16] = mkB(16, VK_DESCRIPTOR_TYPE_SAMPLER);
 
     VkDescriptorSetLayoutCreateInfo layoutCI{};
     layoutCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -365,8 +388,8 @@ void ScatteringVolume::createScatterDescriptors(
     const VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,   framesInFlight},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  framesInFlight},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   5 * framesInFlight}, // 2,4,5,10,13
-        {VK_DESCRIPTOR_TYPE_SAMPLER,         3 * framesInFlight}, // 3,11,14
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   6 * framesInFlight}, // 2,4,5,10,13
+        {VK_DESCRIPTOR_TYPE_SAMPLER,         4 * framesInFlight}, // 3,11,14
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,  5 * framesInFlight}, // 6,7,8,9,12
     };
     VkDescriptorPoolCreateInfo poolCI{};
@@ -419,10 +442,16 @@ void ScatteringVolume::createScatterDescriptors(
     VkDescriptorBufferInfo spotDataInfo{lightRes.spotLightDataBuffer, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo spotVPInfo{lightRes.spotViewProjBuffer, 0, VK_WHOLE_SIZE};
 
+    VkDescriptorImageInfo nearestSamplerInfo{}; nearestSamplerInfo.sampler = _nearestSampler;
+
     for (uint32_t i = 0; i < framesInFlight; ++i) {
         VkDescriptorBufferInfo uboInfo{uniformBuffers[i], 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo pointIdxInfo{lightRes.pointLightIndexBuffers[i], 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo spotIdxInfo{lightRes.spotLightIndexBuffers[i], 0, VK_WHOLE_SIZE};
+
+        VkDescriptorImageInfo depthImgInfo{};
+        depthImgInfo.imageView = device.getWindowDepthOnlyImageView(i);
+        depthImgInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
 
         auto wImg  = [&](uint32_t b, VkDescriptorType t, const VkDescriptorImageInfo& ii) {
             VkWriteDescriptorSet w{}; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -433,7 +462,7 @@ void ScatteringVolume::createScatterDescriptors(
             w.dstSet = _scatterSets[i]; w.dstBinding = b;
             w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi; return w; };
 
-        std::array<VkWriteDescriptorSet, 15> ws{
+        std::array<VkWriteDescriptorSet, 17> ws{
             wImg(0,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  scatterOutInfo),
             VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                 _scatterSets[i], 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uboInfo},
@@ -450,6 +479,8 @@ void ScatteringVolume::createScatterDescriptors(
             wBuf(12, spotVPInfo),
             wImg(13, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  perlinInfo),
             wImg(14, VK_DESCRIPTOR_TYPE_SAMPLER,        linearSamplerInfo),
+            wImg(15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  depthImgInfo),
+            wImg(16, VK_DESCRIPTOR_TYPE_SAMPLER,        nearestSamplerInfo),
         };
         vkUpdateDescriptorSets(device.getLogicalDevice(),
                                static_cast<uint32_t>(ws.size()), ws.data(), 0, nullptr);

@@ -3875,8 +3875,6 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   {_shadow->RenderShadowMap(commandBuffer, *this, device); }
   {_shadow->RenderSpotShadowMaps(commandBuffer, *this, device); }
 
-  // Scatter volume: runs after shadow maps, before GBuffer (needs shadow map + camera UBO)
-  _scatterVolume.dispatch(commandBuffer, currentFrame);
 
   // Draw occluders first for Hi-Z generation
   DrawOccluders(commandBuffer);
@@ -3999,6 +3997,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                            1, &memBarrier, 0, nullptr, 0, nullptr);
     }
   }
+
+  // Scatter volume: runs after shadow maps, before GBuffer (needs shadow map + camera UBO)
+  _scatterVolume.dispatch(commandBuffer, currentFrame);
 
   // SAO: generate depth pyramid from full scene depth, then dispatch SAO compute
   {
