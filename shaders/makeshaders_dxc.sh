@@ -58,8 +58,8 @@ echo compiling spot shadow VS \(reads viewProj from push constant, no camera UBO
 echo compiling scatter volume kernels \(two entry points from one source file\)
 # ACCUM_PASS gates which binding block + kernel body scattervolume.hlsl exposes,
 # so the accumulate entry point must be compiled with it defined.
-/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 scattervolume.hlsl -E ScatterVolume       -Fo scattervolume.cs.spv
-/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -D ACCUM_PASS -T cs_6_2 scattervolume.hlsl -E AccumulateScattering -Fo accumscatter.cs.spv
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -T cs_6_2 scattervolume.hlsl -fspv-debug=vulkan-with-source -E ScatterVolume       -Fo scattervolume.cs.spv
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -enable-16bit-types -spirv -D ACCUM_PASS -T cs_6_2 scattervolume.hlsl -fspv-debug=vulkan-with-source -E AccumulateScattering -Fo accumscatter.cs.spv
 
 echo compiling drawoccludersvs
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -E RenderSceneVS drawoccluders.hlsl -T vs_6_0 -Fo occluders.wireframe.vs.spv
@@ -82,4 +82,9 @@ echo compiling decalps
 
 echo compiling resolve
 /run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T ps_6_0 resolve.hlsl -fspv-debug=vulkan-with-source -E ResolvePS -Fo resolve.ps.spv
+
+echo compiling IBL runtime generation kernels
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T cs_6_2 ibl.hlsl -E EquirectToCubeCS -Fo ibl_equirect.cs.spv
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T cs_6_2 ibl.hlsl -E PrefilterSpecularCS -Fo ibl_prefilter.cs.spv
+/run/media/ruxbin/8219f399-1a49-4a9e-af5c-69af4d51da2a/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/Build-RelWithDebInfo.x86_64-unknown-linux-gnu/External/DirectXShaderCompiler/bin/dxc -spirv -T cs_6_2 ibl.hlsl -E DfgLutCS -Fo ibl_dfglut.cs.spv
 
