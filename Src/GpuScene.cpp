@@ -3763,7 +3763,13 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     // prevViewProjectionMatrix
     memcpy(data1, transpose(_prevViewProjectionMatrix).value_ptr(), (size_t)sizeof(mat4));
     data1 = ((mat4 *)data1) + 1;
-    memcpy(data1, &frameConstants, sizeof(FrameConstants));
+    // Scatter toggle: upload a copy with scatterScale forced to 0 when disabled,
+    // so the deferred-lighting guard (scatterScale > 0) skips compositing the
+    // stale accum volume. frameConstants itself keeps its configured value.
+    FrameConstants uploadConstants = frameConstants;
+    if (!_scatterVolumeEnabled)
+      uploadConstants.scatterScale = 0.0f;
+    memcpy(data1, &uploadConstants, sizeof(FrameConstants));
     vkUnmapMemory(device.getLogicalDevice(), uniformBufferMemories[currentFrame]);
 
     // Store current jittered VP for next frame's reprojection.
@@ -4044,7 +4050,8 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   }
 
   // Scatter volume: runs after shadow maps, before GBuffer (needs shadow map + camera UBO)
-  _scatterVolume.dispatch(commandBuffer, currentFrame);
+  if (_scatterVolumeEnabled)
+    _scatterVolume.dispatch(commandBuffer, currentFrame);
 
   // SAO: generate depth pyramid from full scene depth, then dispatch SAO compute
   {
@@ -9302,6 +9309,14 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
     }
   }
   ImGui::Checkbox("TAA", &_taaEnabled);
+  {
+    const bool scatterPrev = _scatterVolumeEnabled;
+    ImGui::Checkbox("Scatter Volume", &_scatterVolumeEnabled);
+    // Re-enabling after a gap: drop the stale temporal history so the 85%
+    // history blend doesn't flash the fog frozen at toggle-off time.
+    if (_scatterVolumeEnabled && !scatterPrev)
+      _scatterVolume.invalidateHistory();
+  }
   ImGui::Separator();
   ImGui::Text("Debug overlays:");
   ImGui::Checkbox("Occluder Wireframe", &_showOccluderWireframe);

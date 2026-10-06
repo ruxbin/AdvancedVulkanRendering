@@ -492,6 +492,7 @@ private:
   bool _taaFirstFrame = true;
   uint32_t _taaFrameIndex = 0;
   bool _taaEnabled = false; // ImGui toggle, default OFF
+  bool _scatterVolumeEnabled = true; // ImGui toggle: froxel scatter volume (dispatch + compositing)
 
   VkImage _hdrLightingBuffer = VK_NULL_HANDLE;
   VkDeviceMemory _hdrLightingBufferMemory = VK_NULL_HANDLE;
