@@ -45,6 +45,10 @@ public:
     // Dispatch both compute passes.  Call once per frame before the G-buffer.
     void dispatch(VkCommandBuffer cmd, uint32_t frameIndex);
 
+    // Force the next dispatch to run with resetHistory=1 (e.g. after the
+    // volume was paused, so stale temporal data is discarded).
+    void invalidateHistory() { _firstDispatch = true; }
+
     // Accumulated 3D RGBA16F result — bind at deferred-lighting binding 16.
     VkImageView accumVolumeView() const { return _accumView; }
 
