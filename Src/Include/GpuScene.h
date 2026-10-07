@@ -227,6 +227,8 @@ private:
   // resource via currentFrame and stays consistent with the deferred/forward
   // framebuffers (both indexed by imageIndex).
   uint32_t currentFrame = 0;
+
+  uint32_t currentPointLightIndex = 80;
   
   // Get the command buffer for the current sync slot.
   // (Command buffers are sync-resources, indexed by _syncSlot.)
@@ -414,7 +416,8 @@ private:
   VkDeviceMemory _pointSphereVertBufferMem = VK_NULL_HANDLE;
   uint32_t       _pointSphereVertexCount   = 0;
   void createPointLightSphereResources();
-  void drawPointLightSpheres(VkCommandBuffer commandBuffer);
+  void drawPointLightSpheres(VkCommandBuffer commandBuffer,uint32_t sphereIndex);
+  
 
   // Shared LINE_LIST pipeline (occluders.wireframe shaders, green PS) used by
   // both cone and sphere debug draws. Created on demand by either resource
@@ -880,6 +883,8 @@ public:
   void CreateDeferredLightingPass();
   void CreateForwardLightingPass();
   void CreateForwardLightingFrameBuffer(uint32_t count);
+
+  void CyclePointLightIndex() { currentPointLightIndex = (currentPointLightIndex + 1) % _pointLights.size(); }
 
   struct GPUCullParams {
     uint32_t opaqueChunkCount;

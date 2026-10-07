@@ -14,6 +14,14 @@
 namespace {
 
 constexpr int kPrecision = 6;
+// ---- BCn decompression (BC1 / BC3 / BC5) ----
+
+// MTLPixelFormat enum subset (matching GpuScene.cpp MTLPixelFormat enum)
+enum : uint32_t {
+    kBC1_RGBA_sRGB   = 131,
+    kBC3_RGBA_sRGB   = 135,
+    kBC5_RGUnorm     = 142,
+};
 
 // Build the export's geometry/material usage before loading any textures.
 // Only emissive connected shells that enclose (>=90% angular coverage) a
@@ -87,8 +95,7 @@ bool FinishOutputFile(std::ofstream& out) {
 }
 
 bool IsSupportedTexture(const AAPLTextureData& tex) {
-    const bool supported = tex._pixelFormat == 131 || tex._pixelFormat == 135 ||
-                           tex._pixelFormat == 142;
+    const bool supported = tex._pixelFormat == kBC1_RGBA_sRGB || tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm;
     // The decoders use uint32_t pixel/byte offsets and padded 4x4 blocks.
     const uint64_t maxDimension = (std::numeric_limits<int32_t>::max)() - 3ULL;
     if (!supported || tex._width == 0 || tex._height == 0 ||
@@ -139,14 +146,6 @@ struct Indent {
     }
 };
 
-// ---- BCn decompression (BC1 / BC3 / BC5) ----
-
-// MTLPixelFormat enum subset (matching GpuScene.cpp MTLPixelFormat enum)
-enum : uint32_t {
-    kBC1_RGBA_sRGB   = 131,
-    kBC3_RGBA_sRGB   = 135,
-    kBC5_RGUnorm     = 142,
-};
 
 inline uint16_t read16le(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 
