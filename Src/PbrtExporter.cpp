@@ -1,5 +1,6 @@
 #include "PbrtExporter.h"
 #include "GpuScene.h"
+#include "PbrtLightProxies.h"
 #include "ThirdParty/lzfse.h"
 #include "spdlog/spdlog.h"
 #include <cmath>
@@ -13,6 +14,69 @@
 namespace {
 
 constexpr int kPrecision = 6;
+
+// Build the export's geometry/material usage before loading any textures.
+// Only emissive connected shells that enclose (>=90% angular coverage) a
+// point light are omitted; this tolerates the small open neck on Bistro bulbs.
+bool PreparePointLightProxies(const AAPLMeshData* mesh,
+    const AAPLSubMesh* submeshes, const AAPLMaterial* materials,
+    const std::vector<vec3>& lights,
+    std::unordered_map<int, std::vector<uint32_t>>& filtered,
+    std::vector<bool>& usedMaterials) {
+    if (!mesh->_vertexData || !mesh->_indexData || !submeshes) return false;
+    const bool shortIndices = mesh->_indexType == 0 || mesh->_indexType == 2;
+    if (!shortIndices && mesh->_indexType != 1 && mesh->_indexType != 4) return false;
+    usedMaterials.assign(static_cast<size_t>(mesh->_materialCount), false);
+    std::vector<uint32_t> emissiveIndices;
+    // Triangle ranges into the combined emissive geometry. A shell may cross
+    // material/submesh boundaries; its retained faces return to their owners.
+    std::vector<std::pair<size_t, size_t>> ranges;
+    for (size_t m = 0; m < mesh->_meshCount; ++m) {
+        const auto& sub = submeshes[m];
+        if (sub.indexCount % 3 || sub.indexBegin > mesh->_indexCount ||
+            sub.indexCount > mesh->_indexCount - sub.indexBegin) return false;
+        bool emissive = false;
+        if (sub.materialIndex < usedMaterials.size()) {
+            const auto& mat = materials[sub.materialIndex];
+            emissive = mat.hasEmissiveTexture || mat.emissiveColor.x > 0 ||
+                       mat.emissiveColor.y > 0 || mat.emissiveColor.z > 0;
+        }
+        const bool filter = emissive && !lights.empty();
+        ranges.emplace_back(emissiveIndices.size() / 3, filter ? sub.indexCount / 3 : 0);
+        for (size_t k = 0; k < sub.indexCount; ++k) {
+            const size_t at = static_cast<size_t>(sub.indexBegin) + k;
+            const uint32_t v = shortIndices ? static_cast<const uint16_t*>(mesh->_indexData)[at]
+                                           : static_cast<const uint32_t*>(mesh->_indexData)[at];
+            if (v >= mesh->_vertexCount) return false;
+            if (filter) emissiveIndices.push_back(v);
+        }
+    }
+    size_t removed = 0;
+    std::vector<bool> omitted;
+    pbrt_export::RemovePointLightShells(static_cast<const vec3*>(mesh->_vertexData),
+                                       emissiveIndices, lights, removed, &omitted);
+    for (size_t m = 0; m < mesh->_meshCount; ++m) {
+        const auto& sub = submeshes[m];
+        const auto [begin, count] = ranges[m];
+        bool hasGeometry = sub.indexCount != 0;
+        const auto first = omitted.begin() + begin;
+        if (std::find(first, first + count, true) != first + count) {
+            std::vector<uint32_t> kept;
+            for (size_t t = begin; t < begin + count; ++t) {
+                if (!omitted[t]) kept.insert(kept.end(), emissiveIndices.begin() + 3*t,
+                                             emissiveIndices.begin() + 3*t + 3);
+            }
+            spdlog::info("PbrtExporter: submesh {} removed {} point-light shell triangles",
+                         m, count - kept.size() / 3);
+            hasGeometry = !kept.empty();
+            filtered.emplace(static_cast<int>(m), std::move(kept));
+        }
+        if (hasGeometry && sub.materialIndex < usedMaterials.size())
+            usedMaterials[sub.materialIndex] = true;
+    }
+    spdlog::info("PbrtExporter: removed {} emissive point-light shells", removed);
+    return true;
+}
 
 // Buffered output may only fail at flush/close. Check both before publishing
 // a filename or reporting a successful scene export.
@@ -846,6 +910,7 @@ void PbrtExporter::WriteFilm(std::ofstream& out, uint32_t width, uint32_t height
 }
 
 void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
+    const std::vector<bool>& usedMaterials,
     const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
     const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames,
     const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames) {
@@ -855,6 +920,7 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
     }
     const int materialCount = static_cast<int>(scene.applMesh->_materialCount);
     for (int i = 0; i < materialCount; ++i) {
+        if (!usedMaterials[i]) continue;
         const AAPLMaterial& mat = scene.cpuMaterials[i];
         float metallic = mat.metallicRoughness.x;
 
@@ -912,6 +978,7 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
 // geometry errors are not degradable and must fail the export (issue 7).
 bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
                                   const std::filesystem::path& outputDir,
+                                  const std::unordered_map<int, std::vector<uint32_t>>& filteredIndices,
                                   const std::unordered_map<int, std::string>& materialAlphaTexNames,
                                   const std::unordered_map<uint32_t, std::string>& exportedEmissiveTexNames) {
     const AAPLMeshData* mesh = scene.applMesh;
@@ -973,11 +1040,23 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
             return false;
         }
 
+        const void* exportIndices=indices;
+        bool export16=is16bit;
+        uint32_t exportBegin=submesh.indexBegin, exportCount=submesh.indexCount;
+        auto filtered=filteredIndices.find(m);
+        if (filtered!=filteredIndices.end()) {
+            const auto& kept=filtered->second;
+            if (kept.empty()) continue;
+            auto limits=std::minmax_element(kept.begin(),kept.end());
+            idxMin=*limits.first; idxMax=*limits.second;
+            exportIndices=kept.data(); export16=false; exportBegin=0;
+            exportCount=static_cast<uint32_t>(kept.size());
+        }
         uint32_t rangeCount = idxMax - idxMin + 1;
 
         std::string plyName = WritePLYMesh(outputDir, m, verts, norms, uvs,
-                                           rangeCount, idxMin, indices, is16bit,
-                                           submesh.indexBegin, submesh.indexCount);
+                                           rangeCount, idxMin, exportIndices, export16,
+                                           exportBegin, exportCount);
         if (plyName.empty()) {
             spdlog::error("PbrtExporter: failed to write PLY for submesh {}", m);
             return false;
@@ -1038,7 +1117,7 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
         }
         out << Indent(1) << "AttributeEnd\n";
     }
-    if (!anyWritten) {
+    if (!anyWritten && filteredIndices.empty()) {
         spdlog::error("PbrtExporter: no geometry written");
         return false;
     }
@@ -1106,6 +1185,20 @@ bool PbrtExporter::Export(const GpuScene& scene,
             spdlog::error("PbrtExporter: missing scene or material data");
             return false;
         }
+        std::unordered_map<int,std::vector<uint32_t>> filteredIndices;
+        std::vector<bool> usedMaterials;
+        std::vector<vec3> pointPositions;
+        for (const auto& pl : scene._pointLights) {
+            const auto* data = pl.getPointLightData();
+            if (data) pointPositions.emplace_back(data->posSqrRadius.x,
+                                                  data->posSqrRadius.y,
+                                                  data->posSqrRadius.z);
+        }
+        if (!PreparePointLightProxies(scene.applMesh, scene.m_SubMeshes, scene.cpuMaterials,
+                                      pointPositions, filteredIndices, usedMaterials)) {
+            spdlog::error("PbrtExporter: invalid geometry while preparing point-light proxies");
+            return false;
+        }
         // Step 1: Export BMP color textures and PFM data maps alongside the scene.
         std::filesystem::path outputDir = outputPath.parent_path();
         if (outputDir.empty()) outputDir = ".";
@@ -1123,6 +1216,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         if (scene.cpuMaterials && scene.applMesh->_textureData) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
+                if (!usedMaterials[i]) continue;
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
                 // Export base color textures with all channels.
                 auto exportTex = [&](uint32_t hash) {
@@ -1245,6 +1339,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         if (scene.cpuMaterials) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
+                if (!usedMaterials[i]) continue;
                 const AAPLMaterial& mat = scene.cpuMaterials[i];
                 auto declColorTex = [&](uint32_t hash, const char* prefix, const char* texType) {
                     auto it = exportedColorTexNames.find(hash);
@@ -1279,8 +1374,8 @@ bool PbrtExporter::Export(const GpuScene& scene,
             }
         }
 
-        WriteMaterials(out, scene, exportedColorTexNames, exportedRoughTexNames, exportedNormalTexNames);
-        if (!WriteGeometry(out, scene, outputDir, materialAlphaTexNames, exportedEmissiveTexNames))
+        WriteMaterials(out, scene, usedMaterials, exportedColorTexNames, exportedRoughTexNames, exportedNormalTexNames);
+        if (!WriteGeometry(out, scene, outputDir, filteredIndices, materialAlphaTexNames, exportedEmissiveTexNames))
             return false;
         WriteLights(out, scene);
 
