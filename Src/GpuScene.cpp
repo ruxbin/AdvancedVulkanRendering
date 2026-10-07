@@ -3800,9 +3800,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   if (!_raytracing && device.isRayTracingSupported()) {
     _raytracing = new RayTracing(const_cast<VulkanDevice &>(device), *this);
     _raytracing->Init();
-    _raytracing->BuildAccelerationStructures();
-    _raytracing->CreateOutputImagesAndDescriptorSet();
-    _raytracing->CreatePipelineAndSBT();
+    //_raytracing->BuildAccelerationStructures();
+    //_raytracing->CreateOutputImagesAndDescriptorSet();
+    //_raytracing->CreatePipelineAndSBT();
   }
   if (!device.isRayTracingSupported())
     useRayTracing = false;
@@ -4177,7 +4177,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       }
       // Debug: draw point light range spheres (ImGui toggle)
       if (_showPointLightViz) {
-        drawPointLightSpheres(commandBuffer);
+        drawPointLightSpheres(commandBuffer,currentPointLightIndex);
       }
 
       // ImGui overlay (rendered last in forward pass)
@@ -7156,6 +7156,9 @@ void GpuScene::drawSpotLightCones(VkCommandBuffer commandBuffer) {
   vkCmdDraw(commandBuffer, _spotConeVertexCount, 1, 0, 0);
 }
 
+constexpr int kSegs           = 16; // circle tessellation
+constexpr int kLonCircles     = 8;  // great circles (planes at phi = j*pi/8, span [0,pi))
+constexpr int kLatCircles     = 8;  // latitude rings (poles excluded)
 // --- Point light range wireframe debug visualization ---
 // Mirrors the spot cone builder: one world-space line-list buffer covering all
 // point lights, each drawn as a UV-sphere wireframe (kLonCircles great circles
@@ -7166,9 +7169,7 @@ void GpuScene::createPointLightSphereResources() {
   const auto &lights = PointLight::pointLightData;
   if (lights.empty()) return;
 
-  constexpr int kSegs           = 16; // circle tessellation
-  constexpr int kLonCircles     = 8;  // great circles (planes at phi = j*pi/8, span [0,pi))
-  constexpr int kLatCircles     = 8;  // latitude rings (poles excluded)
+ 
   constexpr float kPi           = 3.14159265358979f;
   constexpr int kVertsPerSphere = (kLonCircles + kLatCircles) * kSegs * 2; // line list
 
@@ -7247,7 +7248,7 @@ void GpuScene::createPointLightSphereResources() {
                built, _pointSphereVertexCount);
 }
 
-void GpuScene::drawPointLightSpheres(VkCommandBuffer commandBuffer) {
+void GpuScene::drawPointLightSpheres(VkCommandBuffer commandBuffer,uint32_t sphereIndex) {
   if (_wireframeLinePipeline == VK_NULL_HANDLE || _pointSphereVertexCount == 0)
     return;
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _wireframeLinePipeline);
@@ -7257,9 +7258,9 @@ void GpuScene::drawPointLightSpheres(VkCommandBuffer commandBuffer) {
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           pipelineLayout, 0, 1,
                           &globalDescriptorSets[currentFrame], 0, nullptr);
-  vkCmdDraw(commandBuffer, _pointSphereVertexCount, 1, 0, 0);
+  //vkCmdDraw(commandBuffer, _pointSphereVertexCount, 1, 0, 0);
+  vkCmdDraw(commandBuffer, 2*(kLonCircles*kSegs+kLatCircles*kSegs), 1, sphereIndex*2*(kLonCircles*kSegs+kLatCircles*kSegs), 0);
 }
-
 // --- Scalable Ambient Obscurance (SAO) ---
 
 void GpuScene::createSAOResources() {
@@ -9455,7 +9456,7 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
 
   ImGui::Separator();
   if (ImGui::Button("Export PBRT")) {
-      bool ok = PbrtExporter::Export(*this, _rootPath / "scene.pbrt");
+      bool ok = PbrtExporter::Export(*this, _rootPath / "pbrt" / "scene.pbrt");
       if (ok) {
           spdlog::info("Exported scene to scene.pbrt");
       } else {

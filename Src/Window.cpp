@@ -239,6 +239,9 @@ int main(int nargs, char **args) {
         case SDL_SCANCODE_R:
           gpuScene.OnDecalStartRotate();
           break;
+        case SDL_SCANCODE_F:
+          gpuScene.CyclePointLightIndex();
+          break;
         default:
           spdlog::info("keypressed {}\n", e.key.keysym.scancode);
           break;
