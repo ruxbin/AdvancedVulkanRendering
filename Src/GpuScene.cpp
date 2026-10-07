@@ -5257,7 +5257,7 @@ AAPLMeshData::AAPLMeshData(const char *filepath) {
 
     reader.read(&bytes_length, sizeof(bytes_length), 1);
     _textureData = malloc(bytes_length);
-    reader.read(_textureData, 1, bytes_length);
+    _textureDataLength = _textureData ? reader.read(_textureData, 1, bytes_length) : 0;
 
     reader.close();
   }
@@ -5338,7 +5338,7 @@ AAPLMeshData::AAPLMeshData(const char *filepath) {
 
     fread(&bytes_length, sizeof(bytes_length), 1, rawFile);
     _textureData = malloc(bytes_length);
-    fread(_textureData, 1, bytes_length, rawFile);
+    _textureDataLength = _textureData ? fread(_textureData, 1, bytes_length, rawFile) : 0;
 
     fclose(rawFile);
   }
