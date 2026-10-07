@@ -89,6 +89,7 @@ struct AAPLMeshData {
   uint64_t compressedMaterialDataLength;
   std::vector<AAPLTextureData> _textures;
   void *_textureData;
+  uint64_t _textureDataLength = 0; // Bytes actually read into the texture blob.
   AAPLMeshData(const char *filepath);
   AAPLMeshData() = delete;
   AAPLMeshData(const AAPLMeshData &) = delete;

@@ -1,5 +1,6 @@
 #include "PbrtExporter.h"
 #include "GpuScene.h"
+#include "ThirdParty/lzfse.h"
 #include "spdlog/spdlog.h"
 #include <cmath>
 #include <cstdlib>
@@ -8,10 +9,6 @@
 #include <iomanip>
 #include <limits>
 #include <unordered_set>
-
-// From GpuScene.cpp: lzfse-decompresses mip data stored in the .bin file.
-void *uncompressData(unsigned char *data, size_t dataLength,
-                     uint64_t expectedsize);
 
 namespace {
 
@@ -481,6 +478,34 @@ bool WritePFM(const std::filesystem::path& path,
     return FinishOutputFile(f);
 }
 
+// AAPL on-disk compression header: mode at 0, two uint64_t sizes at 8/16.
+// Do not use the scene loader's uncompressData: it exits on corrupt headers
+// and does not check how many bytes the codec actually produced.
+void* DecodeBCMip(const unsigned char* data, size_t length, uint64_t expected) {
+    constexpr size_t headerSize = 24;
+    if (length < headerSize || expected == 0 ||
+        expected >= (std::numeric_limits<size_t>::max)())
+        return nullptr;
+    uint32_t mode;
+    uint64_t decodedSize, encodedSize;
+    std::memcpy(&mode, data, sizeof(mode));
+    std::memcpy(&decodedSize, data + 8, sizeof(decodedSize));
+    std::memcpy(&encodedSize, data + 16, sizeof(encodedSize));
+    if (mode != 2049 || decodedSize != expected || encodedSize != length - headerSize)
+        return nullptr;
+    // The codec reports the destination size on overflow. One extra byte
+    // distinguishes exact output from an oversized stream that filled it.
+    auto* decoded = static_cast<unsigned char*>(std::malloc(static_cast<size_t>(expected) + 1));
+    if (!decoded) return nullptr;
+    const size_t actual = lzfse_decode_buffer(decoded, static_cast<size_t>(expected) + 1,
+                                             data + headerSize, length - headerSize, nullptr);
+    if (actual != expected) {
+        std::free(decoded);
+        return nullptr;
+    }
+    return decoded;
+}
+
 // Walk down mip levels looking for one whose compressed data fits, and
 // lzfse-decompress it. Returns malloc'd BC data (nullptr on total failure).
 // Outputs the block/pixel dimensions and the mip level that succeeded.
@@ -488,6 +513,9 @@ void* AcquireBCMipData(const AAPLTextureData& tex, const AAPLMeshData* mesh,
                        uint32_t bcBlockBytes, const std::string& baseName,
                        uint32_t& blockWOut, uint32_t& blockHOut,
                        uint32_t& mipWOut, uint32_t& mipHOut, int& mipLevelOut) {
+    if (!mesh->_textureData || tex._pixelDataOffset > mesh->_textureDataLength ||
+        tex._pixelDataLength > mesh->_textureDataLength - tex._pixelDataOffset)
+        return nullptr;
     uint32_t mipW = (uint32_t)tex._width;
     uint32_t mipH = (uint32_t)tex._height;
 
@@ -502,9 +530,13 @@ void* AcquireBCMipData(const AAPLTextureData& tex, const AAPLMeshData* mesh,
         uint32_t blockH = ((mipH + 3) / 4 > 0) ? (mipH + 3) / 4 : 1;
         unsigned long long bcBytes = (unsigned long long)blockW * blockH * bcBlockBytes;
 
-        unsigned char* raw = (unsigned char*)mesh->_textureData
-                             + tex._pixelDataOffset + compOff;
-        void* bcData = uncompressData(raw, (size_t)compLen, bcBytes);
+        void* bcData = nullptr;
+        if (compOff <= tex._pixelDataLength &&
+            compLen <= tex._pixelDataLength - compOff) {
+            const auto* raw = static_cast<const unsigned char*>(mesh->_textureData)
+                              + tex._pixelDataOffset + compOff;
+            bcData = DecodeBCMip(raw, static_cast<size_t>(compLen), bcBytes);
+        }
         if (bcData) {
             blockWOut = blockW;
             blockHOut = blockH;
