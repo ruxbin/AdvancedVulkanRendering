@@ -404,9 +404,22 @@ private:
   VkBuffer       _spotConeVertBuffer    = VK_NULL_HANDLE;
   VkDeviceMemory _spotConeVertBufferMem = VK_NULL_HANDLE;
   uint32_t       _spotConeVertexCount   = 0;
-  VkPipeline     _spotConePipeline      = VK_NULL_HANDLE;
   void createSpotLightConeResources();
   void drawSpotLightCones(VkCommandBuffer commandBuffer);
+
+  // Debug point light range visualization: UV-sphere wireframe per light,
+  // radius = sqrtf(posSqrRadius.w). Same scene-load-time bake as spot cones.
+  VkBuffer       _pointSphereVertBuffer    = VK_NULL_HANDLE;
+  VkDeviceMemory _pointSphereVertBufferMem = VK_NULL_HANDLE;
+  uint32_t       _pointSphereVertexCount   = 0;
+  void createPointLightSphereResources();
+  void drawPointLightSpheres(VkCommandBuffer commandBuffer);
+
+  // Shared LINE_LIST pipeline (occluders.wireframe shaders, green PS) used by
+  // both cone and sphere debug draws. Created on demand by either resource
+  // builder since each may run without the other's light type being present.
+  VkPipeline _wireframeLinePipeline = VK_NULL_HANDLE;
+  void createLineListWireframePipeline();
 
   Shadow *_shadow;
   std::vector<PointLight> _pointLights;
@@ -420,6 +433,7 @@ private:
   bool useRayTracing = false;     // ImGui toggle: switch to full RT path
   bool _showOccluderWireframe = false;  // ImGui debug toggle
   bool _showSpotLightViz      = false;  // ImGui debug toggle: spot light cones
+  bool _showPointLightViz     = false;  // ImGui debug toggle: point light range spheres
   bool _meshPickerActive      = false;
   std::string _pickedMeshName;
   SDL_Window* _sdlWindow = nullptr;

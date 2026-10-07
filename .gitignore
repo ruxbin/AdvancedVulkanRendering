@@ -8,3 +8,8 @@ Makefile
 shaders/*.spv
 textures/*.hdr
 .worktrees/
+
+# Build artifacts (untracked 2026-10-07)
+*.cso
+*.obj
+*.tlog/
