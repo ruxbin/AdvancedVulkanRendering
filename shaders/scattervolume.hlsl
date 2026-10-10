@@ -80,7 +80,9 @@ DECLARE_PUSH_CONSTANTS(PushConstants, pc, 0);
 #define SCATTER_LIGHT_TILE_SIZE 32
 // MAX_LIGHTS_PER_TILE is defined in commonstruct.hlsl
 #define SPOT_SHADOW_MAX_COUNT   32
-#define SPOT_SHADOW_DEPTH_BIAS  0.001f
+// Keep tiny: perspective spot depth makes a constant NDC delta grow ~quadratically
+// with distance (0.001 was ~0.6-2m leak far out); hardware slope bias handles acne.
+#define SPOT_SHADOW_DEPTH_BIAS  1e-4f
 
 // Temporal blend factor (85 % history, 15 % current — matches Metal)
 #define TEMPORAL_BLEND 0.85f

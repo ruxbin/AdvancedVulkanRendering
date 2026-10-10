@@ -1297,7 +1297,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
   setWrite7.dstArrayElement = 0;
   // and the type is uniform buffer
   setWrite7.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  setWrite7.pBufferInfo = &binfo6;
+  setWrite7.pBufferInfo = &binfo7;
 
   VkDescriptorImageInfo tradtionalImageInfo{};
   tradtionalImageInfo.imageView = _traditionalCullDebugImageView;

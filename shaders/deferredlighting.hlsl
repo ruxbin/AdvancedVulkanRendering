@@ -34,7 +34,12 @@ VK_BINDING(12,1) StructuredBuffer<uint> spotLightIndices REGISTER_SRV(12,1);
 
 // Spot shadow resources.
 #define SPOT_SHADOW_MAX_COUNT 32
-#define SPOT_SHADOW_DEPTH_BIAS 0.001f
+// Constant NDC-z offset only guards quantization; keep it tiny because the spot
+// map uses a PERSPECTIVE depth (n=0.1, far=height): a world-space equivalent of
+// a constant NDC delta grows ~quadratically with distance (0.001 here was
+// ~0.6-2m of light-leak in the outer half of the cone). Slope acne is handled
+// by the hardware depth bias on the spot shadow pipeline instead.
+#define SPOT_SHADOW_DEPTH_BIAS 1e-4f
 VK_BINDING(13,1) Texture2DArray<float> spotShadowMaps REGISTER_SRV(13,1);
 VK_BINDING(14,1) SamplerComparisonState spotShadowSampler REGISTER_SAMPLER_CMP(14,1);
 VK_BINDING(15,1) StructuredBuffer<float4x4> spotViewProjMatrices REGISTER_SRV(15,1);
