@@ -278,7 +278,15 @@ void ClearLightIndices(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
 
     uint outputIndex = (gid.x + gid.y * tileDims.x) * MAX_LIGHTS_PER_TILE;
     for (int i = gtid.x + gtid.y * CLEAR_WIDTH; i < MAX_LIGHTS_PER_TILE; i += CLEAR_WIDTH * CLEAR_HEIGHT)
+    {
         lightIndices[i+outputIndex] = 0;
+        // The transparent list has its own buffer (binding 7). It must be zeroed
+        // here too: while binding 7 was (buggily) aliased onto the opaque buffer
+        // the opaque clear masked this omission — un-aliased, the transparent
+        // InterlockedAdd count accumulates every frame and list writes overflow
+        // into neighbouring tiles (verified via RenderDoc: count=328 @ frame 270).
+        lightIndicesTransparent[i+outputIndex] = 0;
+    }
 
 }
 
