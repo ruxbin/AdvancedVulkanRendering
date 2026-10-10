@@ -223,7 +223,7 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 	uint clusterindex = uint(input.Position.x/gLightCullingTileSize)+xClusterCount*uint(input.Position.y/gLightCullingTileSize);
 
 	//lighting
-	uint lightCount = lightIndices[clusterindex*MAX_LIGHTS_PER_TILE];
+	uint lightCount = min(lightIndices[clusterindex*MAX_LIGHTS_PER_TILE], MAX_LIGHTS_PER_TILE - 1);
 	for(int lightindex = 0;lightindex<lightCount;++lightindex)
 	{
 		float lightradius = pointLightCullingData[lightIndices[clusterindex*MAX_LIGHTS_PER_TILE+lightindex+1]].posRadius.w;
@@ -236,7 +236,7 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 	// Lights with index >= SPOT_SHADOW_MAX_COUNT fall back to shadow=1.
 	// Spot lights with per-light PCF shadow lookup.
 	// Lights with index >= SPOT_SHADOW_MAX_COUNT fall back to shadow=1.
-	uint spotCount = spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE];
+	uint spotCount = min(spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE], MAX_LIGHTS_PER_TILE - 1);
 	for (uint si = 0; si < spotCount; ++si)
 	{
 		uint spotIdx = spotLightIndices[clusterindex * MAX_LIGHTS_PER_TILE + si + 1];

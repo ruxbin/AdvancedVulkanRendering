@@ -131,6 +131,18 @@ static bool intersectsFrustumTile( float3 lightPosView, float r, AAPLTileFrustum
     return (min_d <= r);// && isLightVisibleFine(light, boundingSphere);
 }
 
+// Append a light index to a per-tile list. Slot 0 holds the count, slots 1..63
+// the indices. When the tile is full the count keeps counting up but the entry
+// write is skipped — an unguarded write at storeindex >= 63 lands on the NEXT
+// tile's count slot and corrupts it. Readers clamp the count on their side.
+static void AppendTileLight(RWStructuredBuffer<uint> list, uint outputIndex, uint i)
+{
+    uint storeindex = 0;
+    InterlockedAdd(list[outputIndex], 1, storeindex);
+    if (storeindex < MAX_LIGHTS_PER_TILE - 1)
+        list[storeindex + outputIndex + 1] = i;
+}
+
 groupshared uint nearZ;
 groupshared uint farZ;
 [numthreads(16, 16, 1)]
@@ -233,9 +245,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
 	{
             if (intersectsFrustumTile(lightPosView.xyz, r, frustum, false))
             {
-                uint storeindex = 0;
-                InterlockedAdd(lightIndices[outputIndex], 1, storeindex);
-                lightIndices[storeindex + outputIndex + 1] = i;
+                AppendTileLight(lightIndices, outputIndex, i);
                 //InterlockedAdd(lightDebug[gid.xy], 1);
             }
 	}
@@ -244,9 +254,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
 	{
 		if(intersectsFrustumTile(lightPosView.xyz,r,frustum,true))
 		{
-		uint storeindex = 0;
-		InterlockedAdd(lightIndicesTransparent[outputIndex], 1, storeindex);
-                lightIndicesTransparent[storeindex + outputIndex + 1] = i;
+		AppendTileLight(lightIndicesTransparent, outputIndex, i);
 
 		}
 	}
@@ -480,9 +488,7 @@ void TraditionalCullSpot(uint3 tid : SV_DispatchThreadID,
                 isSpotVisibleFineView(spotPosView, spotDirView, cosOuter, height,
                                       frustumTile.tileBoundingSphere))
             {
-                uint storeindex = 0;
-                InterlockedAdd(spotLightIndices[outputIndex], 1, storeindex);
-                spotLightIndices[storeindex + outputIndex + 1] = i;
+                AppendTileLight(spotLightIndices, outputIndex, i);
             }
 
             if (isTransParent && inFrustumNearZ &&
@@ -490,9 +496,7 @@ void TraditionalCullSpot(uint3 tid : SV_DispatchThreadID,
                 isSpotVisibleFineView(spotPosView, spotDirView, cosOuter, height,
                                       frustumTile.tileBoundingSphereTransparent))
             {
-                uint storeindex = 0;
-                InterlockedAdd(spotLightIndicesTransparent[outputIndex], 1, storeindex);
-                spotLightIndicesTransparent[storeindex + outputIndex + 1] = i;
+                AppendTileLight(spotLightIndicesTransparent, outputIndex, i);
             }
         }
     }

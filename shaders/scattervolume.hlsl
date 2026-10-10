@@ -225,8 +225,9 @@ float3 calculateLocalSpotLightScattering(float3 worldPos, float3 camPos,
         }
     }
 
-    // Frostbite convention: spot intensity = 4x point intensity
-    return spot.color.xyz * M_PI_F * 4.0f * frameConstants.localLightIntensity
+    // Same π-based normalization as the surface applySpotLight — no extra
+    // factor, so a spot's beam and its surface lighting stay consistent.
+    return spot.color.xyz * M_PI_F * frameConstants.localLightIntensity
            * atten * angleAtt * shadow * lightPhase;
 }
 
@@ -282,7 +283,7 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
         uint tileY      = DTid.y * SCATTERING_TILE_SIZE / SCATTER_LIGHT_TILE_SIZE;
         uint tileIdx    = tileX + tileY * tileCountX;
         uint base       = tileIdx * MAX_LIGHTS_PER_TILE;
-        uint count      = pointLightIndices[base];
+        uint count      = min(pointLightIndices[base], MAX_LIGHTS_PER_TILE - 1);
         for (uint li = 0; li < count; ++li) {
             uint idx = pointLightIndices[base + li + 1];
             AAPLPointLightCullingData pl = pointLightData[idx];
@@ -300,7 +301,7 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
         uint tileY      = DTid.y * SCATTERING_TILE_SIZE / SCATTER_LIGHT_TILE_SIZE;
         uint tileIdx    = tileX + tileY * tileCountX;
         uint base       = tileIdx * MAX_LIGHTS_PER_TILE;
-        uint count      = spotLightIndices[base];
+        uint count      = min(spotLightIndices[base], MAX_LIGHTS_PER_TILE - 1);
         for (uint si = 0; si < count; ++si) {
             uint spotIdx = spotLightIndices[base + si + 1];
             AAPLSpotLightCullingData spot = spotLightData[spotIdx];
