@@ -157,13 +157,14 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
    // if(gtid.xy==uint2(0,0))
    float clampFar = frameConstants.farPlane+1;
    float clampNear = 0;
-    //if(gtid.x==0 && gtid.y==0)
+    // Initialize once, then wait for all waves before reducing tile depths.
+    if (gtid.x == 0 && gtid.y == 0)
     {
         uint orgval = 0;
         InterlockedExchange(nearZ, asuint(clampFar), orgval);
         InterlockedExchange(farZ, asuint(clampNear), orgval);
     }
-    GroupMemoryBarrier();
+    GroupMemoryBarrierWithGroupSync();
     InterlockedMin(nearZ, asuint(maxDepth));
     InterlockedMax(farZ, asuint(minDepth));
     GroupMemoryBarrierWithGroupSync();
@@ -200,6 +201,7 @@ void TraditionalCull(uint3 tid : SV_DispatchThreadID,uint3 gtid:SV_GroupThreadID
     tileMaxOffset.z = zFar*0.5;
 
     float4 tileBoundingSphereTransparent = float4(tileCenter, length(tileMaxOffset));
+    frustum.tileBoundingSphereTransparent = tileBoundingSphereTransparent;
 
     
     uint xCluterCount = (uint(frameConstants.physicalSize.x) + gLightCullingTileSize - 1) / gLightCullingTileSize;
@@ -377,12 +379,14 @@ void TraditionalCullSpot(uint3 tid : SV_DispatchThreadID,
                (frameConstants.nearPlane - minDepth * (frameConstants.nearPlane - frameConstants.farPlane));
     float clampFar  = frameConstants.farPlane + 1;
     float clampNear = 0;
+    // Late waves must not reset extrema already contributed by other waves.
+    if (gtid.x == 0 && gtid.y == 0)
     {
         uint orgval = 0;
         InterlockedExchange(nearZSpot, asuint(clampFar), orgval);
         InterlockedExchange(farZSpot,  asuint(clampNear), orgval);
     }
-    GroupMemoryBarrier();
+    GroupMemoryBarrierWithGroupSync();
     InterlockedMin(nearZSpot, asuint(maxDepth));
     InterlockedMax(farZSpot,  asuint(minDepth));
     GroupMemoryBarrierWithGroupSync();
