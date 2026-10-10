@@ -406,7 +406,24 @@ void TraditionalCullSpot(uint3 tid : SV_DispatchThreadID,
     frustumTile.tileMaxZ = zFar;
     frustumTile.minZFrustumXY = float4(xNearS, yNearS);
     frustumTile.maxZFrustumXY = float4(xFarS,  yFarS);
-    frustumTile.tileBoundingSphere = float4(float3((NearCenter + FarCenter) * 0.5, zCenter), 0);
+    // True enclosing sphere of the tile frustum box (8 corners). The point-light
+    // path only ever reads tileBoundingSphere.xyz (SAT uses the XY/Z planes), so a
+    // zero radius was harmless there — but the spot cone narrow phase uses .w as
+    // the sphere radius, and 0 degenerates it to a "tile centre point in cone?"
+    // test that holes out whole tiles along cone edges.
+    float3 tileSphereCenter = float3((NearCenter + FarCenter) * 0.5, zCenter);
+    float tileSphereRadius = 0.0f;
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        bool  far = (corner & 4) != 0;
+        float2 cx = far ? xFarS  : xNearS;
+        float2 cy = far ? yFarS  : yNearS;
+        float  cz = far ? zFar   : zNear;
+        float3 cp = float3((corner & 1) ? cx.y : cx.x,
+                           (corner & 2) ? cy.y : cy.x, cz);
+        tileSphereRadius = max(tileSphereRadius, length(cp - tileSphereCenter));
+    }
+    frustumTile.tileBoundingSphere = float4(tileSphereCenter, tileSphereRadius);
 
     float3 tileCenter = float3(FarCenter * 0.5, zFar * 0.5);
     float3 tileMaxOffset = float3(0, 0, 0);
@@ -435,8 +452,12 @@ void TraditionalCullSpot(uint3 tid : SV_DispatchThreadID,
             uint(gid.y - xzRange.z) < xzRange.w &&
             inFrustumMaxZ)
         {
-            // Pre-transform spot pos/dir to view space once for the cone test
-            float3 spotPosView = lightPosView.xyz;
+            // The cone apex is the spot's own position (posAndHeight.xyz), NOT
+            // lightPosView — posRadius.xyz is the bounding-sphere centre sitting
+            // R = height/(2*cos^2(theta)) down the axis, and testing with it
+            // shifts the whole cone and block-holes the near part of the footprint.
+            float3 spotPosView = mul(cameraParams.viewMatrix,
+                                     float4(spot.posAndHeight.xyz, 1)).xyz;
             float3 spotDirView = normalize(mul(cameraParams.viewMatrix,
                                                float4(spot.dirAndOuterAngle.xyz, 0)).xyz);
             float  cosOuter    = spot.dirAndOuterAngle.w;
