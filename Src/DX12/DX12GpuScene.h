@@ -7,6 +7,7 @@
 #include "DX12TextureStreamingPolicy.h"
 #include "Common.h"
 #include "Camera.h"
+#include "EditorUi.h"
 #include "nlohmann/json.hpp"
 
 #include <d3d12.h>
@@ -36,6 +37,7 @@ public:
   void Draw();
   void InitImGui(struct SDL_Window* window);
   void ProcessImGuiEvent(union SDL_Event* event);
+  void ToggleEditor() { _editorUi.Toggle(); }
   void OnResize(uint32_t newWidth, uint32_t newHeight);
 
   Camera* GetMainCamera() { return _mainCamera; }
@@ -232,6 +234,8 @@ private:
   FrameConstants _frameConstants{};
   uint32_t _currentFrame = 0;
   bool _imguiInitialized = false;
+  SDL_Window* _sdlWindow = nullptr;
+  EditorUi _editorUi;
 
   // Culling stats (readback)
   struct CullingStats {
@@ -302,6 +306,7 @@ private:
   void RecordCommandBuffer();
   void ReadbackCullingStats();
   void RenderImGuiOverlay();
+  void BuildImGuiFrame();
   void DispatchLightCulling(ID3D12GraphicsCommandList* cmdList);
 
   // --- Texture streaming pipeline(镜像 Vulkan 五件套;spec §4)---

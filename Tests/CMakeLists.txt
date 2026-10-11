@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-# Also usable without the renderer's Vulkan/SDL dependencies:
+# CPU tests need no Vulkan/SDL libraries (SceneInputTests uses SDL headers only):
 # cmake -S Tests -B build-ibl-tests
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(RendererCpuTests LANGUAGES CXX)
@@ -7,6 +7,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 set(extra_cpu_tests)
+add_executable(SceneInputTests SceneInputTests.cpp)
+target_include_directories(SceneInputTests PRIVATE ../ThirdParty/SDL/include)
+list(APPEND extra_cpu_tests SceneInputTests)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/KtxTextureTests.cpp")
     add_executable(KtxTextureTests KtxTextureTests.cpp ../Src/KtxTexture.cpp)
     list(APPEND extra_cpu_tests KtxTextureTests)
@@ -29,6 +32,28 @@ foreach(test IN ITEMS ${extra_cpu_tests} SphericalHarmonicsTests VlmShTests VlmL
 endforeach()
 
 set(IBL_REFERENCE_DIR "" CACHE PATH "Optional Apple Assets directory for KTX integration tests")
+option(EDITOR_GPU_TESTS "Build interactive SDL/Vulkan Editor window regression" OFF)
+if(EDITOR_GPU_TESTS)
+    find_package(Vulkan REQUIRED)
+    find_package(SDL2 REQUIRED CONFIG PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../ThirdPartyBuild/SDL/cmake")
+    set(editor_imgui "${CMAKE_CURRENT_SOURCE_DIR}/../ThirdParty/imgui")
+    add_executable(EditorViewportTests EditorViewportTests.cpp
+        ${editor_imgui}/imgui.cpp ${editor_imgui}/imgui_draw.cpp
+        ${editor_imgui}/imgui_tables.cpp ${editor_imgui}/imgui_widgets.cpp
+        ${editor_imgui}/backends/imgui_impl_sdl2.cpp
+        ${editor_imgui}/backends/imgui_impl_vulkan.cpp)
+    target_compile_features(EditorViewportTests PRIVATE cxx_std_17)
+    target_include_directories(EditorViewportTests PRIVATE ../Src/Include
+        ${editor_imgui} ${editor_imgui}/backends)
+    target_link_libraries(EditorViewportTests PRIVATE Vulkan::Vulkan SDL2::SDL2)
+    if(WIN32)
+        add_custom_command(TARGET EditorViewportTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:EditorViewportTests>)
+    endif()
+    add_test(NAME EditorViewportTests COMMAND EditorViewportTests)
+    set_tests_properties(EditorViewportTests PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+endif()
 option(VLM_GPU_TESTS "Build standalone Vulkan BRDF integration regression" OFF)
 if(VLM_GPU_TESTS)
     find_package(Vulkan REQUIRED)

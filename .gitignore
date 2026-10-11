@@ -13,3 +13,4 @@ textures/*.hdr
 *.cso
 *.obj
 *.tlog/
+editor-imgui.ini

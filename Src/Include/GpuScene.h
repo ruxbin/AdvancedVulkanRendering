@@ -1,6 +1,7 @@
 #pragma once
 #include "SphericalHarmonics.h"
 #include "Camera.h"
+#include "EditorUi.h"
 #include "Common.h"
 #include "AssetLoader.h"
 #include "Light.h"
@@ -624,8 +625,8 @@ private:
                        const vec3 &scale);
 
   // ImGui overlay
-  VkDescriptorPool _imguiDescriptorPool = VK_NULL_HANDLE;
   bool _imguiInitialized = false;
+  EditorUi _editorUi;
   struct CullingStats {
     uint32_t visibleOpaque = 0;
     uint32_t visibleAlphaMask = 0;
@@ -635,6 +636,7 @@ private:
     uint32_t totalTransparent = 0;
   } _cullingStats;
   void initImGui(SDL_Window *window);
+  void buildImGuiFrame();
   void readbackCullingStats(uint32_t previousFrame);
   void renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
@@ -673,6 +675,7 @@ public:
   int VlmExitCode() const { return _vlmCmdStorage.bakeRequested && !_vlmBakeSucceeded ? 1 : 0; }
   void InitImGui(SDL_Window *window) { initImGui(window); }
   void ProcessImGuiEvent(SDL_Event *event);
+  void ToggleEditor() { _editorUi.Toggle(); }
 
   VkShaderModule createShaderModule(const std::vector<char> &code) const;
 

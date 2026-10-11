@@ -44,6 +44,12 @@ VkFramebuffer getSwapChainFrameBuffer(int i) const {return swapChainFramebuffers
 VkSwapchainKHR getSwapChain() const {return swapChain;}
 VkQueue getPresentQueue() const {return presentQueue;}
 VkQueue getGraphicsQueue() const {return graphicsQueue;}
+uint32_t getGraphicsQueueFamily() const { return graphicsQueueFamily; }
+bool graphicsQueueSupportsPresentation() const {
+  VkBool32 supported = VK_FALSE;
+  return vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, graphicsQueueFamily,
+      wsiSurface, &supported) == VK_SUCCESS && supported;
+}
 VkInstance getInstance() const {return vkInstance;}
 VkImageView getWindowDepthImageView(uint32_t frameIndex)const{return depthImageView[frameIndex];}
 VkImageView getWindowDepthOnlyImageView(uint32_t frameIndex)const { return depthOnlyImageView[frameIndex]; }
@@ -93,6 +99,7 @@ private:
   VkInstance vkInstance;
   VkDevice device;
   VkQueue graphicsQueue;
+  uint32_t graphicsQueueFamily = 0;
   VkQueue presentQueue;
   VkQueue computeQueue;
   VkSurfaceKHR wsiSurface;

@@ -219,7 +219,11 @@ DX12GpuScene::~DX12GpuScene() {
   _device.WaitForGpu();
   shutdownTextureStreaming(); // join 后台线程,须在 delete _applMesh 之前
   if (_imguiInitialized) {
+    // The renderer backend must release its dummy main-viewport data before
+    // destroying secondary platform windows (the main viewport has no queue).
     ImGui_ImplDX12_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
   }
   delete _mainCamera;
   free(_subMeshes);
@@ -2721,6 +2725,12 @@ static ShadowFrustum buildCascadeFrustum(const vec3& eye,
 
 // ---- Draw (main frame) ----
 void DX12GpuScene::Draw() {
+  BuildImGuiFrame();
+  if (_sdlWindow && (SDL_GetWindowFlags(_sdlWindow) & SDL_WINDOW_MINIMIZED)) {
+    if (_imguiInitialized) EditorUi::RenderPlatformWindows();
+    SDL_Delay(10);
+    return;
+  }
   _currentFrame = _device.GetFrameIndex();
 
   UpdateUniforms();
@@ -3904,15 +3914,16 @@ void DX12GpuScene::Draw() {
   RenderImGuiOverlay();
 
   _device.EndFrameAndPresent();
+  if (_imguiInitialized) EditorUi::RenderPlatformWindows();
 }
 
 // ---- ImGui ----
 void DX12GpuScene::InitImGui(SDL_Window* window) {
+  _sdlWindow = window;
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-  ImGui::StyleColorsDark();
+  EditorUi::Configure(EditorUi::SupportsDesktopViewports());
 
   ImGui_ImplSDL2_InitForD3D(window);
 
@@ -3941,7 +3952,7 @@ void DX12GpuScene::ProcessImGuiEvent(SDL_Event* event) {
     ImGui_ImplSDL2_ProcessEvent(event);
 }
 
-void DX12GpuScene::RenderImGuiOverlay() {
+void DX12GpuScene::BuildImGuiFrame() {
   if (!_imguiInitialized) return;
 
   ImGui_ImplDX12_NewFrame();
@@ -3953,12 +3964,10 @@ void DX12GpuScene::RenderImGuiOverlay() {
   uint32_t culled = totalChunks > totalVisible ? totalChunks - totalVisible : 0;
   float pct = totalChunks > 0 ? 100.0f * culled / totalChunks : 0.0f;
 
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-  ImGui::SetNextWindowBgAlpha(0.5f);
-  ImGui::Begin("DX12 Culling Stats", nullptr,
-               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-               ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+  if (!_editorUi.Begin()) {
+    ImGui::Render();
+    return;
+  }
 
   ImGui::Text("Backend: DX12");
   ImGui::Text("Total Chunks: %u", totalChunks);
@@ -4007,6 +4016,10 @@ void DX12GpuScene::RenderImGuiOverlay() {
   ImGui::End();
 
   ImGui::Render();
+}
+
+void DX12GpuScene::RenderImGuiOverlay() {
+  if (!_imguiInitialized) return;
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), _device.GetCommandList());
 }
 

@@ -1,6 +1,8 @@
 #include "Common.h"
 #include "GpuScene.h"
 #include "SDL.h"
+#include "SceneInput.h"
+#include "imgui.h"
 #include "VlmCommandLine.h"
 #include "VulkanSetup.h"
 #include "spdlog/spdlog.h"
@@ -132,6 +134,16 @@ int main(int nargs, char **args) {
     while (!quit) {
       while (SDL_PollEvent(&e)) {
         dx12Scene.ProcessImGuiEvent(&e);
+        const ImGuiIO& io = ImGui::GetIO();
+        const auto input = RouteSceneInput(e, SDL_GetWindowID(window),
+                                          io.WantCaptureMouse, io.WantCaptureKeyboard);
+        if (input.toggleEditor) dx12Scene.ToggleEditor();
+        if (input.resetDrag) {
+          mouseDown = false;
+          currentZDegree = currentYDegree = 0;
+        }
+        if (input.quit) { quit = true; break; }
+        if (!input.deliver) continue;
         if (e.type == SDL_QUIT) quit = true;
         else if (e.type == SDL_KEYDOWN) {
           switch (e.key.keysym.scancode) {
@@ -165,7 +177,7 @@ int main(int nargs, char **args) {
             dx12Scene.OnResize(newW, newH);
         }
       }
-      dx12Scene.Draw();
+      if (!quit) dx12Scene.Draw();
     }
   } else
 #endif
@@ -197,6 +209,17 @@ int main(int nargs, char **args) {
 
     while (SDL_PollEvent(&e)) {
       gpuScene.ProcessImGuiEvent(&e);
+      const ImGuiIO& io = ImGui::GetIO();
+      const auto input = RouteSceneInput(e, SDL_GetWindowID(window),
+                                        io.WantCaptureMouse, io.WantCaptureKeyboard);
+      if (input.toggleEditor) gpuScene.ToggleEditor();
+      if (input.resetDrag) {
+        mouseDown = false;
+        currentZDegree = currentYDegree = 0;
+        if (!input.deliver || e.type != SDL_MOUSEBUTTONUP) gpuScene.OnDecalMouseUp();
+      }
+      if (input.quit) { quit = true; break; }
+      if (!input.deliver) continue;
 
       if (e.type == SDL_QUIT)
         quit = true;
@@ -324,7 +347,7 @@ int main(int nargs, char **args) {
 
       // if (std::chrono::system_clock::now() - lastTime >
       // std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
-      { gpuScene.Draw(); }
+      { if (!quit) gpuScene.Draw(); }
       if (gpuScene.QuitRequested()) { quit=true; applicationExitCode=gpuScene.VlmExitCode(); }
       if(vlmCmd.validationFrames && ++vlmValidationFrames>=vlmCmd.validationFrames) {
         spdlog::info("vlm validation: rendered {} frames",vlmValidationFrames); quit=true;

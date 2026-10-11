@@ -2316,6 +2316,13 @@ GpuScene::~GpuScene() {
   // 先等设备空闲再销毁。
   vkDeviceWaitIdle(device.getLogicalDevice());
   delete _vlmRuntime; _vlmRuntime=nullptr;
+  if (_imguiInitialized) {
+    ImGui::DestroyPlatformWindows();
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
+    _imguiInitialized = false;
+  }
   if (_equirectView != VK_NULL_HANDLE) {
     vkDestroyImageView(device.getLogicalDevice(), _equirectView, nullptr);
     _equirectView = VK_NULL_HANDLE;
@@ -4315,6 +4322,12 @@ void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
 }
 
 void GpuScene::Draw() {
+  buildImGuiFrame();
+  if (_sdlWindow && (SDL_GetWindowFlags(_sdlWindow) & SDL_WINDOW_MINIMIZED)) {
+    if (_imguiInitialized) EditorUi::RenderPlatformWindows();
+    SDL_Delay(10);
+    return;
+  }
   // begin command buffer record
   // bind graphics pipeline
   // update uniform buffer
@@ -4339,6 +4352,7 @@ void GpuScene::Draw() {
   if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
     spdlog::warn("Swapchain out of date, needs recreation");
     recreateSwapChain();
+    if (_imguiInitialized) EditorUi::RenderPlatformWindows();
     return;
   } else if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
     spdlog::error("failed to acquire swap chain image! {}", static_cast<int>(acquireResult));
@@ -4415,6 +4429,7 @@ void GpuScene::Draw() {
   presentInfo.pImageIndices = &imageIndex;
 
   VkResult presentResult = vkQueuePresentKHR(device.getPresentQueue(), &presentInfo);
+  if (_imguiInitialized) EditorUi::RenderPlatformWindows();
 
   // 检查呈现结果，处理 swapchain 需要重建的情况
   if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || framebufferResized) {
@@ -9263,23 +9278,11 @@ void GpuScene::cycleDecalTexture() {
 
 void GpuScene::initImGui(SDL_Window *window) {
   _sdlWindow = window;
-  // Create descriptor pool for ImGui
-  VkDescriptorPoolSize pool_sizes[] = {
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-  };
-  VkDescriptorPoolCreateInfo pool_info{};
-  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-  pool_info.maxSets = 1;
-  pool_info.poolSizeCount = 1;
-  pool_info.pPoolSizes = pool_sizes;
-  vkCreateDescriptorPool(device.getLogicalDevice(), &pool_info, nullptr, &_imguiDescriptorPool);
-
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-  ImGuiIO &io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-  ImGui::StyleColorsDark();
+  const bool viewports = EditorUi::SupportsDesktopViewports() &&
+                         device.graphicsQueueSupportsPresentation();
+  EditorUi::Configure(viewports);
 
   ImGui_ImplSDL2_InitForVulkan(window);
 
@@ -9288,19 +9291,21 @@ void GpuScene::initImGui(SDL_Window *window) {
   init_info.Instance = device.getInstance();
   init_info.PhysicalDevice = device.getPhysicalDevice();
   init_info.Device = device.getLogicalDevice();
-  init_info.QueueFamily = 0;
+  init_info.QueueFamily = device.getGraphicsQueueFamily();
   init_info.Queue = device.getGraphicsQueue();
-  init_info.DescriptorPool = _imguiDescriptorPool;
+  // The pinned backend allocates sampled-image and sampler descriptors.
+  init_info.DescriptorPoolSize = 64;
   init_info.MinImageCount = framesInFlight;
   init_info.ImageCount = framesInFlight;
   init_info.PipelineInfoMain.RenderPass = _forwardLightingPass;
   init_info.PipelineInfoMain.Subpass = 0;
   init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+  init_info.PipelineInfoForViewports.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
   ImGui_ImplVulkan_Init(&init_info);
 
   _imguiInitialized = true;
-  spdlog::info("ImGui initialized for Vulkan + SDL2");
+  spdlog::info("ImGui initialized for Vulkan + SDL2; independent Editor: {}", viewports);
 }
 
 void GpuScene::ProcessImGuiEvent(SDL_Event *event) {
@@ -9383,7 +9388,7 @@ std::string GpuScene::queryMeshAtScreenPos(float mouseX, float mouseY) {
   return "mesh_" + std::to_string(bestMesh) + ".ply";
 }
 
-void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+void GpuScene::buildImGuiFrame() {
   if (!_imguiInitialized) return;
 
   ImGui_ImplVulkan_NewFrame();
@@ -9395,12 +9400,11 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   uint32_t culledCount = totalChunks > totalVisible ? totalChunks - totalVisible : 0;
   float cullPercent = totalChunks > 0 ? 100.0f * culledCount / totalChunks : 0.0f;
 
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-  ImGui::SetNextWindowBgAlpha(0.5f);
-  ImGui::Begin("Culling Stats", nullptr,
-               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-               ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+  if (!_editorUi.Begin()) {
+    ImGui::Render();
+    return;
+  }
+  ImGui::Text("Backend: Vulkan");
 
   ImGui::Text("Total Chunks: %u", totalChunks);
   ImGui::Text("Visible: %u", totalVisible);
@@ -9471,19 +9475,28 @@ void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageI
   ImGui::Separator();
   ImGui::Checkbox("Mesh Picker", &_meshPickerActive);
   if (_meshPickerActive && _sdlWindow) {
+    // SDL mouse coordinates are relative to the focused window. Only query
+    // scene geometry while hovering the scene, never over the Editor.
+    if (SDL_GetMouseFocus() == _sdlWindow && !ImGui::GetIO().WantCaptureMouse) {
       int mx, my;
       SDL_GetMouseState(&mx, &my);
-      static int lastMx = -999, lastMy = -999;
-      if (std::abs(mx - lastMx) > 3 || std::abs(my - lastMy) > 3) {
-          _pickedMeshName = queryMeshAtScreenPos((float)mx, (float)my);
-          lastMx = mx; lastMy = my;
-      }
-      ImGui::Text("PLY: %s", _pickedMeshName.c_str());
+      int width, height;
+      SDL_GetWindowSize(_sdlWindow, &width, &height);
+      if (width > 0 && height > 0)
+        _pickedMeshName = queryMeshAtScreenPos(
+            (float)mx * device.getSwapChainExtent().width / width,
+            (float)my * device.getSwapChainExtent().height / height);
+    }
+    ImGui::Text("PLY: %s", _pickedMeshName.c_str());
   }
 
   ImGui::End();
 
   ImGui::Render();
+}
+
+void GpuScene::renderImGuiOverlay(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+  if (!_imguiInitialized) return;
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 }
 
