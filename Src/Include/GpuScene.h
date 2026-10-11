@@ -1031,8 +1031,10 @@ public:
   friend class PbrtExporter;
   FrameConstants frameConstants{
       vec3(-0.17199061810970306f, 0.81795543432235718f, 0.54897010326385498f),  // sunDirection
-      vec3(1.0f, 0.95f, 0.8f),   // sunColor
-      vec3(0.4f, 0.6f, 1.0f),    // skyColor
+      vec3(1.0f, 1.0f, 1.0f),    // sunColor (Apple NIGHT parity: neutral white,
+                                  // AAPLLightingEnvironment.mm:92)
+      vec3(0.0f, 35.0f / 255.0f, 117.0f / 255.0f),  // skyColor (Apple NIGHT:
+                                  // (0,35,117)/255 deep night blue, :94)
       1.f, 10.f, 1.f,            // wetness, emissiveScale, localLightIntensity
       0.1f, 1000.f,              // nearPlane, farPlane
       2.0f,                      // scatterScale (Metal parity: unitless multiplier on scatteringCoeff)
@@ -1044,7 +1046,7 @@ public:
       0u,                        // taaEnabled (per-frame fill)
       vec3(),                    // globalNoiseOffset (per-frame fill)
       0.0f,                      // noiseSpeed
-      1.0f,                      // iblScale (ImGui-adjustable; NOT overwritten per-frame)
+      0.1f,                      // iblScale (Apple NIGHT parity, :97; ImGui-adjustable)
       4.0f                       // iblSpecularScale (Metal parity; ImGui-adjustable)
   };
 };

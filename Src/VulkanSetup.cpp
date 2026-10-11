@@ -474,8 +474,14 @@ void VulkanDevice::createLogicalDevice() {
 
 VkSurfaceFormatKHR VulkanDevice::chooseSwapSurfaceFormat(
     const std::vector<VkSurfaceFormatKHR> &availableFormats) {
+  // sRGB backbuffer (Apple parity: MTLPixelFormatBGRA8Unorm_sRGB). The resolve
+  // pass writes tone-mapped LINEAR values and relies on the hardware OETF, so
+  // the format must be *_SRGB. (This used to request B8G8R8A8_UINT, which is
+  // never presentable — the request never matched and the code silently fell
+  // through to availableFormats[0], typically linear BGRA8_UNORM, leaving the
+  // presented image without an sRGB encode.)
   for (const auto &availableFormat : availableFormats) {
-    if (availableFormat.format == VK_FORMAT_B8G8R8A8_UINT &&
+    if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
         availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
       return availableFormat;
     }

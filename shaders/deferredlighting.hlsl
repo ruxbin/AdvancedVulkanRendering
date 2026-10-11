@@ -181,39 +181,10 @@ half4 DeferredLighting(VSOutput input) : SV_Target
     }
 #endif
 
-    result *= (half)ao;
-#ifndef DX12_BACKEND
-    result += (half3)vlmLighting; // VLM already contains static occlusion; no extra AO.
-#endif
-
-    // Phase F: for sky pixels (no geometry, depth == 0 in reverse-Z far plane)
-    // use the skyColor as the base surface colour so the scatter volume composites
-    // correctly against the background horizon.
-    if (depth < 0.0001f) {
-        float3 camPos2 = float3(cameraParams.invViewMatrix._m03,
-                                cameraParams.invViewMatrix._m13,
-                                cameraParams.invViewMatrix._m23);
-        float3 viewDirWS = normalize(worldPosition.xyz - camPos2);
-        float upBlend = saturate(viewDirWS.y * 0.5f + 0.5f);
-        result = (half3)lerp((float3)frameConstants.skyColor * 0.5f,
-                             (float3)frameConstants.skyColor, upBlend);
-    }
-
-    // --- Scatter volume application (froxel volumetrics) ---
-    // Guard on scatterScale: when disabled (0), the DX12 backend binds t16
-    // (scatterAccumVolume) as a NULL descriptor; sampling it unconditionally
-    // yields (0,0,0,0) and zeroes the entire lighting result (black screen).
-    if (frameConstants.scatterScale > 0.0f)
-    {
-        const float SCATTERING_RANGE = 100.0;
-        float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
-        float4 viewPos = mul(cameraParams.invProjectionMatrix, ndcPos);
-        float  viewZ   = viewPos.z / viewPos.w;
-        float sliceF = log2(clamp(viewZ, 0.001, SCATTERING_RANGE) / SCATTERING_RANGE * 7.0 + 1.0) / 3.0;
-        float3 uvw = float3(input.TextureUV.x, input.TextureUV.y, sliceF);
-        float4 scatter = scatterAccumVolume.SampleLevel(linearClampSampler, uvw, 0);
-        result = result * (half) scatter.a + (half3) scatter.rgb * frameConstants.scatterScale;
-    }
+    // (AO / VLM / emissive / sky-overwrite / scatter composition all moved BELOW
+    // the cluster light loops — Apple parity: local lights accumulate inside
+    // lightingShader in the reference, so they get AO'd, are discarded by the
+    // sky overwrite, and are attenuated by the fog transmittance.)
 
     if(useClusterLighting)
     {
@@ -270,6 +241,48 @@ half4 DeferredLighting(VSOutput input) : SV_Target
 	}
     }
     
+    // --- Composition, Apple parity order (AAPLLightingCommon.h:230-272 + applyScattering) ---
+    // AO covers sun + IBL + local lights; VLM keeps its own occlusion (no AO);
+    // emissive is added unshadowed and unoccluded; the sky overwrite then
+    // discards everything on sky pixels; scattering composites last so local
+    // lights are attenuated by fog transmittance like the sun is.
+    result *= (half)ao;
+#ifndef DX12_BACKEND
+    result += (half3)vlmLighting; // VLM already contains static occlusion; no extra AO.
+#endif
+    result += surfaceData.emissive * frameConstants.emissiveScale;
+
+    // Phase F: for sky pixels (no geometry, depth == 0 in reverse-Z far plane)
+    // use the skyColor as the base surface colour so the scatter volume composites
+    // correctly against the background horizon.
+    if (depth < 0.0001f) {
+        float3 camPos2 = float3(cameraParams.invViewMatrix._m03,
+                                cameraParams.invViewMatrix._m13,
+                                cameraParams.invViewMatrix._m23);
+        float3 viewDirWS = normalize(worldPosition.xyz - camPos2);
+        float upBlend = saturate(viewDirWS.y * 0.5f + 0.5f);
+        result = (half3)lerp((float3)frameConstants.skyColor * 0.5f,
+                             (float3)frameConstants.skyColor, upBlend);
+    }
+
+    // --- Scatter volume application (froxel volumetrics) ---
+    // Guard on scatterScale: when disabled (0), the DX12 backend binds t16
+    // (scatterAccumVolume) as a NULL descriptor; sampling it unconditionally
+    // yields (0,0,0,0) and zeroes the entire lighting result (black screen).
+    if (frameConstants.scatterScale > 0.0f)
+    {
+        const float SCATTERING_RANGE = 100.0;
+        float4 ndcPos  = float4(input.TextureUV * 2.0 - 1.0, depth, 1.0);
+        float4 viewPos = mul(cameraParams.invProjectionMatrix, ndcPos);
+        float  viewZ   = viewPos.z / viewPos.w;
+        float sliceF = log2(clamp(viewZ, 0.001, SCATTERING_RANGE) / SCATTERING_RANGE * 7.0 + 1.0) / 3.0;
+        float3 uvw = float3(input.TextureUV.x, input.TextureUV.y, sliceF);
+        float4 scatter = scatterAccumVolume.SampleLevel(linearClampSampler, uvw, 0);
+        // scatterScale is already applied to the scattering coefficient inside
+        // the froxel kernel (Apple parity — the composite adds the raw inscatter).
+        result = result * (half) scatter.a + (half3) scatter.rgb;
+    }
+
     return half4(result, 1.f);
     
 }

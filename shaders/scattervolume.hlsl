@@ -225,9 +225,10 @@ float3 calculateLocalSpotLightScattering(float3 worldPos, float3 camPos,
         }
     }
 
-    // Same π-based normalization as the surface applySpotLight — no extra
-    // factor, so a spot's beam and its surface lighting stay consistent.
-    return spot.color.xyz * M_PI_F * frameConstants.localLightIntensity
+    // Apple parity (AAPLScatterVolume.metal:138-139): "according to Moving
+    // Frostbite to PBR, intensity spot = 4.0 * intensity point" — the surface
+    // applySpotLight carries the same factor.
+    return 4.0f * spot.color.xyz * M_PI_F * frameConstants.localLightIntensity
            * atten * angleAtt * shadow * lightPhase;
 }
 
@@ -269,7 +270,11 @@ void ScatterVolume(uint3 DTid : SV_DispatchThreadID) {
                             cameraParams.invViewMatrix._m13,
                             cameraParams.invViewMatrix._m23);
     float3 viewDir = normalize(camPos - worldPos);
-    float  cosSun  = -dot(normalize(frameConstants.sunDirection), viewDir);
+    // Apple's viewDir is camera->froxel with phase arg -dot(sunDir, viewDir)
+    // (AAPLScatterVolume.metal:204); ours is froxel->camera, so the equivalent
+    // is +dot(sunDir, viewDir) — forward-scatter peak when looking toward the
+    // sun. The extra negation here used to reverse the glow direction.
+    float  cosSun  = dot(normalize(frameConstants.sunDirection), viewDir);
     float  shadow  = evalShadow(float4(worldPos, 1.0f));
     float  shadowDebug = evalShadow(worldPosDebug);
 
@@ -352,8 +357,14 @@ void AccumulateScattering(uint3 DTid : SV_DispatchThreadID) {
         float zFar     = sliceToViewZ((float)z + 1.0f);
         float thickness = max(zFar - zNear, 0.0001f);
 
+        // Analytic slab integral (Apple parity, AAPLScatterVolume.metal:365-371):
+        // per-slice inscatter = (sigma_s*L/sigma_t) * (1 - exp(-sigma_t*thickness)).
+        // Without the (1-t)/sigma_t factor every slice contributes the same amount
+        // regardless of physical thickness (near slices ~4x too bright, far ~4x
+        // too dim, and dense fog never converges to sigma_s/sigma_t).
         float sliceTrans = exp(-extinction * thickness);
-        accum.rgb += inscatter * accum.a;
+        float3 sliceInscatter = inscatter * (1.0f - sliceTrans) / max(extinction, 1e-5f);
+        accum.rgb += sliceInscatter * accum.a;
         accum.a   *= sliceTrans;
 
         accumOut[uint3(DTid.xy, z)] = accum;

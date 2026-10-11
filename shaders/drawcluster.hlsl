@@ -319,6 +319,10 @@ half4 RenderSceneForwardPS(VSOutput input) : SV_Target
                 frameConstants.iblScale,frameConstants.iblSpecularScale);
     }
 #endif
+    // Emissive is no longer added inside lightingShader (Apple parity: it must
+    // stay unshadowed/unoccluded); the forward path applies no shadow/AO, so
+    // add it directly.
+    res += surfaceData.emissive * frameConstants.emissiveScale;
     return half4(res, surfaceData.alpha);
 
 }
@@ -419,6 +423,10 @@ half4 RenderSceneForwardPSIndirect(VSOutput input) : SV_Target
                 frameConstants.iblScale,frameConstants.iblSpecularScale);
     }
 #endif
+    // Emissive is no longer added inside lightingShader (Apple parity: it must
+    // stay unshadowed/unoccluded); the forward path applies no shadow/AO, so
+    // add it directly.
+    res += surfaceData.emissive * frameConstants.emissiveScale;
     return half4(res, surfaceData.alpha);
 }
 

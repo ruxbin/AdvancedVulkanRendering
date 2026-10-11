@@ -107,6 +107,17 @@ float2 RotateVector(float2 v, float2 rotation)
     );
 }
 
+// Map the pyramid's sky sentinel (2.0, see hiz.hlsl) to the far plane (0.0 in
+// reverse-Z) so sky neighbors unproject far away and the shorter-edge test
+// below discards them — mirroring Apple, where sky neighbors read 1.0 (far).
+// Unmapped, the sentinel unprojects to ~5cm in front of the camera and poisons
+// the cross-product normal with bogus near edges.
+float LoadDepthOrFar(int2 pixel)
+{
+    float d = depthMipTexture.Load(int3(pixel, 0));
+    return (d > 1.0) ? 0.0 : d;
+}
+
 [numthreads(8, 8, 1)]
 void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
 {
@@ -130,11 +141,13 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
     // Read from SAO depth pyramid mip 0 (R32_SFLOAT), not the raw depth
     // texture, so that Load() works on all Vulkan drivers.
     float depth = depthMipTexture.Load(int3(coordinates, 0));
-    // Reverse-Z: depth == 0 = far plane = sky / not rendered. 严格用 0 判定;
-    // 之前用 `<= 0.0001` 会误把 ~90m 远的合法几何当成 sky 剔除(reverse-Z
-    // 在 n=0.1, f=100 下,depth=0.0001 对应 view.z ≈ 90m),Bistro 街景里
-    // 这片几何很多。
-    if (depth == 0.0)
+    // Sky detection: the pyramid's copy kernel remaps cleared far-plane depth
+    // (0.0 in reverse-Z) to a 2.0 sentinel (hiz.hlsl) so MIN downsampling keeps
+    // working. SAO must treat anything outside reverse-Z's (0,1] range as sky:
+    // the old `== 0.0` test never fired (the remap guarantees no 0.0 in the
+    // pyramid), and the 2.0 sentinel unprojects to ~5cm in front of the camera,
+    // producing spurious near occluders (dark AO halos on sky silhouettes).
+    if (depth <= 0.0 || depth > 1.0)
     {
         aoOutput[coordinates] = 1.0;
         return;
@@ -144,10 +157,10 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
     float2 cameraBasePosition = GetCameraSpaceBasePosition(coordinates);
 
     // --- Reconstruct normal from 4-neighbor cross product ---
-    float depthd = depthMipTexture.Load(int3(coordinates + uint2(0, 1), 0));
-    float depthr = depthMipTexture.Load(int3(coordinates + uint2(1, 0), 0));
-    float depthu = depthMipTexture.Load(int3(coordinates - uint2(0, 1), 0));
-    float depthl = depthMipTexture.Load(int3(coordinates - uint2(1, 0), 0));
+    float depthd = LoadDepthOrFar(int2(coordinates + uint2(0, 1)));
+    float depthr = LoadDepthOrFar(int2(coordinates + uint2(1, 0)));
+    float depthu = LoadDepthOrFar(int2(coordinates - uint2(0, 1)));
+    float depthl = LoadDepthOrFar(int2(coordinates - uint2(1, 0)));
 
     float3 cameraPositiond = GetOffsetCameraSpacePosition(cameraBasePosition, float2(0, 1), depthd);
     float3 cameraPositionr = GetOffsetCameraSpacePosition(cameraBasePosition, float2(1, 0), depthr);
@@ -199,8 +212,9 @@ void ScalableAmbientObscurance(uint3 DTid : SV_DispatchThreadID)
 
         float depth2 = depthMipTexture.Load(int3(xy >> mipLevel, mipLevel));
 
-        // Skip far-plane pixels (reverse-Z: 0 = far). 严格 0 判定,理由同 center pixel。
-        if (depth2 == 0.0)
+        // Skip sky taps: same sentinel logic as the center pixel — the pyramid
+        // stores sky as 2.0 (never 0.0), so anything outside (0,1] is sky.
+        if (depth2 <= 0.0 || depth2 > 1.0)
             continue;
 
         float3 cameraPosition2 = GetOffsetCameraSpacePosition(cameraBasePosition, offset, depth2);

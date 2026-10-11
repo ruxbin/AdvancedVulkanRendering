@@ -71,9 +71,10 @@ half3 lightingShader(AAPLPixelSurfaceData surfaceData,
     
     
     half3 result = evaluateBRDF(surfaceData, viewDir, lightDirection) * light;
-    
-    result += surfaceData.emissive * frameData.emissiveScale;
 
+    // Emissive is NOT added here: callers must add it AFTER their shadow/AO
+    // application (Apple parity, AAPLLightingCommon.h:233-235 — aoSample covers
+    // sun + IBL + local lights only; emissive stays unshadowed and unoccluded).
     return result;
 }
 
@@ -154,7 +155,10 @@ half3 applySpotLight(AAPLPixelSurfaceData surfaceData,
                              cameraParams.invViewMatrix._m23) - worldPosition.xyz;
     half3  V        = (half3) normalize(toCamera);
 
-    half3 lightCol = (half3)(spot.color.xyz * M_PI_F)
+    // Apple parity (AAPLLightingCommon.h:194): "according to Moving Frostbite to
+    // PBR, intensity spot = 4.0 * intensity point" — the volumetric scatter path
+    // (scattervolume.hlsl) carries the same factor.
+    half3 lightCol = (half3)(spot.color.xyz * M_PI_F * 4.0f)
                    * (distAtt * angleAtt * shadow)
                    * frameData.localLightIntensity;
     return evaluateBRDF(surfaceData, V, (half3)L) * lightCol;

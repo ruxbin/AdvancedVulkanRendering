@@ -3180,19 +3180,22 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
               ? LIGHT_FOR_TRANSPARENT_FLAG
               : 0;
 
+      // Apple's addSpotLight (AAPLScene.mm) assumes a unit-length direction;
+      // normalize defensively so a non-unit scene entry can't stretch the
+      // bounding sphere center off the cone axis.
+      vec3 spotDir = vec3(direction_x, direction_y, direction_z);
+      float spotDirLen = spotDir.length();
+      if (spotDirLen > 1e-6f)
+        spotDir = vec3(spotDir.x / spotDirLen, spotDir.y / spotDirLen,
+                       spotDir.z / spotDirLen);
+
       vec4 boundingSphere;
       if (coneRad > M_PI_F / 4.0f) {
         float R = height * tanf(coneRad);
-        boundingSphere =
-            vec4(vec3(posx, posy, posz) +
-                     vec3(direction_x, direction_y, direction_z) * height,
-                 R);
+        boundingSphere = vec4(vec3(posx, posy, posz) + spotDir * height, R);
       } else {
         float R = height / (2 * cos(coneRad) * cos(coneRad));
-        boundingSphere =
-            vec4(vec3(posx, posy, posz) +
-                     vec3(direction_x, direction_y, direction_z) * R,
-                 R);
+        boundingSphere = vec4(vec3(posx, posy, posz) + spotDir * R, R);
       }
       SpotLight::spotLightData.emplace_back(SpotLightData(
           boundingSphere, vec4(posx, posy, posz, height),
@@ -3205,7 +3208,6 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
       // Upload format matches CSM: transpose(P) * transpose(V), so the HLSL
       // shader can do mul(spotViewProjMatrices[idx], worldPos) to get clip space.
       {
-        vec3 spotDir = normalize(vec3(direction_x, direction_y, direction_z));
         vec3 up = (fabsf(spotDir.y) < 0.99f) ? vec3(0.f, 1.f, 0.f) : vec3(0.f, 0.f, 1.f);
         mat4 spotV = invLookAt(vec3(posx, posy, posz), up, spotDir);
         mat4 spotP = perspective(2.0f * coneRad, 1.0f, 0.1f, height);
@@ -3708,7 +3710,9 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
       jy /= (float)device.getSwapChainExtent().height;
     }
     frameConstants.taaJitter = vec2(jx, jy);
-    frameConstants.exposure = 1.0f;
+    // Apple parity: NIGHT lighting environment uses 0.3 (AAPLLightingEnvironment.mm:91);
+    // applied in resolve.hlsl before ACES.
+    frameConstants.exposure = 0.3f;
     // TAA reads the previous frame's history; on the first TAA-enabled frame
     // (or when freshly toggled on) skip blending so we don't sample garbage.
     frameConstants.taaEnabled = (_taaEnabled && !_taaFirstFrame) ? 1 : 0;
