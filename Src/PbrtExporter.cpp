@@ -23,12 +23,23 @@ enum : uint32_t {
     kBC5_RGUnorm     = 142,
 };
 
+// Asset-specific policy: Bistro uses small open glass/metal panels around its
+// street lights. They cannot be reliably identified as closed emissive shells.
+// Exact source basenames keep this local clearance away from buildings/signs.
+bool IsBistroStreetlightSurface(const std::string& path) {
+    const auto name = path.substr(path.find_last_of("/\\") + 1);
+    return name == "Emissive_StreetLight_BaseColor.dds" ||
+           name == "Streetlight_Metal_BaseColor.dds" ||
+           name == "Streetlight_Support_Bulb_BaseColor.dds";
+}
+
 // Build the export's geometry/material usage before loading any textures.
-// Only emissive connected shells that enclose (>=90% angular coverage) a
-// point light are omitted; this tolerates the small open neck on Bistro bulbs.
+// Enclosing emissive shells use >=90% angular coverage. Known Bistro street
+// fixture surfaces additionally receive the local clearance described below.
 bool PreparePointLightProxies(const AAPLMeshData* mesh,
     const AAPLSubMesh* submeshes, const AAPLMaterial* materials,
     const std::vector<vec3>& lights,
+    const std::vector<bool>& streetlightMaterials,
     std::unordered_map<int, std::vector<uint32_t>>& filtered,
     std::vector<bool>& usedMaterials) {
     if (!mesh->_vertexData || !mesh->_indexData || !submeshes) return false;
@@ -68,16 +79,29 @@ bool PreparePointLightProxies(const AAPLMeshData* mesh,
         const auto [begin, count] = ranges[m];
         bool hasGeometry = sub.indexCount != 0;
         const auto first = omitted.begin() + begin;
-        if (std::find(first, first + count, true) != first + count) {
+        const bool clearance = sub.materialIndex < streetlightMaterials.size() &&
+                               streetlightMaterials[sub.materialIndex] && !lights.empty();
+        if (clearance || std::find(first, first + count, true) != first + count) {
             std::vector<uint32_t> kept;
-            for (size_t t = begin; t < begin + count; ++t) {
-                if (!omitted[t]) kept.insert(kept.end(), emissiveIndices.begin() + 3*t,
-                                             emissiveIndices.begin() + 3*t + 3);
+            for (size_t k = 0; k < sub.indexCount; k += 3) {
+                if (count && omitted[begin + k/3]) continue;
+                uint32_t face[3];
+                for (int j=0;j<3;++j) {
+                    const size_t at=static_cast<size_t>(sub.indexBegin)+k+j;
+                    face[j]=shortIndices ? static_cast<const uint16_t*>(mesh->_indexData)[at]
+                                         : static_cast<const uint32_t*>(mesh->_indexData)[at];
+                }
+                const auto* v=static_cast<const vec3*>(mesh->_vertexData);
+                // Bistro world units are metres; shades measure ~0.32 x 0.36 m.
+                // Remove faces touching this local sphere, not whole lamp poles.
+                if (clearance && pbrt_export::IntersectsPointLightClearance(
+                        v[face[0]],v[face[1]],v[face[2]],lights,0.3)) continue;
+                kept.insert(kept.end(),face,face+3);
             }
-            spdlog::info("PbrtExporter: submesh {} removed {} point-light shell triangles",
-                         m, count - kept.size() / 3);
+            spdlog::info("PbrtExporter: submesh {} removed {} point-light fixture triangles",
+                         m, (sub.indexCount - kept.size()) / 3);
             hasGeometry = !kept.empty();
-            filtered.emplace(static_cast<int>(m), std::move(kept));
+            if (kept.size()!=sub.indexCount) filtered.emplace(static_cast<int>(m), std::move(kept));
         }
         if (hasGeometry && sub.materialIndex < usedMaterials.size())
             usedMaterials[sub.materialIndex] = true;
@@ -1193,8 +1217,17 @@ bool PbrtExporter::Export(const GpuScene& scene,
                                                   data->posSqrRadius.y,
                                                   data->posSqrRadius.z);
         }
+        std::vector<bool> streetlightMaterials(static_cast<size_t>(scene.applMesh->_materialCount),false);
+        for (size_t i=0;i<streetlightMaterials.size();++i) {
+            const auto& mat=scene.cpuMaterials[i];
+            auto it=scene.streamingEntryMap.find(mat.baseColorTextureHash);
+            if (!mat.hasBaseColorTexture || it==scene.streamingEntryMap.end() ||
+                it->second>=scene.streamingEntries.size()) continue;
+            const auto* desc=scene.streamingEntries[it->second].desc;
+            streetlightMaterials[i]=desc && IsBistroStreetlightSurface(desc->_path);
+        }
         if (!PreparePointLightProxies(scene.applMesh, scene.m_SubMeshes, scene.cpuMaterials,
-                                      pointPositions, filteredIndices, usedMaterials)) {
+                                      pointPositions, streetlightMaterials, filteredIndices, usedMaterials)) {
             spdlog::error("PbrtExporter: invalid geometry while preparing point-light proxies");
             return false;
         }

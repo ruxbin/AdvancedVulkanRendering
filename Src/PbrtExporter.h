@@ -15,6 +15,8 @@ public:
     // Textures are referenced by relative path.
     // Realtime point-light policy: omit emissive components enclosing
     // a point light, and resources used only by those components.
+    // Known Bistro street-light glass/metal/support surfaces additionally omit
+    // triangles intersecting a 0.3 m sphere around a point light.
     // Returns true on success, false on error (logged to spdlog).
     static bool Export(const GpuScene& scene,
                        const std::filesystem::path& outputPath);

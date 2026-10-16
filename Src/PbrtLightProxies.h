@@ -13,6 +13,50 @@
 // is validated by the caller. Keep source indices/UV seams in the output; weld
 // exact positions only for connectivity and shell tests.
 namespace pbrt_export {
+// Exact point-to-triangle distance, including edges and degenerate triangles.
+// Testing only vertices misses large shade faces spanning a light's vicinity.
+inline bool IntersectsPointLightClearance(const vec3& a, const vec3& b, const vec3& c,
+    const std::vector<vec3>& lights, double radius) {
+    using V = std::array<double, 3>;
+    const V triangle[3] = {{a.x,a.y,a.z}, {b.x,b.y,b.z}, {c.x,c.y,c.z}};
+    for (const auto& v : triangle)
+        for (double x : v) if (!std::isfinite(x)) return false;
+    auto sub = [](const V& x, const V& y) { return V{x[0]-y[0],x[1]-y[1],x[2]-y[2]}; };
+    auto dot = [](const V& x, const V& y) { return x[0]*y[0]+x[1]*y[1]+x[2]*y[2]; };
+    auto cross = [](const V& x, const V& y) {
+        return V{x[1]*y[2]-x[2]*y[1],x[2]*y[0]-x[0]*y[2],x[0]*y[1]-x[1]*y[0]};
+    };
+    const V normal = cross(sub(triangle[1],triangle[0]),sub(triangle[2],triangle[0]));
+    const double n2 = dot(normal,normal), radius2 = radius*radius;
+    for (const auto& light : lights) {
+        const V p{light.x,light.y,light.z};
+        bool candidate = true;
+        for (int j=0;j<3;++j) {
+            double lo=(std::min)({triangle[0][j],triangle[1][j],triangle[2][j]});
+            double hi=(std::max)({triangle[0][j],triangle[1][j],triangle[2][j]});
+            if (!std::isfinite(p[j]) || p[j]<lo-radius || p[j]>hi+radius) candidate=false;
+        }
+        if (!candidate) continue;
+        if (n2>0) {
+            const double height = dot(sub(p,triangle[0]),normal);
+            V projected{p[0]-normal[0]*height/n2,p[1]-normal[1]*height/n2,p[2]-normal[2]*height/n2};
+            bool interior = true;
+            for (int j=0;j<3;++j)
+                if (dot(cross(sub(triangle[(j+1)%3],triangle[j]),sub(projected,triangle[j])),normal)<0)
+                    interior=false;
+            if (interior && height*height<=radius2*n2) return true;
+        }
+        for (int j=0;j<3;++j) {
+            const V edge=sub(triangle[(j+1)%3],triangle[j]), offset=sub(p,triangle[j]);
+            double length2=dot(edge,edge);
+            double t=length2>0 ? std::clamp(dot(offset,edge)/length2,0.0,1.0) : 0;
+            const V d{offset[0]-t*edge[0],offset[1]-t*edge[1],offset[2]-t*edge[2]};
+            if (dot(d,d)<=radius2) return true;
+        }
+    }
+    return false;
+}
+
 inline std::vector<uint32_t> RemovePointLightShells(
     const vec3* vertices, const std::vector<uint32_t>& indices,
     const std::vector<vec3>& lights, size_t& removed,
