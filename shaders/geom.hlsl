@@ -30,7 +30,10 @@ static AAPLAxisBounds getBoundsForAxis(float3 axis, float3 center, float radius,
     if (needsClipping)
     {
         float dz = nearZ - az.y;
-        sqrtPart = sqrt((radius * radius) - (dz * dz));
+        // The HLSL rotation below produces the negative-axis tangent first.
+        // Clip that endpoint to the negative side of the near-plane circle;
+        // using +sqrt here swaps the endpoints (or truncates one side).
+        sqrtPart = -sqrt(max(0.0f, (radius * radius) - (dz * dz)));
     }
 
     float2 bounds_az[2];
@@ -98,17 +101,21 @@ AAPLBox2D getBoundingBox(float3 center,
                                 float nearZ,
                                 float4x4 projMatrix)
 {
+    AAPLBox2D res;
+    res.x = res.y = float2(0, 0);
+    if (center.z + radius <= nearZ)
+        return res;
+
     AAPLAxisBounds x = getBoundsForAxis(float3(1, 0, 0), center, radius, nearZ);
     AAPLAxisBounds y = getBoundsForAxis(float3(0, 1, 0), center, radius, nearZ);
 
-    // Simplified projection:
-    //  Y is negated from the original code to match space of culling.
-float maxX = project(x.upper, projMatrix).x;
-float minX = project(x.lower, projMatrix).x;
-float minY = project(y.upper, projMatrix).y;
-float maxY = project(y.lower, projMatrix).y;
-    AAPLBox2D res;
-    res.x = float2(minX, maxX);
-    res.y = float2(minY, maxY);
+    // Projection may flip either axis. Sort after projection rather than
+    // assuming a particular camera handedness from the endpoint names.
+    float x0 = project(x.upper, projMatrix).x;
+    float x1 = project(x.lower, projMatrix).x;
+    float y0 = project(y.upper, projMatrix).y;
+    float y1 = project(y.lower, projMatrix).y;
+    res.x = float2(min(x0, x1), max(x0, x1));
+    res.y = float2(min(y0, y1), max(y0, y1));
     return res;
 }
