@@ -88,3 +88,7 @@ REM IBL runtime generation kernels
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 ibl.hlsl -E EquirectToCubeCS -Fo ibl_equirect.cs.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 ibl.hlsl -E PrefilterSpecularCS -Fo ibl_prefilter.cs.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T cs_6_2 ibl.hlsl -E DfgLutCS -Fo ibl_dfglut.cs.spv
+
+REM SVT opaque variants (design 2026-10-16 §8.1; set2 bindings, see svt_common.hlsl)
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -D SVT_ENABLED -E RenderSceneBasePassSvt -Fo drawcluster.base.svt.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -D SVT_ENABLED -E RenderSceneForwardPSIndirectSvt -Fo drawcluster.forward.indirect.svt.ps.spv

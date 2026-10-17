@@ -1,3 +1,4 @@
+#include "TextureBlobReader.h"
 #include "PbrtExporter.h"
 #include "GpuScene.h"
 #include "PbrtLightProxies.h"
@@ -600,7 +601,7 @@ void* AcquireBCMipData(const AAPLTextureData& tex, const AAPLMeshData* mesh,
                        uint32_t bcBlockBytes, const std::string& baseName,
                        uint32_t& blockWOut, uint32_t& blockHOut,
                        uint32_t& mipWOut, uint32_t& mipHOut, int& mipLevelOut) {
-    if (!mesh->_textureData || tex._pixelDataOffset > mesh->_textureDataLength ||
+    if ((!mesh->_textureData && mesh->_textureBlobPath.empty()) || tex._pixelDataOffset > mesh->_textureDataLength ||
         tex._pixelDataLength > mesh->_textureDataLength - tex._pixelDataOffset)
         return nullptr;
     uint32_t mipW = (uint32_t)tex._width;
@@ -620,9 +621,16 @@ void* AcquireBCMipData(const AAPLTextureData& tex, const AAPLMeshData* mesh,
         void* bcData = nullptr;
         if (compOff <= tex._pixelDataLength &&
             compLen <= tex._pixelDataLength - compOff) {
-            const auto* raw = static_cast<const unsigned char*>(mesh->_textureData)
-                              + tex._pixelDataOffset + compOff;
-            bcData = DecodeBCMip(raw, static_cast<size_t>(compLen), bcBytes);
+            std::vector<uint8_t> compressed;
+            const unsigned char* raw = nullptr;
+            if (mesh->_textureData)
+                raw = static_cast<const unsigned char*>(mesh->_textureData)
+                    + tex._pixelDataOffset + compOff;
+            else if (svt::readTextureBlobRange(mesh->_textureBlobPath,
+                         mesh->_textureBlobBase, mesh->_textureDataLength,
+                         tex._pixelDataOffset + compOff, compLen, compressed))
+                raw = compressed.data();
+            if (raw) bcData = DecodeBCMip(raw, static_cast<size_t>(compLen), bcBytes);
         }
         if (bcData) {
             blockWOut = blockW;
@@ -680,7 +688,7 @@ std::string ExportTextureData(
     std::string outName = "texture_" + std::to_string(hash) + suffix + ".bmp";
     auto outPath = outputDir / outName;
 
-    if (!mesh->_textureData) return {};
+    if (!mesh->_textureData && mesh->_textureBlobPath.empty()) return {};
 
     // Determine BC block size from pixel format.
     uint32_t bcBlockBytes = 8;   // BC1 default
@@ -783,7 +791,7 @@ std::string ExportTextureDataLinear(
     std::string outName = "texture_" + std::to_string(hash) + suffix + ".pfm";
     auto outPath = outputDir / outName;
 
-    if (!mesh->_textureData) return {};
+    if (!mesh->_textureData && mesh->_textureBlobPath.empty()) return {};
 
     uint32_t bcBlockBytes = 8;   // BC1 default
     if (tex._pixelFormat == kBC3_RGBA_sRGB || tex._pixelFormat == kBC5_RGUnorm)
@@ -1245,7 +1253,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         std::unordered_map<std::string, AlphaExport> alphaCache;     // combo key -> dedupe
         std::unordered_map<int, std::string> materialAlphaTexNames;  // material index -> pbrt texture name
 
-        if (scene.cpuMaterials && scene.applMesh->_textureData) {
+        if (scene.cpuMaterials && (scene.applMesh->_textureData || !scene.applMesh->_textureBlobPath.empty())) {
             const int matCount = static_cast<int>(scene.applMesh->_materialCount);
             for (int i = 0; i < matCount; ++i) {
                 if (!usedMaterials[i]) continue;

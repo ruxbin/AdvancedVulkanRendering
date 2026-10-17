@@ -45,6 +45,13 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/VlmBaker.cpp
     ${CMAKE_CURRENT_LIST_DIR}/VlmEnvironment.cpp
     ${CMAKE_CURRENT_LIST_DIR}/VlmRuntime.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/TextureBlobReader.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SvtAsset.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SvtCooker.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SvtPhysicalCache.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SvtSystem.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SvtTileStreamer.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SvtVulkanRuntime.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
@@ -66,6 +73,9 @@ if(ENABLE_DX12 AND WIN32)
 endif()
 
 add_executable(${OUTPUT_NAME} ${SOURCES})
+if(MSVC)
+    target_compile_options(${OUTPUT_NAME} PRIVATE /utf-8)
+endif()
 
 if(ENABLE_DX12 AND WIN32)
     target_compile_definitions(${OUTPUT_NAME} PRIVATE ENABLE_DX12=1)

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "SphericalHarmonics.h"
 #include "Camera.h"
 #include "EditorUi.h"
@@ -9,6 +9,7 @@
 #include "ScatteringVolume.h"
 #include "VlmCommandLine.h"
 #include "VulkanSetup.h"
+#include "SvtVulkanRuntime.h"
 #include "nlohmann/json.hpp"
 #include "spdlog/spdlog.h"
 #include "vulkan/vulkan.h"
@@ -89,9 +90,11 @@ struct AAPLMeshData {
   uint64_t compressedMeshDataLength;
   uint64_t compressedMaterialDataLength;
   std::vector<AAPLTextureData> _textures;
-  void *_textureData;
+  void *_textureData = nullptr;
   uint64_t _textureDataLength = 0; // Bytes actually read into the texture blob.
-  AAPLMeshData(const char *filepath);
+  std::filesystem::path _textureBlobPath;
+  uint64_t _textureBlobBase = 0;
+  AAPLMeshData(const char *filepath, bool lazyTextures = false);
   AAPLMeshData() = delete;
   AAPLMeshData(const AAPLMeshData &) = delete;
   ~AAPLMeshData();
@@ -459,6 +462,29 @@ private:
   SH9 _vlmPhysicalSky{};
   uint64_t ComputeVlmSceneHash() const;
 
+  // Streaming Virtual Texture（设计 2026-10-16 §11：GpuScene 只持生命周期与
+  // Draw hook，子系统逻辑在 SvtVulkanRuntime）。M2：全驻留采样。
+  class svt::SvtVulkanRuntime *_svt = nullptr;
+  bool _svtEnabled = false;          // --svt=on 且初始化成功
+  VkPipelineLayout _svtPipelineLayout = VK_NULL_HANDLE; // {global, appl, svt} 三 set
+  VkPipeline _svtBasePipeline = VK_NULL_HANDLE;         // 不透明 base pass
+  VkPipeline _svtForwardPipeline = VK_NULL_HANDLE;      // 不透明 forward pass
+  bool initSvt(const std::string &svtArg); // 解析参数 + cook/加载 + runtime init
+  void destroySvt();
+  // manifest -> 材质槽 -> 资产索引映射（assetFiles + materialAssets）。
+  bool buildSvtCreateInfo(class svt::SvtVulkanRuntime::CreateInfo &ci,
+                          std::string *error);
+  // M3 反馈采集状态（ImGui 可见；闭环消费属 M3 后续）。
+  bool _svtFeedbackEnabled = true;   // 设计 §11：ImGui 冻结反馈开关
+  uint64_t _svtAtlasBudgetBytes = 128ull << 20;
+  int _svtDebugView = 0;
+  bool _svtPauseReads = false;
+  float _svtMipBias = 0.0f;
+  uint32_t _svtFrameIndex = 0;
+  uint32_t _svtFeedbackEntries = 0;  // 上次 readback 的有效条目数
+  uint32_t _svtFeedbackAttempts = 0; // 原子尝试计数（含溢出）
+  uint64_t _svtFeedbackOverflow = 0; // 溢出条目数
+
   // Hi-Z Occlusion Culling (Stage 3)
   VkImage _hizTexture = VK_NULL_HANDLE;
   VkDeviceMemory _hizMemory = VK_NULL_HANDLE;
@@ -663,7 +689,8 @@ private:
 
 public:
   GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
-           const VlmCommandLine *vlmCmd = nullptr);
+           const VlmCommandLine *vlmCmd = nullptr,
+           const std::string &svtArg = "off", uint64_t svtAtlasBytes = 128ull << 20);
   ~GpuScene();
   GpuScene() = delete;
   GpuScene(const GpuScene &) = delete;

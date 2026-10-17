@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 # CPU tests need no Vulkan/SDL libraries (SceneInputTests uses SDL headers only):
 # cmake -S Tests -B build-ibl-tests
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    project(RendererCpuTests LANGUAGES CXX)
+    # C 语言用于编入 lzfse（SVT 测试/工具静态链接），CXX 用于其余 CPU 测试。
+    project(RendererCpuTests LANGUAGES C CXX)
     enable_testing()
 endif()
 
@@ -10,6 +11,52 @@ set(extra_cpu_tests)
 add_executable(SceneInputTests SceneInputTests.cpp)
 target_include_directories(SceneInputTests PRIVATE ../ThirdParty/SDL/include)
 list(APPEND extra_cpu_tests SceneInputTests)
+
+# SVT M1（设计 §13.1）：SvtAsset 格式/校验/地址数学 + SvtCooker 切片一致性。
+# lzfse 以静态方式编入测试，独立构建（cmake -S Tests）无需预装共享库。
+set(SVT_LZFSE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../ThirdParty/lzfse/src)
+set(SVT_LZFSE_SOURCES
+    ${SVT_LZFSE_DIR}/lzfse_decode.c
+    ${SVT_LZFSE_DIR}/lzfse_decode_base.c
+    ${SVT_LZFSE_DIR}/lzfse_encode.c
+    ${SVT_LZFSE_DIR}/lzfse_encode_base.c
+    ${SVT_LZFSE_DIR}/lzfse_fse.c
+    ${SVT_LZFSE_DIR}/lzvn_decode_base.c
+    ${SVT_LZFSE_DIR}/lzvn_encode_base.c
+)
+add_executable(TextureBlobReaderTests TextureBlobReaderTests.cpp ../Src/TextureBlobReader.cpp)
+target_compile_features(TextureBlobReaderTests PRIVATE cxx_std_17)
+target_include_directories(TextureBlobReaderTests PRIVATE ../Src/Include)
+list(APPEND extra_cpu_tests TextureBlobReaderTests)
+
+add_executable(SvtAssetTests SvtAssetTests.cpp
+    ../Src/SvtAsset.cpp ../Src/SvtCooker.cpp ${SVT_LZFSE_SOURCES})
+target_compile_features(SvtAssetTests PRIVATE cxx_std_17)
+target_include_directories(SvtAssetTests PRIVATE
+    ../Src/Include ${SVT_LZFSE_DIR} ../ThirdParty/json/single_include)
+list(APPEND extra_cpu_tests SvtAssetTests)
+
+add_executable(SvtPhysicalCacheTests SvtPhysicalCacheTests.cpp
+    ../Src/SvtPhysicalCache.cpp ../Src/SvtAsset.cpp ${SVT_LZFSE_SOURCES})
+target_compile_features(SvtPhysicalCacheTests PRIVATE cxx_std_17)
+target_include_directories(SvtPhysicalCacheTests PRIVATE ../Src/Include)
+list(APPEND extra_cpu_tests SvtPhysicalCacheTests)
+
+add_executable(SvtSystemTests SvtSystemTests.cpp
+    ../Src/SvtSystem.cpp ../Src/SvtAsset.cpp ${SVT_LZFSE_SOURCES})
+target_compile_features(SvtSystemTests PRIVATE cxx_std_17)
+target_include_directories(SvtSystemTests PRIVATE
+    ../Src/Include ${SVT_LZFSE_DIR})
+list(APPEND extra_cpu_tests SvtSystemTests)
+
+add_executable(SvtTileStreamerTests SvtTileStreamerTests.cpp
+    ../Src/SvtTileStreamer.cpp ../Src/SvtSystem.cpp
+    ../Src/SvtAsset.cpp ../Src/SvtCooker.cpp ${SVT_LZFSE_SOURCES})
+target_compile_features(SvtTileStreamerTests PRIVATE cxx_std_17)
+target_include_directories(SvtTileStreamerTests PRIVATE
+    ../Src/Include ${SVT_LZFSE_DIR} ../ThirdParty/json/single_include)
+list(APPEND extra_cpu_tests SvtTileStreamerTests)
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/KtxTextureTests.cpp")
     add_executable(KtxTextureTests KtxTextureTests.cpp ../Src/KtxTexture.cpp)
     list(APPEND extra_cpu_tests KtxTextureTests)

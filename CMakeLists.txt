@@ -68,6 +68,7 @@ include_directories(${CMAKE_CURRENT_LIST_DIR}/Src/Include)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/ThirdParty/json/single_include)
 add_subdirectory(Src/)
 #add_subdirectory(Examples/)
+add_subdirectory(Tools/)
 
 if(BUILD_TESTS)
     enable_testing()

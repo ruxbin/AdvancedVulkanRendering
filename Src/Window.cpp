@@ -1,4 +1,4 @@
-#include "Common.h"
+﻿#include "Common.h"
 #include "GpuScene.h"
 #include "SDL.h"
 #include "SceneInput.h"
@@ -12,6 +12,7 @@
 #endif
 #include <string_view>
 #include <cstring>
+#include <charconv>
 
 #ifdef ENABLE_DX12
 #include "DX12/DX12Setup.h"
@@ -51,6 +52,26 @@ int main(int nargs, char **args) {
     spdlog::error("{}", vlmCmd.error);
     SDL_Quit();
     return 2;
+  }
+
+  // SVT 模式（设计 §11：--svt=off|on；默认 off）。可选值：off/on。
+  std::string svtArg = "off";
+  uint32_t svtAtlasMiB = 128;
+  bool svtValidationTour = false;
+  for (int i = 1; i < nargs; ++i) {
+    if (strncmp(args[i], "--svt-atlas-mib=", 16) == 0) {
+      const char *value = args[i] + 16;
+      auto parsed = std::from_chars(value, value + strlen(value), svtAtlasMiB);
+      if (parsed.ec != std::errc{} || *parsed.ptr != '\0' || svtAtlasMiB < 2 || svtAtlasMiB > 4096) {
+        spdlog::error("--svt-atlas-mib must be an integer in [2,4096]");
+        SDL_Quit(); return 2;
+      }
+    } else if (strcmp(args[i], "--svt-validation-tour") == 0)
+      svtValidationTour = true;
+    else if (strncmp(args[i], "--svt=", 6) == 0)
+      svtArg = args[i] + 6;
+    else if (strcmp(args[i], "--svt") == 0 && i + 1 < nargs)
+      svtArg = args[++i];
   }
 
 #ifdef __ANDROID__
@@ -185,7 +206,7 @@ int main(int nargs, char **args) {
     // --- Vulkan Path ---
     VulkanDevice vk(window);
 
-  GpuScene gpuScene(currentPath, vk, &vlmCmd);
+  GpuScene gpuScene(currentPath, vk, &vlmCmd, svtArg, uint64_t(svtAtlasMiB) << 20);
   gpuScene.InitImGui(window);
   uint32_t vlmValidationFrames=0;
 
@@ -347,7 +368,10 @@ int main(int nargs, char **args) {
 
       // if (std::chrono::system_clock::now() - lastTime >
       // std::chrono::milliseconds(100))//TODO: synchronize with vsync signal
-      { if (!quit) gpuScene.Draw(); }
+      { if (!quit) {
+          if (svtValidationTour) gpuScene.GetMainCamera()->RotateY(0.5f);
+          gpuScene.Draw();
+        } }
       if (gpuScene.QuitRequested()) { quit=true; applicationExitCode=gpuScene.VlmExitCode(); }
       if(vlmCmd.validationFrames && ++vlmValidationFrames>=vlmCmd.validationFrames) {
         spdlog::info("vlm validation: rendered {} frames",vlmValidationFrames); quit=true;

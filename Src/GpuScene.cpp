@@ -1,4 +1,4 @@
-#include "VlmRuntime.h"
+﻿#include "VlmRuntime.h"
 
 #include "GpuScene.h"
 #include "AssetLoader.h"
@@ -9,6 +9,8 @@
 #include "Raytracing.h"
 #include "Shadow.h"
 #include "SphericalHarmonics.h"
+#include "SvtCooker.h"
+#include "TextureBlobReader.h"
 #include "ThirdParty/lzfse.h"
 #include "VlmBaker.h"
 #include "VulkanCompat.h"
@@ -873,6 +875,73 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
                                   &drawclusterForwardPipelineIndirect) != VK_SUCCESS) {
       throw std::runtime_error(
           "failed to create drawcluster forward indirect pipeline!");
+    }
+  }
+
+  // SVT opaque variants（设计 §8.1：仅不透明 base/forward；加载失败则整段跳过，
+  // 原路径不受影响）。shader 文件缺失（未运行 compile_shaders.bat）也走跳过。
+  if (_svtEnabled && _svt) {
+    auto svtBasePSCode = readFile(
+        (_rootPath / "shaders/drawcluster.base.svt.ps.spv").generic_string());
+    auto svtForwardPSCode = readFile(
+        (_rootPath / "shaders/drawcluster.forward.indirect.svt.ps.spv").generic_string());
+    if (!svtBasePSCode.empty() && !svtForwardPSCode.empty()) {
+      VkShaderModule svtBaseModule = createShaderModule(svtBasePSCode);
+      VkShaderModule svtForwardModule = createShaderModule(svtForwardPSCode);
+
+      VkPipelineShaderStageCreateInfo svtBaseStage{};
+      svtBaseStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      svtBaseStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+      svtBaseStage.module = svtBaseModule;
+      svtBaseStage.pName = "RenderSceneBasePassSvt";
+
+      VkPipelineShaderStageCreateInfo svtForwardStage = svtBaseStage;
+      svtForwardStage.module = svtForwardModule;
+      svtForwardStage.pName = "RenderSceneForwardPSIndirectSvt";
+
+      // Base pass（_basePass，4 attachment gbuffer，同 drawclusterBasePipeline）。
+      {
+        VkPipelineShaderStageCreateInfo stages[] = {drawclusterVSShaderStageInfo,
+                                                    svtBaseStage};
+        VkGraphicsPipelineCreateInfo pi = drawclusterBasePipelineInfo;
+        pi.pStages = stages;
+        pi.layout = _svtPipelineLayout;
+        if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE,
+                                      1, &pi, nullptr,
+                                      &_svtBasePipeline) != VK_SUCCESS) {
+          spdlog::warn("svt: base pipeline creation failed; using legacy path");
+        }
+      }
+      // Forward pass（透明对象不透明部分走 SVT；间接绘制）。
+      {
+        VkPipelineShaderStageCreateInfo stages[] = {drawclusterVSShaderStageInfo,
+                                                    svtForwardStage};
+        VkGraphicsPipelineCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pi.stageCount = 2;
+        pi.pStages = stages;
+        pi.pVertexInputState = &drawclusterVertexInputInfo;
+        pi.pInputAssemblyState = &inputAssembly;
+        pi.pViewportState = &viewportState;
+        pi.pRasterizationState = &rasterizer;
+        pi.pMultisampleState = &multisampling;
+        pi.pColorBlendState = &colorBlendingAlpha;
+        pi.layout = _svtPipelineLayout;
+        pi.renderPass = _forwardLightingPass;
+        pi.subpass = 0;
+        pi.pDepthStencilState = &depthStencilState;
+        if (vkCreateGraphicsPipelines(device.getLogicalDevice(), VK_NULL_HANDLE,
+                                      1, &pi, nullptr,
+                                      &_svtForwardPipeline) != VK_SUCCESS) {
+          spdlog::warn("svt: forward pipeline creation failed; using legacy path");
+        }
+      }
+
+      vkDestroyShaderModule(device.getLogicalDevice(), svtBaseModule, nullptr);
+      vkDestroyShaderModule(device.getLogicalDevice(), svtForwardModule, nullptr);
+    } else {
+      spdlog::warn(
+          "svt: shader spv missing (run shaders/compile_shaders.bat); legacy path");
     }
   }
 
@@ -2307,10 +2376,179 @@ void GpuScene::ConfigureMaterial(const AAPLMaterial &input,
   output.alpha = input.opacity;
 }
 
+// ---------------------------------------------------------------------------
+// SVT（设计 2026-10-16 §11：GpuScene 只做生命周期与提交接入）
+// ---------------------------------------------------------------------------
+
+bool GpuScene::buildSvtCreateInfo(svt::SvtVulkanRuntime::CreateInfo &ci,
+                                  std::string *error) {
+  // manifest 查找顺序：根目录 svt/manifest.json（由 Tools/SvtCooker 生成）。
+  const std::filesystem::path manifestPath = _rootPath / "svt" / "manifest.json";
+  std::vector<svt::SvtManifestEntry> entries;
+  if (!svt::svtReadManifest(manifestPath, entries, error)) {
+    *error = "manifest not found at " + manifestPath.string() + ": " + *error;
+    return false;
+  }
+
+  // Reject ambiguous hashes: material records only carry the legacy hash.
+  auto normalized = [](std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return std::filesystem::path(path).lexically_normal().generic_string();
+  };
+  std::unordered_map<uint32_t, const AAPLTextureData*> sources;
+  for (const auto &texture : applMesh->_textures) {
+    auto [it, inserted] = sources.emplace(texture._pathHash, &texture);
+    if (!inserted && it->second && normalized(it->second->_path) != normalized(texture._path))
+      it->second = nullptr;
+  }
+  std::unordered_map<uint32_t, size_t> byHash;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto &e = entries[i];
+    const auto source = sources.find(e.pathHash);
+    if (source == sources.end() || !source->second) continue;
+    const auto &texture = *source->second;
+    svt::SvtFormat format;
+    if (normalized(e.sourcePath) != normalized(texture._path) ||
+        e.width != texture._width || e.height != texture._height ||
+        e.mipCount != texture._mipmapLevelCount ||
+        !svt::svtFormatFromMtlPixelFormat(texture._pixelFormat, format) || e.format != format)
+      continue;
+    auto [it, inserted] = byHash.emplace(e.pathHash, i);
+    if (!inserted) it->second = SIZE_MAX;
+  }
+
+  // 材质槽数据：每材质 4 槽（albedo/roughness/normal/emissive）。
+  const uint32_t INVALID = 0xFFFFFFFFu;
+  ci.materialAssets.assign(materials.size() * 4, INVALID);
+
+  // 只注册实际被引用的资产（去重后按需加载）。
+  std::vector<uint32_t> slotHashes(materials.size() * 4, INVALID);
+  auto appendSlot = [&](size_t materialIdx, int slot, uint32_t hash) {
+    if (hash == INVALID)
+      return;
+    slotHashes[materialIdx * 4 + slot] = hash;
+  };
+  for (size_t m = 0; m < materials.size(); ++m) {
+    // cpuMaterials 的 hash 字段才是原始纹理 hash（materials 只有索引）。
+    const AAPLMaterial &cm = cpuMaterials[m];
+    appendSlot(m, 0, cm.hasBaseColorTexture ? cm.baseColorTextureHash : INVALID);
+    appendSlot(m, 1, cm.hasMetallicRoughnessTexture ? cm.metallicRoughnessHash : INVALID);
+    appendSlot(m, 2, cm.hasNormalMap ? cm.normalMapHash : INVALID);
+    appendSlot(m, 3, cm.hasEmissiveTexture ? cm.emissiveTextureHash : INVALID);
+  }
+
+  // 引用的 hash -> 资产文件（未在 manifest 中找到的槽保持 INVALID 走旧路径）。
+  std::unordered_map<uint32_t, uint32_t> hashToAsset; // pathHash -> assetFiles index
+  const std::filesystem::path svtDir = manifestPath.parent_path();
+  for (size_t s = 0; s < slotHashes.size(); ++s) {
+    const uint32_t hash = slotHashes[s];
+    if (hash == INVALID || hashToAsset.count(hash))
+      continue;
+    auto it = byHash.find(hash);
+    if (it == byHash.end() || it->second == SIZE_MAX)
+      continue; // 未 cook 的纹理 -> 旧路径（设计 §6.3）
+    const svt::SvtManifestEntry &e = entries[it->second];
+    svt::SvtAsset candidate;
+    std::string assetError;
+    if (!candidate.open(svtDir / e.svtFile, &assetError) ||
+        candidate.sourceContentHash() != e.contentHash ||
+        candidate.width() != e.width || candidate.height() != e.height ||
+        candidate.mipCount() != e.mipCount || candidate.format() != e.format ||
+        candidate.tailFirstMip() != e.tailFirstMip ||
+        candidate.tileDirectory().size() != e.tileCount) {
+      spdlog::warn("svt: incompatible cooked asset {}; using legacy texture", e.sourcePath);
+      continue;
+    }
+    ci.assetFiles.push_back(svtDir / e.svtFile);
+    hashToAsset[hash] = static_cast<uint32_t>(ci.assetFiles.size() - 1);
+  }
+  for (size_t s = 0; s < slotHashes.size(); ++s)
+    if (slotHashes[s] != INVALID) {
+      auto it = hashToAsset.find(slotHashes[s]);
+      if (it != hashToAsset.end())
+        ci.materialAssets[s] = it->second;
+    }
+
+  ci.syncSlotCount = framesInFlight;
+  ci.atlasByteBudget = _svtAtlasBudgetBytes;
+  ci.atlasDimensionLimit = 8192;
+  ci.streamingMode = true;
+  return true;
+}
+
+bool GpuScene::initSvt(const std::string &svtArg) {
+  if (svtArg != "on" && svtArg != "1" && svtArg != "true") {
+    if (svtArg != "off" && svtArg != "0" && svtArg != "false" && !svtArg.empty())
+      spdlog::warn("svt: unknown mode '{}', using off", svtArg);
+    return false;
+  }
+
+  std::string error;
+  svt::SvtVulkanRuntime::CreateInfo ci;
+  if (!buildSvtCreateInfo(ci, &error)) {
+    spdlog::warn("svt: disabled ({})", error);
+    return false;
+  }
+  if (ci.assetFiles.empty()) {
+    spdlog::warn("svt: no cooked assets referenced; using legacy path");
+    return false;
+  }
+
+  _svt = new svt::SvtVulkanRuntime();
+  if (!_svt->init(device, ci, &error)) {
+    spdlog::warn("svt: init failed ({}); using legacy path", error);
+    delete _svt;
+    _svt = nullptr;
+    return false;
+  }
+
+  // 三 set pipeline layout：{global, appl, svt}（设计 §8.1）。
+  VkDescriptorSetLayout layouts[] = {globalSetLayout, applSetLayout,
+                                     _svt->setLayout()};
+  VkPipelineLayoutCreateInfo pl{};
+  pl.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pl.setLayoutCount = 3;
+  pl.pSetLayouts = layouts;
+  pl.pushConstantRangeCount = 0;
+  if (vkCreatePipelineLayout(device.getLogicalDevice(), &pl, nullptr,
+                             &_svtPipelineLayout) != VK_SUCCESS) {
+    spdlog::warn("svt: pipeline layout creation failed; using legacy path");
+    destroySvt();
+    return false;
+  }
+
+  spdlog::info("svt: enabled ({} assets, {:.1f} MiB atlas, {:.1f} MiB tail)",
+               _svt->assetCount(), _svt->atlasBytes() / 1048576.0,
+               _svt->tailBytes() / 1048576.0);
+  return true;
+}
+
+void GpuScene::destroySvt() {
+  if (_svtPipelineLayout != VK_NULL_HANDLE) {
+    vkDestroyPipelineLayout(device.getLogicalDevice(), _svtPipelineLayout, nullptr);
+    _svtPipelineLayout = VK_NULL_HANDLE;
+  }
+  if (_svtBasePipeline != VK_NULL_HANDLE) {
+    vkDestroyPipeline(device.getLogicalDevice(), _svtBasePipeline, nullptr);
+    _svtBasePipeline = VK_NULL_HANDLE;
+  }
+  if (_svtForwardPipeline != VK_NULL_HANDLE) {
+    vkDestroyPipeline(device.getLogicalDevice(), _svtForwardPipeline, nullptr);
+    _svtForwardPipeline = VK_NULL_HANDLE;
+  }
+  delete _svt;
+  _svt = nullptr;
+}
+
+
 GpuScene::~GpuScene() {
   shutdownTextureStreaming();
   free(cpuMaterials);
   free(m_SubMeshes);
+
+  // SVT 资源先于其余清理销毁（等待设备空闲，避免在用销毁）。
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  destroySvt();
 
   // IBL 资源销毁(Task 9):view 先于 image;窗口关闭时可能仍有帧在飞,
   // 先等设备空闲再销毁。
@@ -2374,8 +2612,9 @@ GpuScene::~GpuScene() {
 }
 
 GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
-                   const VlmCommandLine *vlmCmd)
+                   const VlmCommandLine *vlmCmd, const std::string &svtArg, uint64_t svtAtlasBytes)
     : device(deviceref), modelScale(1.f), _rootPath(root) {
+  _svtAtlasBudgetBytes = svtAtlasBytes;
 
   if (vlmCmd) { _vlmCmdStorage = *vlmCmd; _vlmCmdValid = true; }
 
@@ -2388,7 +2627,7 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
 #ifdef __ANDROID__
       new AAPLMeshData("bistro.astc.bin");
 #else
-      new AAPLMeshData((_rootPath / "bistro.dxt.bin").generic_string().c_str());
+      new AAPLMeshData((_rootPath / "bistro.dxt.bin").generic_string().c_str(), (svtArg == "on" || svtArg == "1" || svtArg == "true"));
 #endif
 
 #ifdef __ANDROID__
@@ -3074,6 +3313,9 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
   createDecalResources();
   createResolveDescriptors();
   createLinearClampSampler();
+  // SVT 必须先于 createGraphicsPipeline：SVT 变体 pipeline 需要 set2 布局
+  // 与 .spv（由 initSvt 创建/加载；失败时静默回退旧路径，设计 §6.3）。
+  _svtEnabled = initSvt(svtArg);
   createGraphicsPipeline(deviceref.getMainRenderPass());
   createRenderOccludersPipeline(occluderZPass);
   createOccluderWireframePipeline();
@@ -3256,7 +3498,7 @@ void GpuScene::CreateForwardLightingPass() {
   deferredLightingDepthAttachments.format = device.getWindowDepthFormat();
   deferredLightingDepthAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
   deferredLightingDepthAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   deferredLightingDepthAttachments.stencilLoadOp =
       VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   deferredLightingDepthAttachments.stencilStoreOp =
@@ -3288,12 +3530,14 @@ void GpuScene::CreateForwardLightingPass() {
   VkSubpassDependency dependency{};
   dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
   dependency.dstSubpass = 0;
-  dependency.srcAccessMask = 0;
-  dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  // LOAD consumes depth preserved by the prior pass/layout transition.
+  dependency.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+  dependency.srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
   dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
   std::array<VkAttachmentDescription, 2> attachments = {
@@ -3331,7 +3575,7 @@ void GpuScene::CreateDeferredLightingPass() {
   deferredLightingDepthAttachments.format = device.getWindowDepthFormat();
   deferredLightingDepthAttachments.samples = VK_SAMPLE_COUNT_1_BIT;
   deferredLightingDepthAttachments.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  deferredLightingDepthAttachments.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   deferredLightingDepthAttachments.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   deferredLightingDepthAttachments.stencilStoreOp =
       VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -3359,12 +3603,14 @@ void GpuScene::CreateDeferredLightingPass() {
   VkSubpassDependency dependency{};
   dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
   dependency.dstSubpass = 0;
-  dependency.srcAccessMask = 0;
-  dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  // LOAD consumes depth preserved by the prior pass/layout transition.
+  dependency.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+  dependency.srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
   dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
   std::array<VkAttachmentDescription, 2> attachments = {
@@ -3913,6 +4159,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
     throw std::runtime_error("failed to begin recording command buffer!");
   }
+  if (_svtEnabled && _svt) _svt->recordFrameUploads(commandBuffer);
 
   // --- Fast RT path: skip the entire raster pipeline ---
   if (useRayTracing) {
@@ -3994,6 +4241,11 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
 
+    // SVT：清本 slot 反馈 header。必须在 render pass 外（vkCmdFillBuffer
+    // 不可在 pass 内调用）且在任何 SVT pass 之前（设计 §10.1）。
+    if (_svtEnabled && _svt)
+      _svt->recordFeedbackClear(commandBuffer, _syncSlot);
+
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo,
                          VK_SUBPASS_CONTENTS_INLINE);
 
@@ -4006,6 +4258,13 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdEndRenderPass(commandBuffer);
   }
+
+  // SVT：base pass（反馈写入方）完成后复制反馈到 readback（设计 §8.3：
+  // 所有请求写完之后才复制；fragment writes -> transfer reads barrier
+  // 在 recordFeedbackReadback 内）。后续 forward pass 的 SVT 采样不再写
+  // 反馈（同帧同 slot 的 attemptCount 已在 clear 后统计）。
+  if (_svtEnabled && _svt)
+    _svt->recordFeedbackReadback(commandBuffer, _syncSlot);
 
   // Screen-space decal pass: modify GBuffer before deferred lighting.
   // drawDecals() owns the depth layout transition (only fires if _decals
@@ -4163,6 +4422,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
                            VK_SUBPASS_CONTENTS_INLINE);
 
       // Stage 4: GPU indirect forward pass for transparent objects
+      // Transparent materials retain their legacy textures and alpha semantics.
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         drawclusterForwardPipelineIndirect);
       VkDescriptorSet forwardDescriptorSets[] = {globalDescriptorSets[currentFrame],applDescriptorSets[currentFrame]};
@@ -4243,19 +4503,38 @@ void GpuScene::DrawChunksBasePass(VkCommandBuffer commandBuffer) {
   // Dynamic offset: skip past shadow cascade matrices to reach camera matrices
   uint32_t dynamic_offset = sizeof(mat4) * 2 * SHADOW_CASCADE_COUNT;
   VkDescriptorSet baseDescriptorSets[] = {globalDescriptorSets[currentFrame],applDescriptorSets[currentFrame]};
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          drawclusterBasePipelineLayout, 0, 2,
-                          baseDescriptorSets, 0, nullptr);
 
-  // Opaque chunks: indirect draw from region [0, opaqueChunkCount)
-  vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    drawclusterBasePipeline);
+  // SVT 不透明 base pass（设计 §5：set2 绑定 svtDescriptorSets[_syncSlot]；
+  // 不能照抄 currentFrame——两套索引语义不同，设计 §2）。
+  if (_svtEnabled && _svtBasePipeline != VK_NULL_HANDLE) {
+    VkDescriptorSet svtSets[] = {globalDescriptorSets[currentFrame],
+                                 applDescriptorSets[currentFrame],
+                                 _svt->descriptorSet(_syncSlot)};
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            _svtPipelineLayout, 0, 3, svtSets, 0, nullptr);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      _svtBasePipeline);
+  } else {
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            drawclusterBasePipelineLayout, 0, 2,
+                            baseDescriptorSets, 0, nullptr);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      drawclusterBasePipeline);
+  }
   vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffers[currentFrame], 0,
                                 writeIndexBuffers[currentFrame], 0,
                                 applMesh->_opaqueChunkCount,
                                 sizeof(VkDrawIndexedIndirectCommand));
 
-  // Alpha-masked chunks: indirect draw from region [opaqueChunkCount, opaqueChunkCount + alphaMaskedChunkCount)
+  // Alpha-masked chunks: 间接绘制维持旧路径（设计 §8.1：alpha-mask 不进 SVT）。
+  if (_svtEnabled && _svtBasePipeline != VK_NULL_HANDLE) {
+    // SVT 模式下 set0/1/2 已绑到 _svtPipelineLayout；alpha-mask pipeline 使用
+    // 的 drawclusterBasePipelineLayout 布局只覆盖 set0/1，但绑定的 set 数超过
+    // 布局数量是非法的——重新按 2-set 布局绑定。
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            drawclusterBasePipelineLayout, 0, 2,
+                            baseDescriptorSets, 0, nullptr);
+  }
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawclusterBasePipelineAlphaMask);
   vkCmdDrawIndexedIndirectCount(commandBuffer, drawParamsBuffers[currentFrame],
@@ -4382,6 +4661,15 @@ void GpuScene::Draw() {
   // (imagesInFlight[imageIndex] fence guaranteed it's done above).
   readbackCullingStats(currentFrame);
 
+  if (_svtEnabled && _svt) {
+    _svt->setDebugView(static_cast<uint32_t>(_svtDebugView));
+    _svt->beginFrame(_syncSlot, ++_svtFrameIndex, _svtFeedbackEnabled,
+                     _svtPauseReads, _svtMipBias);
+    _svtFeedbackOverflow = _svt->lastFeedbackOverflow();
+    _svtFeedbackAttempts = _svt->lastFeedbackAttempts();
+    _svtFeedbackEntries = _svt->lastFeedbackUnique();
+  }
+
   // 使用当前 sync slot 的 command buffer
   VkCommandBuffer& currentCmdBuffer = commandBuffers[_syncSlot];
   vkResetCommandBuffer(currentCmdBuffer, /*VkCommandBufferResetFlagBits*/ 0);
@@ -4412,9 +4700,12 @@ void GpuScene::Draw() {
   VkResult submitResult =
       vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo, inFlightFences[_syncSlot]);
   if (submitResult != VK_SUCCESS) {
+    if (_svtEnabled && _svt) _svt->cancelFrame();
     spdlog::error("failed to submit draw command buffer! {}", static_cast<int>(submitResult));
     throw std::runtime_error("failed to submit draw command buffer!");
   }
+
+  if (_svtEnabled && _svt) _svt->onSubmitted();
 
   VkPresentInfoKHR presentInfo{};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -4654,6 +4945,20 @@ void GpuScene::recreateSwapChain() {
     std::fill(imagesInFlight.begin(), imagesInFlight.end(), VK_NULL_HANDLE);
   }
   
+  // SVT buffers are indexed by sync slot, independent of acquired image order.
+  if (_svtEnabled && _svt && _svt->syncSlotCount() != framesInFlight) {
+    // Layout definitions are unchanged, so the existing pipelines/layout remain
+    // compatible with the rebuilt slot descriptor sets. Preserve their handles.
+    delete _svt;
+    _svt = new svt::SvtVulkanRuntime();
+    svt::SvtVulkanRuntime::CreateInfo ci;
+    std::string error;
+    _svtEnabled = buildSvtCreateInfo(ci, &error) && _svt->init(device, ci, &error);
+    if (!_svtEnabled) {
+      spdlog::warn("svt: slot rebuild failed: {}; using legacy path", error);
+      delete _svt; _svt = nullptr;
+    }
+  }
   // 重新创建 GpuScene 中依赖 swapchain 的资源
   recreateSwapChainResources();
 
@@ -5207,7 +5512,7 @@ AAPLMeshData::~AAPLMeshData() {
 
 enum MTLIndexType { MTLIndexTypeUInt16 = 0, MTLIndexTypeUInt32 = 1 };
 
-AAPLMeshData::AAPLMeshData(const char *filepath) {
+AAPLMeshData::AAPLMeshData(const char *filepath, bool lazyTextures) {
 #ifdef __ANDROID__
   AssetLoader::BinaryFileReader reader(filepath);
   if (reader.isOpen()) {
@@ -5356,8 +5661,28 @@ AAPLMeshData::AAPLMeshData(const char *filepath) {
     }
 
     fread(&bytes_length, sizeof(bytes_length), 1, rawFile);
-    _textureData = malloc(bytes_length);
-    _textureDataLength = _textureData ? fread(_textureData, 1, bytes_length, rawFile) : 0;
+    if (lazyTextures) {
+#ifdef _WIN32
+      const auto blobBase = _ftelli64(rawFile);
+#else
+      const auto blobBase = ftello(rawFile);
+#endif
+      _textureBlobPath = std::filesystem::absolute(filepath);
+      _textureBlobBase = blobBase < 0 ? 0 : static_cast<uint64_t>(blobBase);
+      _textureDataLength = bytes_length;
+      std::vector<uint8_t> probe;
+      std::string error;
+      if (blobBase < 0 || !svt::readTextureBlobRange(_textureBlobPath,
+            _textureBlobBase, _textureDataLength, 0, 0, probe, &error)) {
+        fclose(rawFile);
+        throw std::runtime_error("Invalid texture blob: " + error);
+      }
+      spdlog::info("SVT: texture blob uses range reads ({} MiB not retained)",
+                   bytes_length / (1024 * 1024));
+    } else {
+      _textureData = malloc(bytes_length);
+      _textureDataLength = _textureData ? fread(_textureData, 1, bytes_length, rawFile) : 0;
+    }
 
     fclose(rawFile);
   }
@@ -5424,8 +5749,23 @@ unsigned long long calculateMipSizeInBlocks(unsigned long long size,
 void *GpuScene::loadMipTexture(const AAPLTextureData &texturedata, int mip,
                                unsigned int &bytesPerImage) {
 
-  void *texturedataRaw =
-      (unsigned char *)applMesh->_textureData + texturedata._pixelDataOffset;
+  std::vector<uint8_t> compressed;
+  const unsigned char *texturedataRaw = nullptr;
+  const bool validRange = mip >= 0 && size_t(mip) < texturedata._mipOffsets.size() &&
+      size_t(mip) < texturedata._mipLengths.size() &&
+      texturedata._pixelDataOffset <= applMesh->_textureDataLength &&
+      texturedata._pixelDataLength <= applMesh->_textureDataLength - texturedata._pixelDataOffset &&
+      texturedata._mipOffsets[mip] <= texturedata._pixelDataLength &&
+      texturedata._mipLengths[mip] <= texturedata._pixelDataLength - texturedata._mipOffsets[mip];
+  if (validRange) {
+    const uint64_t offset = texturedata._pixelDataOffset + texturedata._mipOffsets[mip];
+    if (applMesh->_textureData)
+      texturedataRaw = static_cast<const unsigned char *>(applMesh->_textureData) + offset;
+    else if (svt::readTextureBlobRange(applMesh->_textureBlobPath,
+                 applMesh->_textureBlobBase, applMesh->_textureDataLength, offset,
+                 texturedata._mipLengths[mip], compressed))
+      texturedataRaw = compressed.data();
+  }
 
   unsigned long long blockSize, bytesPerBlock;
   getPixelFormatBlockDesc((MTLPixelFormat)texturedata._pixelFormat, blockSize,
@@ -5441,11 +5781,13 @@ void *GpuScene::loadMipTexture(const AAPLTextureData &texturedata, int mip,
   bytesPerImage = MAX(blocksHigh >> 0, 1U) * bytesPerRow;
   // if (bytesPerImage != texturedata._mipLengths[mip])
   //     spdlog::warn("texture data may be corrupted");
-  void *uncompresseddata = uncompressData(
-      (unsigned char *)texturedataRaw + texturedata._mipOffsets[mip],
-      texturedata._mipLengths[mip], bytesPerImage);
-
-  return uncompresseddata;
+  if (!texturedataRaw) {
+    spdlog::error("Texture mip read failed: {} mip {}", texturedata._path, mip);
+    // Legacy callers require a complete block payload, including worker uploads.
+    return calloc(1, bytesPerImage);
+  }
+  return uncompressData(const_cast<unsigned char *>(texturedataRaw),
+                        texturedata._mipLengths[mip], bytesPerImage);
 }
 
 void GpuScene::CreateTextures() {
@@ -9460,6 +9802,40 @@ void GpuScene::buildImGuiFrame() {
     }
     ImGui::SliderFloat("IBL Specular Scale", &frameConstants.iblSpecularScale, 0.0f, 8.0f);
     if (!_iblAvailable) ImGui::TextDisabled("env map missing - using black fallback");
+  }
+
+  // SVT 统计（设计 §12：分项展示，不只看 atlas 大小）。
+  if (_svtEnabled && _svt) {
+    if (ImGui::CollapsingHeader("SVT")) {
+      const svt::SvtVulkanRuntime::Stats s = _svt->stats();
+      ImGui::Text("Assets: %zu (pools: %zu)", s.poolCount ? _svt->assetCount() : 0,
+                  s.poolCount);
+      ImGui::Text("Tiles resident: %zu / %zu", s.residentTiles, s.totalTiles);
+      ImGui::Text("Atlas:    %.2f MiB", s.atlasBytes / 1048576.0);
+      ImGui::Text("Tail:     %.2f MiB", s.tailBytes / 1048576.0);
+      ImGui::Text("PageTable:%.2f MiB", s.pageTableBytes / 1048576.0);
+      ImGui::Text("Material slots bound: %zu", s.materialBindings);
+      ImGui::Separator();
+      ImGui::Checkbox("Feedback capture", &_svtFeedbackEnabled);
+      ImGui::Checkbox("Pause tile reads", &_svtPauseReads);
+      ImGui::SliderFloat("SVT mip bias", &_svtMipBias, 0.0f, 4.0f);
+      ImGui::Combo("SVT debug view", &_svtDebugView,
+          "Shaded\0Requested mip\0Resident mip\0Tile grid\0Physical slot\0Fallback depth\0");
+      for (uint32_t pool = 0; pool < s.poolCount; ++pool) {
+        svt::SvtPhysicalCache::PoolUsage usage;
+        if (_svt->poolUsage(pool, usage))
+          ImGui::Text("Pool %u: resident %u, retiring %u, free %u", pool,
+              usage.residentCount, usage.retiringCount, usage.freeCount);
+      }
+      ImGui::Text("Free: %zu, retiring: %zu, pending: %zu", s.freeTiles, s.retiringTiles, s.pendingRequests);
+      ImGui::Text("Uploaded: %llu pages (%.2f MiB), evicted: %llu",
+                  (unsigned long long)s.uploadedPages, s.uploadedBytes/1048576.0, (unsigned long long)s.evictions);
+      ImGui::Text("CPU payload: %.2f MiB; read: %.2f MiB; I/O failures: %llu",
+                  s.bufferedBytes/1048576.0, s.readBytes/1048576.0, (unsigned long long)s.failures);
+      ImGui::Text("Feedback: %u unique (%u attempts, %llu overflow)",
+                  _svtFeedbackEntries, _svtFeedbackAttempts,
+                  static_cast<unsigned long long>(_svtFeedbackOverflow));
+    }
   }
 
   ImGui::Separator();
