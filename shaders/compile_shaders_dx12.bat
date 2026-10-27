@@ -13,8 +13,12 @@ REM === DrawCluster (vertex + pixel variants) ===
 %DXC% %DXFLAGS% -T ps_6_0 drawcluster.hlsl -E RenderSceneForwardPS -Fo drawcluster.forward.ps.cso
 %DXC% %DXFLAGS% -T ps_6_0 drawcluster.hlsl -E RenderSceneBasePassAlphaMask -Fo drawcluster.base.alphamask.ps.cso
 %DXC% %DXFLAGS% -T ps_6_0 drawcluster.hlsl -E RenderSceneShadowDepthIndirect -Fo drawcluster.shadow.indirect.ps.cso
+%DXC% %DXFLAGS% -D SPEC_ALPHA_MASK -T ps_6_0 drawcluster.hlsl -E RenderSceneShadowDepthIndirect -Fo drawcluster.shadow.indirect.alphamask.ps.cso
 %DXC% %DXFLAGS% -T ps_6_0 drawcluster.hlsl -E RenderSceneForwardPSIndirect -Fo drawcluster.forward.indirect.ps.cso
 %DXC% %DXFLAGS% -T vs_6_0 drawcluster.hlsl -E RenderSceneVSShadow -Fo drawclusterShadow.vs.cso
+
+REM === Spot Shadow (per-light depth, direct draws) ===
+%DXC% %DXFLAGS% -T vs_6_0 drawclusterShadowSpot.hlsl -E RenderSceneVSShadowSpot -Fo drawclusterShadowSpot.vs.cso
 
 REM === Deferred Lighting ===
 %DXC% %DXFLAGS% -T vs_6_0 deferredlighting.hlsl -E AAPLSimpleTexVertexOutFSQuadVertexShader -Fo deferredlighting.vs.cso
@@ -28,6 +32,9 @@ REM === Light Culling ===
 %DXC% %DXFLAGS% -enable-16bit-types -T cs_6_2 lightculling.hlsl -E CoarseCull -Fo CoarseCull.cs.cso
 %DXC% %DXFLAGS% -enable-16bit-types -T cs_6_2 lightculling.hlsl -E TraditionalCull -Fo TraditionalCull.cs.cso
 %DXC% %DXFLAGS% -enable-16bit-types -T cs_6_2 lightculling.hlsl -E ClearLightIndices -Fo ClearIndices.cs.cso
+%DXC% %DXFLAGS% -enable-16bit-types -T cs_6_2 lightculling.hlsl -E CoarseCullSpot -Fo CoarseCullSpot.cs.cso
+%DXC% %DXFLAGS% -enable-16bit-types -T cs_6_2 lightculling.hlsl -E TraditionalCullSpot -Fo TraditionalCullSpot.cs.cso
+%DXC% %DXFLAGS% -enable-16bit-types -T cs_6_2 lightculling.hlsl -E ClearLightIndicesSpot -Fo ClearIndicesSpot.cs.cso
 
 REM === GPU Culling ===
 %DXC% %DXFLAGS% -T cs_6_2 gpucull.hlsl -E EncodeDrawBuffer -Fo gpucull.cs.cso

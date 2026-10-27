@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #ifdef ENABLE_DX12
 
 #include "DX12Setup.h"
@@ -128,6 +128,10 @@ private:
   // CPU 侧场景数据(streaming 覆盖度用;对齐 Vulkan 的 m_SubMeshes / cpuMaterials)
   AAPLSubMesh* _subMeshes = nullptr;     // 解压自 _applMesh->_meshData
   AAPLMaterial* _cpuMaterials = nullptr; // 解压自 _applMesh->_materialData
+  std::vector<AAPLMeshChunk> _cpuChunks; // 解压自 _applMesh->_chunkData(直绘 shadow/spot shadow 用)
+
+  // TAA 抖动后的投影(UpdateUniforms 每帧写入;cull 参数与上传矩阵共用)
+  mat4 _jitteredProj = mat4(1.0f);
 
   // Occluder data
   ComPtr<ID3D12Resource> _occluderVertexBuffer;
@@ -159,18 +163,28 @@ private:
   static constexpr uint32_t SRV_HDR_BUFFER  = 2050;
   static constexpr uint32_t SRV_TAA_HISTORY = 2051;
 
-  // Scatter volume (froxel-based volumetrics)
-  static constexpr uint32_t SCATTER_FROXEL_W = 160;
-  static constexpr uint32_t SCATTER_FROXEL_H = 90;
+  // Scatter volume (froxel-based volumetrics) — Vulkan parity (ScatteringVolume.cpp):
+  //   volume dims derived from screen (ceil(w/8) x ceil(h/8) x 64), recreated on resize;
+  //   history = copy of last frame's scatter (NOT the accum integral);
+  //   blueNoise (64x64 R8) + perlin (32^3 R8) uploaded once, resolution-independent.
   static constexpr uint32_t SCATTER_FROXEL_D = 64;
-  static constexpr uint32_t SRV_SCATTER_ACCUM = 2052; // just after SRV_TAA_HISTORY
+  static constexpr uint32_t SRV_SCATTER_ACCUM     = 2052; // just after SRV_TAA_HISTORY
+  static constexpr uint32_t SRV_SCATTER_HISTORY   = 2053;
+  static constexpr uint32_t SRV_SCATTER_BLUE_NOISE = 2054;
+  static constexpr uint32_t SRV_SCATTER_PERLIN    = 2055;
+  uint32_t _scatterFroxelW = 0;  // runtime: (screenW + 7) / 8
+  uint32_t _scatterFroxelH = 0;  // runtime: (screenH + 7) / 8
   ComPtr<ID3D12Resource> _scatterVolume;        // R16G16B16A16_FLOAT 3D UAV (scatter result)
   ComPtr<ID3D12Resource> _scatterAccumVolume;   // R16G16B16A16_FLOAT 3D SRV for deferred lighting
+  ComPtr<ID3D12Resource> _scatterHistoryVolume; // copy of last frame's scatter (t4 scatterPrev)
+  ComPtr<ID3D12Resource> _scatterBlueNoiseTex;  // 64x64 R8_UNORM (Bayer-based, Vulkan-identical)
+  ComPtr<ID3D12Resource> _scatterPerlinTex;     // 32^3 R8_UNORM fBm Perlin (Vulkan-identical)
   ComPtr<ID3D12RootSignature> _scatterRootSig;
   ComPtr<ID3D12RootSignature> _accumRootSig;
   ComPtr<ID3D12PipelineState> _scatterVolumePSO;
   ComPtr<ID3D12PipelineState> _accumulatePSO;
-  bool _scatterAccumIsInPSR = false; // tracks whether _scatterAccumVolume is in PSR vs UAV state
+  bool _scatterAccumIsInPSR = false;    // tracks whether _scatterAccumVolume is in PSR vs UAV state
+  bool _scatterHistoryValid = false;    // true once a scatter frame has produced a history copy
 
   // Pipeline states
   ComPtr<ID3D12PipelineState> _occluderPSO;
@@ -186,6 +200,9 @@ private:
   ComPtr<ID3D12PipelineState> _coarseCullPSO;
   ComPtr<ID3D12PipelineState> _traditionalCullPSO;
   ComPtr<ID3D12PipelineState> _clearIndicesPSO;
+  ComPtr<ID3D12PipelineState> _coarseCullSpotPSO;
+  ComPtr<ID3D12PipelineState> _traditionalCullSpotPSO;
+  ComPtr<ID3D12PipelineState> _clearIndicesSpotPSO;
 
   // Command signature for ExecuteIndirect
   ComPtr<ID3D12CommandSignature> _drawIndexedCmdSig;
@@ -211,6 +228,7 @@ private:
   ComPtr<ID3D12Resource> _shadowMapArray;  // Texture2DArray, 3 cascades
   ComPtr<ID3D12DescriptorHeap> _shadowDsvHeap; // 3 DSV descriptors
   ComPtr<ID3D12PipelineState> _shadowPSO;
+  ComPtr<ID3D12PipelineState> _shadowAlphaMaskPSO; // D1: alpha-test PS for cutout casters
   static constexpr uint32_t SHADOW_MAP_SIZE = 1024;
   static constexpr uint32_t SHADOW_CASCADE_COUNT = 3;
   mat4 _shadowProjectionMatrices[SHADOW_CASCADE_COUNT];
@@ -229,6 +247,22 @@ private:
     float farZ = 0.0f;
   };
   ShadowCascadeBox _shadowCascadeBoxes[SHADOW_CASCADE_COUNT];
+
+  // --- Spot shadow maps (256x256 x 32 slices, rendered once for the static scene) ---
+  // Counts mirror Light.h (SPOT_SHADOW_MAX_COUNT / SPOT_SHADOW_RESOLUTION),
+  // which are #define macros there — so these use distinct names.
+  static constexpr uint32_t MAX_SPOT_SHADOWS = 32;
+  static constexpr uint32_t SPOT_SHADOW_MAP_SIZE = 256;
+  ComPtr<ID3D12Resource> _spotShadowMapArray;        // Texture2DArray, D32, one slice per light
+  ComPtr<ID3D12DescriptorHeap> _spotShadowDsvHeap;   // one DSV per slice
+  ComPtr<ID3D12RootSignature> _spotShadowRootSig;
+  ComPtr<ID3D12PipelineState> _spotShadowOpaquePSO;    // VS only
+  ComPtr<ID3D12PipelineState> _spotShadowAlphaMaskPSO; // VS + alpha-clip PS
+  ComPtr<ID3D12CommandSignature> _spotShadowDrawCmdSig; // [CONSTANT(b2,offset16), DRAW_INDEXED]
+  ComPtr<ID3D12Resource> _spotDrawArgsBuffer;        // per-chunk direct draw records (default heap)
+  ComPtr<ID3D12Resource> _spotViewProjBuffer;        // StructuredBuffer<float4x4> x 32 (deferred t15)
+  std::vector<mat4> _spotViewProjMatrices;           // CPU copy, HLSL-ready (transposed) form
+  bool _spotShadowsRendered = false;                 // static lights: render once, reuse forever
 
   // Frame state
   FrameConstants _frameConstants{};
@@ -291,12 +325,18 @@ private:
   void CreateHiZResources();
   void CreateSAOResources();
   void CreateShadowResources();
+  void CreateSpotShadowResources();
+  void RenderSpotShadowMaps(ID3D12GraphicsCommandList* cmdList);
   void CreateCommandSignature();
+  void DebugDumpFrame(); // AVR_DUMP=<dir>: one-shot dump of HDR/shadows/tile indices (ground truth; screen capture z-order is unreliable)
+  bool _dumpDone = false;
+  uint32_t _drawCount = 0;
   void CreateStaticDescriptors();
   void CreateHDRResources();
   void CreateLights();
   void CreateLightCullPipelines();
   void CreateScatterResources();
+  void CreateScatterNoiseTextures(); // blue noise + perlin, uploaded once (resolution-independent)
   bool IsScatterReady() const;
   void FlushCommandQueue();
 

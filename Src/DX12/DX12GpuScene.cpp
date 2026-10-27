@@ -1,4 +1,4 @@
-﻿#ifdef ENABLE_DX12
+#ifdef ENABLE_DX12
 
 #include "DX12GpuScene.h"
 #include "DX12ScenePolicy.h"
@@ -80,7 +80,7 @@ static std::pair<void*, size_t> decompressToHeap(void* compressedData, size_t co
 DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     : _rootPath(root), _device(device) {
 
-  // Load the scene file FIRST — the camera/sun reads below depend on it.
+  // Load the scene file FIRST 鈥?the camera/sun reads below depend on it.
   // (LoadMeshData used to load it too late; the camera then fell back to
   // the (0,2,5) default, matching the corrupted dx12.rdc capture.)
   LoadSceneFile();
@@ -120,7 +120,11 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   _frameConstants.exposure     = 1.0f;
   _frameConstants.emissiveScale     = 1.0f;
   _frameConstants.localLightIntensity = 1.0f;
-  // IBL defaults (written once at init; DX12 shaders don't consume these yet —
+  // Vulkan parity (GpuScene.h frameConstants init): scatterScale 2.0 (Metal
+  // parity, unitless multiplier on scatteringCoeff). Was 0 — the whole scatter
+  // pipeline never ran.
+  _frameConstants.scatterScale = 2.0f;
+  // IBL defaults (written once at init; DX12 shaders don't consume these yet 鈥?
   // values exist only so the field is never read uninitialized).
   _frameConstants.iblScale          = 1.0f;
   _frameConstants.iblSpecularScale  = 4.0f;
@@ -142,7 +146,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     _frameResources[i].uniformBuffer = DX12Util::CreateUploadBuffer(
         _device.GetDevice(), sizeof(FrameData), &_frameResources[i].uniformMapped);
 
-    // Write index buffer — upload (for zeroing), GPU default (UAV), readback (CPU read)
+    // Write index buffer 鈥?upload (for zeroing), GPU default (UAV), readback (CPU read)
     _frameResources[i].writeIndexUpload = DX12Util::CreateUploadBuffer(
         _device.GetDevice(), 16 * sizeof(uint32_t), &_frameResources[i].writeIndexUploadMapped);
     // Zero it initially
@@ -171,7 +175,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
     _frameResources[i].cullParamsBuffer = DX12Util::CreateUploadBuffer(
         _device.GetDevice(), 512, &_frameResources[i].cullParamsMapped);
 
-    // Shadow cull resources — shader uses cascadeMaxChunks * 2 per cascade
+    // Shadow cull resources 鈥?shader uses cascadeMaxChunks * 2 per cascade
     // (opaque bucket + alpha bucket each get cascadeMaxChunks slots)
     _frameResources[i].shadowDrawParams = DX12Util::CreateGPUBuffer(
         _device.GetDevice(),
@@ -206,6 +210,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
   CreateStaticDescriptors();
   CreateHiZResources();
   CreateShadowResources();
+  CreateSpotShadowResources();
   CreateCommandSignature();
   CreateLights();
   CreateLightCullPipelines();
@@ -217,7 +222,7 @@ DX12GpuScene::DX12GpuScene(std::filesystem::path& root, DX12Device& device)
 
 DX12GpuScene::~DX12GpuScene() {
   _device.WaitForGpu();
-  shutdownTextureStreaming(); // join 后台线程,须在 delete _applMesh 之前
+  shutdownTextureStreaming(); // join 鍚庡彴绾跨▼,椤诲湪 delete _applMesh 涔嬪墠
   if (_imguiInitialized) {
     // The renderer backend must release its dummy main-viewport data before
     // destroying secondary platform windows (the main viewport has no queue).
@@ -234,7 +239,7 @@ DX12GpuScene::~DX12GpuScene() {
 // ---- Load Scene File (camera, sun, lights, occluders) ----
 void DX12GpuScene::LoadSceneFile() {
   // Must match the Vulkan path (GpuScene.cpp reads "scene.scene").
-  // NOTE: "bistro.dxt.bin.json" does not exist — it silently fell back to
+  // NOTE: "bistro.dxt.bin.json" does not exist 鈥?it silently fell back to
   // default camera/sun/lights, producing the all-black dx12.rdc capture.
   std::string scenePath = (_rootPath / "scene.scene").generic_string();
   std::ifstream sceneFileStream(scenePath);
@@ -242,7 +247,7 @@ void DX12GpuScene::LoadSceneFile() {
     sceneFileStream >> _sceneFile;
     spdlog::info("DX12: Loaded scene file {}", scenePath);
   } else {
-    spdlog::warn("DX12: Scene file not found: {} — camera/sun/lights will use defaults", scenePath);
+    spdlog::warn("DX12: Scene file not found: {} 鈥?camera/sun/lights will use defaults", scenePath);
   }
 }
 
@@ -254,7 +259,7 @@ void DX12GpuScene::LoadMeshData() {
   spdlog::info("DX12: Loaded mesh - {} vertices, {} indices, {} chunks",
                _applMesh->_vertexCount, _applMesh->_indexCount, _applMesh->_chunkCount);
 
-  // 保留 submesh 包围球供 streaming 覆盖度计算(对齐 GpuScene.cpp:2773)
+  // 淇濈暀 submesh 鍖呭洿鐞冧緵 streaming 瑕嗙洊搴﹁绠?瀵归綈 GpuScene.cpp:2773)
   _subMeshes = (AAPLSubMesh*)decompressToHeap(_applMesh->_meshData,
       _applMesh->compressedMeshDataLength).first;
 }
@@ -309,6 +314,11 @@ void DX12GpuScene::CreateBuffers() {
   {
     auto [data, size] = decompressToHeap(_applMesh->_chunkData, _applMesh->compressedChunkDataLength);
     _meshChunksBuffer = uploadBuffer(data, size);
+    // Keep a CPU copy for the spot-shadow direct-draw argument records
+    // (indexCount/indexBegin per chunk, mirroring Vulkan's m_Chunks).
+    const size_t chunkCount = size / sizeof(AAPLMeshChunk);
+    _cpuChunks.resize(chunkCount);
+    memcpy(_cpuChunks.data(), data, chunkCount * sizeof(AAPLMeshChunk));
     free(data);
   }
 
@@ -329,7 +339,7 @@ void DX12GpuScene::CreateBuffers() {
       shaderMats[i].hasMetallicRoughness = rawMats[i].hasMetallicRoughnessTexture ? 1 : 0;
       shaderMats[i].hasEmissive = rawMats[i].hasEmissiveTexture ? 1 : 0;
     }
-    _cpuMaterials = (AAPLMaterial*)matData; // 保留供 streaming hash 查询,析构释放
+    _cpuMaterials = (AAPLMaterial*)matData; // 淇濈暀渚?streaming hash 鏌ヨ,鏋愭瀯閲婃斁
 
     _materialBuffer = uploadBuffer(shaderMats.data(), shaderMats.size() * sizeof(AAPLShaderMaterial));
   }
@@ -645,8 +655,10 @@ void DX12GpuScene::CreateRootSignatures() {
   }
 
   // 2. Shadow root signature: CBV (b0) + root constant (b1=cascadeIndex) + SRV chunkIndex (t4,space1)
+  //    + alpha-mask PS tables (t0/t3 space1, bindless t0+ space2) — D1 parity with
+  //    Vulkan's _shadowPassPipelineAlphaMask (RenderSceneShadowDepthIndirect PS).
   {
-    D3D12_ROOT_PARAMETER params[3] = {};
+    D3D12_ROOT_PARAMETER params[5] = {};
     // [0] CBV for FrameData (shadow VP matrices live here)
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[0].Descriptor.ShaderRegister = 0;
@@ -669,10 +681,48 @@ void DX12GpuScene::CreateRootSignatures() {
     params[2].DescriptorTable.NumDescriptorRanges = 1;
     params[2].DescriptorTable.pDescriptorRanges = &chunkRange;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // [3] Descriptor table: materials (t0,space1) + meshChunks (t3,space1) — alpha-mask PS
+    D3D12_DESCRIPTOR_RANGE psRanges[2] = {};
+    psRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    psRanges[0].NumDescriptors = 1;
+    psRanges[0].BaseShaderRegister = 0;  // t0,space1 materials
+    psRanges[0].RegisterSpace = 1;
+    psRanges[0].OffsetInDescriptorsFromTableStart = 0;
+    psRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    psRanges[1].NumDescriptors = 1;
+    psRanges[1].BaseShaderRegister = 3;  // t3,space1 meshChunks
+    psRanges[1].RegisterSpace = 1;
+    psRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[3].DescriptorTable.NumDescriptorRanges = 2;
+    params[3].DescriptorTable.pDescriptorRanges = psRanges;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // [4] Descriptor table: bindless textures (t0+, space2, unbounded) — alpha-mask PS
+    D3D12_DESCRIPTOR_RANGE bindlessRange = {};
+    bindlessRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    bindlessRange.NumDescriptors = UINT_MAX;
+    bindlessRange.BaseShaderRegister = 0;
+    bindlessRange.RegisterSpace = 2;
+    bindlessRange.OffsetInDescriptorsFromTableStart = 0;
+    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[4].DescriptorTable.NumDescriptorRanges = 1;
+    params[4].DescriptorTable.pDescriptorRanges = &bindlessRange;
+    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s1,space1: _LinearRepeatSampler (drawcluster.hlsl alpha-mask PS)
+    D3D12_STATIC_SAMPLER_DESC psSampler = {};
+    psSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    psSampler.AddressU = psSampler.AddressV = psSampler.AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    psSampler.ShaderRegister = 1;
+    psSampler.RegisterSpace = 1;
+    psSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc = {};
-    desc.NumParameters = 3;
+    desc.NumParameters = 5;
     desc.pParameters = params;
+    desc.NumStaticSamplers = 1;
+    desc.pStaticSamplers = &psSampler;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     _shadowRootSig = CreateRootSigFromDesc(dev, desc);
   }
@@ -971,8 +1021,8 @@ void DX12GpuScene::CreateRootSignatures() {
   }
 
   // 8. Light Cull root signature:
-  // [0] CBV b0 space0 (frameData — camera params)
-  // [1] CBV b1 space0 (cullParams — light counts, screen size, VP matrix, frustum)
+  // [0] CBV b0 space0 (frameData 鈥?camera params)
+  // [1] CBV b1 space0 (cullParams 鈥?light counts, screen size, VP matrix, frustum)
   // [2] Descriptor table:
   //     SRVs: t1,t2 (pointLight, depth) and t8 (spotLight) in space1
   //     UAVs: u3..u11 in space1
@@ -987,7 +1037,7 @@ void DX12GpuScene::CreateRootSignatures() {
 
     // Descriptor table: SRV range (t1..t8, space1) + UAV range (u3..u11, space1)
     D3D12_DESCRIPTOR_RANGE lcRanges[2] = {};
-    // SRVs: t1 and t2 (pointLight, depth) and t8 (spotLight) — cover t1..t8 contiguously
+    // SRVs: t1 and t2 (pointLight, depth) and t8 (spotLight) 鈥?cover t1..t8 contiguously
     lcRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     lcRanges[0].NumDescriptors = 8;  // t1..t8 space1
     lcRanges[0].BaseShaderRegister = 1;
@@ -1058,6 +1108,64 @@ void DX12GpuScene::CreateRootSignatures() {
     _resolveRootSig = CreateRootSigFromDesc(dev, desc);
   }
 
+  // 11. Spot shadow root signature (drawclusterShadowSpot.hlsl + shadow alpha-mask PS):
+  // [0] Root constants b2 space0: { float4x4 viewProj (16), uint chunkId (1) }
+  //     鈥?chunkId is patched per-draw by the [CONSTANT(b2), DRAW_INDEXED] command
+  //     signature (same trick as the CSM drawSlot).
+  // [1] Descriptor table: t0,space1 (materials) + t3,space1 (meshChunks) 鈥?alpha-mask PS
+  // [2] Descriptor table: bindless textures t0+, space2 (unbounded) 鈥?alpha-mask PS
+  // Static sampler s1,space1 (linear repeat, wrap) 鈥?matches drawcluster.hlsl
+  {
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 2;
+    params[0].Constants.RegisterSpace = 0;
+    params[0].Constants.Num32BitValues = 17; // 16 floats (viewProj) + chunkId
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].BaseShaderRegister = 0;  // t0,space1 materials
+    ranges[0].RegisterSpace = 1;
+    ranges[0].OffsetInDescriptorsFromTableStart = 0;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[1].NumDescriptors = 1;
+    ranges[1].BaseShaderRegister = 3;  // t3,space1 meshChunks
+    ranges[1].RegisterSpace = 1;
+    ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 2;
+    params[1].DescriptorTable.pDescriptorRanges = ranges;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_DESCRIPTOR_RANGE bindlessRange = {};
+    bindlessRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    bindlessRange.NumDescriptors = UINT_MAX;
+    bindlessRange.BaseShaderRegister = 0; // t0+, space2
+    bindlessRange.RegisterSpace = 2;
+    bindlessRange.OffsetInDescriptorsFromTableStart = 0;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &bindlessRange;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.ShaderRegister = 1;
+    sampler.RegisterSpace = 1;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 3; desc.pParameters = params;
+    desc.NumStaticSamplers = 1; desc.pStaticSamplers = &sampler;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    _spotShadowRootSig = CreateRootSigFromDesc(dev, desc);
+  }
+
   // 10. Scatter volume root signature (ScatterVolume kernel)
   // [0] Root constants (b0): PushConstants { volumeWidth, volumeHeight, screenWidth, screenHeight, resetHistory }
   // [1] CBV (b1): ScatterUBO (CameraParamsBufferFull + AAPLFrameConstants)
@@ -1109,9 +1217,12 @@ void DX12GpuScene::CreateRootSignatures() {
     scatterSamplers[1].ShaderRegister = 11;
     scatterSamplers[1].RegisterSpace = 0;
     scatterSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    // s14 space0: linearSampler (trilinear clamp)
+    // s14 space0: linearSampler (trilinear WRAP — Vulkan parity: ScatteringVolume.cpp
+    // createSampler uses VK_SAMPLER_ADDRESS_MODE_REPEAT; the Perlin tile is sampled
+    // in world space and must tile seamlessly)
     scatterSamplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    scatterSamplers[2].AddressU = scatterSamplers[2].AddressV = scatterSamplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    scatterSamplers[2].AddressU = scatterSamplers[2].AddressV = scatterSamplers[2].AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     scatterSamplers[2].ShaderRegister = 14;
     scatterSamplers[2].RegisterSpace = 0;
     scatterSamplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -1315,7 +1426,7 @@ void DX12GpuScene::CreatePipelineStates() {
     desc.SampleMask = UINT_MAX;
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     desc.NumRenderTargets = 1;
-    desc.RTVFormats[0] = _device.GetSwapChainFormat();
+    desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; // HDR buffer (resolve pass tone-maps to swapchain)
     desc.DSVFormat = _device.GetDepthFormat();
     desc.SampleDesc.Count = 1;
 
@@ -1344,7 +1455,7 @@ void DX12GpuScene::CreatePipelineStates() {
     desc.SampleMask = UINT_MAX;
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     desc.NumRenderTargets = 1;
-    desc.RTVFormats[0] = _device.GetSwapChainFormat();
+    desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; // HDR buffer (resolve pass tone-maps to swapchain)
     desc.DSVFormat = _device.GetDepthFormat();
     desc.SampleDesc.Count = 1;
 
@@ -1562,6 +1673,39 @@ void DX12GpuScene::CreateHDRResources() {
   dev->CreateShaderResourceView(_taaHistory[_taaHistoryIndex ^ 1].Get(), &srvDesc,
       _cbvSrvUavHeap.GetStaticCPU(SRV_TAA_HISTORY));
 
+  // Clear both history buffers once so the very first resolve reads black
+  // instead of undefined memory (variance clamping would mostly hide it, but
+  // a deterministic start is cheaper to reason about). Also re-runs on
+  // OnResize, discarding stale history of the old size.
+  {
+    auto* cmdList = _device.GetCommandList();
+    _device.GetCommandAllocator(0)->Reset();
+    cmdList->Reset(_device.GetCommandAllocator(0), nullptr);
+    float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    for (int k = 0; k < 2; ++k) {
+      D3D12_RESOURCE_BARRIER b = {};
+      b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      b.Transition.pResource = _taaHistory[k].Get();
+      b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+      b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      cmdList->ResourceBarrier(1, &b);
+
+      D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+          _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+      rtv.ptr += _hdrRtvSize; // slot [1]: scratch for the per-frame history RTV
+      dev->CreateRenderTargetView(_taaHistory[k].Get(), nullptr, rtv);
+      cmdList->ClearRenderTargetView(rtv, black, 0, nullptr);
+
+      b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+      cmdList->ResourceBarrier(1, &b);
+    }
+    cmdList->Close();
+    ID3D12CommandList* lists[] = { cmdList };
+    _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
+  }
+
   spdlog::info("DX12: HDR buffer + TAA history created ({}x{}), SRV_HDR={}, SRV_TAA={}", w, h, SRV_HDR_BUFFER, SRV_TAA_HISTORY);
 }
 
@@ -1726,7 +1870,7 @@ void DX12GpuScene::CreateShadowResources() {
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     // Shadow pass is the one geometry pass Vulkan renders CCW-front
-    // (Shadow.cpp: VK_FRONT_FACE_COUNTER_CLOCKWISE) — the shadow orthographic
+    // (Shadow.cpp: VK_FRONT_FACE_COUNTER_CLOCKWISE) 鈥?the shadow orthographic
     // projection has no flipX, unlike the camera projection. With the
     // negative-height viewport making rasterization match Vulkan, the mapping
     // is direct: VK_FRONT_FACE_COUNTER_CLOCKWISE -> FrontCounterClockwise TRUE.
@@ -1748,6 +1892,23 @@ void DX12GpuScene::CreateShadowResources() {
     DX12Util::ThrowIfFailed(
         dev->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&_shadowPSO)),
         "Failed to create shadow PSO");
+
+    // D1: alpha-mask variant — same VS + RenderSceneShadowDepthIndirect PS
+    // (SPEC_ALPHA_MASK macro build) for cutout casters, matching Vulkan's
+    // _shadowPassPipelineAlphaMask. PS reads meshChunks/materials (t0/t3
+    // space1), bindless textures (t0+ space2) and s1 — bound via root sig
+    // params [3]/[4] added for this PSO.
+    auto psAlpha = DX12Util::ReadShaderFile(
+        (_rootPath / "shaders/drawcluster.shadow.indirect.alphamask.ps.cso").generic_string());
+    if (!psAlpha.empty()) {
+      desc.PS = {psAlpha.data(), psAlpha.size()};
+      DX12Util::ThrowIfFailed(
+          dev->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&_shadowAlphaMaskPSO)),
+          "Failed to create shadow alpha-mask PSO");
+    } else {
+      spdlog::warn("DX12: drawcluster.shadow.indirect.alphamask.ps.cso missing — "
+                   "CSM alpha-masked casters will render unclipped");
+    }
   }
 
   // Shadow cull compute PSO
@@ -1762,7 +1923,7 @@ void DX12GpuScene::CreateShadowResources() {
   }
 
   // Shadow ExecuteIndirect command signature.
-  // [CONSTANT(b1 -> root param 1, offset 2) , DRAW_INDEXED] — the leading uint
+  // [CONSTANT(b1 -> root param 1, offset 2) , DRAW_INDEXED] 鈥?the leading uint
   // of each record lands in pushConstants.drawSlot so the VS can resolve
   // chunkIndex[drawSlot]. Signatures that patch root arguments must be created
   // against the root signature they will be used with.
@@ -1783,6 +1944,653 @@ void DX12GpuScene::CreateShadowResources() {
                                     IID_PPV_ARGS(&_shadowDrawCmdSig)),
         "Failed to create shadow draw command signature");
   }
+}
+
+// ---- Create Spot Shadow Resources (array, PSOs, direct-draw args) ----
+// Mirrors Shadow.cpp's Vulkan spot shadow path: a 256x256 D32 Texture2DArray
+// with MAX_SPOT_SHADOWS slices, an opaque VS-only pipeline and an
+// alpha-mask VS+PS pipeline, both drawing every opaque/alpha chunk directly
+// (no GPU culling) per light via ExecuteIndirect.
+void DX12GpuScene::CreateSpotShadowResources() {
+  auto* dev = _device.GetDevice();
+
+  // 1. Shadow map array (standard-Z: LESS + clear 1.0, like the CSM array)
+  D3D12_CLEAR_VALUE depthClear = {};
+  depthClear.Format = DXGI_FORMAT_D32_FLOAT;
+  depthClear.DepthStencil.Depth = 1.0f;
+  _spotShadowMapArray = DX12Util::CreateTexture2D(dev,
+      SPOT_SHADOW_MAP_SIZE, SPOT_SHADOW_MAP_SIZE,
+      DXGI_FORMAT_R32_TYPELESS,
+      D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+      1, MAX_SPOT_SHADOWS,
+      D3D12_RESOURCE_STATE_DEPTH_WRITE, &depthClear);
+
+  // 2. DSV heap (one per slice)
+  {
+    D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+    desc.NumDescriptors = MAX_SPOT_SHADOWS;
+    desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    DX12Util::ThrowIfFailed(
+        dev->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&_spotShadowDsvHeap)),
+        "spot shadow DSV heap");
+
+    uint32_t dsvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = _spotShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (uint32_t i = 0; i < MAX_SPOT_SHADOWS; ++i) {
+      D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+      dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+      dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+      dsvDesc.Texture2DArray.FirstArraySlice = i;
+      dsvDesc.Texture2DArray.ArraySize = 1;
+      dev->CreateDepthStencilView(_spotShadowMapArray.Get(), &dsvDesc, dsvHandle);
+      dsvHandle.ptr += dsvSize;
+    }
+  }
+
+  // 3. Direct-draw argument records: one per opaque+alphaMasked chunk.
+  //    Record layout matches the [CONSTANT, DRAW_INDEXED] signature:
+  //    { chunkId (patched into push.chunkId), indexCount, 1, indexBegin, 0, 0 }.
+  //    Vulkan feeds the same values through firstInstance -> gl_InstanceIndex.
+  if (!_cpuChunks.empty()) {
+    uint32_t opaqueCount = (uint32_t)_applMesh->_opaqueChunkCount;
+    uint32_t alphaCount = (uint32_t)_applMesh->_alphaMaskedChunkCount;
+    std::vector<DX12DrawIndexedArgs> records(opaqueCount + alphaCount);
+    for (uint32_t c = 0; c < opaqueCount + alphaCount; ++c) {
+      records[c].drawSlot = c;
+      records[c].draw.IndexCountPerInstance = _cpuChunks[c].indexCount;
+      records[c].draw.InstanceCount = 1;
+      records[c].draw.StartIndexLocation = _cpuChunks[c].indexBegin;
+      records[c].draw.BaseVertexLocation = 0;
+      records[c].draw.StartInstanceLocation = 0;
+    }
+    ComPtr<ID3D12Resource> upload;
+    _device.GetCommandAllocator(0)->Reset();
+    auto* cmdList = _device.GetCommandList();
+    cmdList->Reset(_device.GetCommandAllocator(0), nullptr);
+    _spotDrawArgsBuffer = DX12Util::CreateDefaultBuffer(dev, cmdList,
+        records.data(), (UINT64)records.size() * sizeof(DX12DrawIndexedArgs), upload);
+    cmdList->Close();
+    ID3D12CommandList* lists[] = { cmdList };
+    _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
+  }
+
+  // 4. Command signature: [CONSTANT(param 0, offset 16 = chunkId), DRAW_INDEXED]
+  //    鈥?same 24-byte record stride as the CSM signature.
+  {
+    D3D12_INDIRECT_ARGUMENT_DESC argDescs[2] = {};
+    argDescs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    argDescs[0].Constant.RootParameterIndex = 0; // spot shadow root sig: 32BIT_CONSTANTS
+    argDescs[0].Constant.DestOffsetIn32BitValues = 16; // push.chunkId (after the mat4)
+    argDescs[0].Constant.Num32BitValuesToSet = 1;
+    argDescs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+    sigDesc.ByteStride = sizeof(DX12DrawIndexedArgs);
+    sigDesc.NumArgumentDescs = 2;
+    sigDesc.pArgumentDescs = argDescs;
+    DX12Util::ThrowIfFailed(
+        dev->CreateCommandSignature(&sigDesc, _spotShadowRootSig.Get(),
+                                    IID_PPV_ARGS(&_spotShadowDrawCmdSig)),
+        "Failed to create spot shadow draw command signature");
+  }
+
+  // 5. PSOs. Rasterizer matches the CSM shadow PSO conventions: the spot
+  //    perspective has no Y flip, so the negative-height viewport keeps the
+  //    Vulkan-authored VS valid and FrontCounterClockwise=TRUE maps directly
+  //    from Vulkan's VK_FRONT_FACE_COUNTER_CLOCKWISE. Depth bias mirrors
+  //    Vulkan's constant 1.25 / slope 1.75 (D3D's DepthBias is integral, so
+  //    1 is the nearest representable value).
+  D3D12_INPUT_ELEMENT_DESC layout[] = {
+    {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"Tangent",  0, DXGI_FORMAT_R32G32B32_FLOAT, 2, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    3, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+  };
+  auto vs = DX12Util::ReadShaderFile((_rootPath / "shaders/drawclusterShadowSpot.vs.cso").generic_string());
+  if (!vs.empty()) {
+    // Opaque: VS only
+    {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+      desc.pRootSignature = _spotShadowRootSig.Get();
+      desc.VS = {vs.data(), vs.size()};
+      desc.InputLayout = {layout, 4};
+      desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+      desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+      desc.RasterizerState.FrontCounterClockwise = TRUE;
+      desc.RasterizerState.DepthClipEnable = TRUE;
+      desc.RasterizerState.DepthBias = 1;
+      desc.RasterizerState.DepthBiasClamp = 0.0f;
+      desc.RasterizerState.SlopeScaledDepthBias = 1.75f;
+      desc.DepthStencilState.DepthEnable = TRUE;
+      desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+      desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS; // standard-Z
+      desc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+      desc.SampleMask = UINT_MAX;
+      desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      desc.NumRenderTargets = 0;
+      desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+      desc.SampleDesc.Count = 1;
+      DX12Util::ThrowIfFailed(
+          dev->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&_spotShadowOpaquePSO)),
+          "Failed to create spot shadow opaque PSO");
+    }
+    // Alpha-masked: VS + alpha-clip PS (RenderSceneShadowDepthIndirect with
+    // SPEC_ALPHA_MASK, compiled as drawcluster.shadow.indirect.alphamask.ps.cso)
+    {
+      auto ps = DX12Util::ReadShaderFile(
+          (_rootPath / "shaders/drawcluster.shadow.indirect.alphamask.ps.cso").generic_string());
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+      desc.pRootSignature = _spotShadowRootSig.Get();
+      desc.VS = {vs.data(), vs.size()};
+      if (!ps.empty()) desc.PS = {ps.data(), ps.size()};
+      desc.InputLayout = {layout, 4};
+      desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+      desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+      desc.RasterizerState.FrontCounterClockwise = TRUE;
+      desc.RasterizerState.DepthClipEnable = TRUE;
+      desc.RasterizerState.DepthBias = 1;
+      desc.RasterizerState.DepthBiasClamp = 0.0f;
+      desc.RasterizerState.SlopeScaledDepthBias = 1.75f;
+      desc.DepthStencilState.DepthEnable = TRUE;
+      desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+      desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+      desc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+      desc.SampleMask = UINT_MAX;
+      desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      desc.NumRenderTargets = 0;
+      desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+      desc.SampleDesc.Count = 1;
+      DX12Util::ThrowIfFailed(
+          dev->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&_spotShadowAlphaMaskPSO)),
+          "Failed to create spot shadow alpha-mask PSO");
+    }
+  } else {
+    spdlog::warn("DX12: drawclusterShadowSpot.vs.cso missing 鈥?spot shadows disabled");
+  }
+
+  spdlog::info("DX12: Spot shadow resources created ({}x{} x {} slices)",
+               SPOT_SHADOW_MAP_SIZE, SPOT_SHADOW_MAP_SIZE, MAX_SPOT_SHADOWS);
+}
+
+// ---- Render Spot Shadow Maps (once; the scene is static) ----
+// Per light: clear the slice, set the light's view-proj as root constants,
+// ExecuteIndirect over the opaque records then the alpha-masked records.
+// Matches Vulkan Shadow::RenderSpotShadowMaps.
+void DX12GpuScene::RenderSpotShadowMaps(ID3D12GraphicsCommandList* cmdList) {
+  if (_spotShadowsRendered) return;
+  if (!_spotShadowOpaquePSO || !_spotDrawArgsBuffer || _spotViewProjMatrices.empty()) {
+    _spotShadowsRendered = true;
+    return;
+  }
+
+  uint32_t spotCount = (uint32_t)std::min(_spotViewProjMatrices.size(),
+                                          (size_t)MAX_SPOT_SHADOWS);
+  uint32_t opaqueCount = (uint32_t)_applMesh->_opaqueChunkCount;
+  uint32_t alphaCount = (uint32_t)_applMesh->_alphaMaskedChunkCount;
+
+  // Viewport: negative height, same Vulkan-parity reason as every other pass.
+  D3D12_VIEWPORT vp = {0, (float)SPOT_SHADOW_MAP_SIZE,
+                       (float)SPOT_SHADOW_MAP_SIZE, -(float)SPOT_SHADOW_MAP_SIZE,
+                       0.0f, 1.0f};
+  D3D12_RECT scissor = {0, 0, (LONG)SPOT_SHADOW_MAP_SIZE, (LONG)SPOT_SHADOW_MAP_SIZE};
+
+  D3D12_VERTEX_BUFFER_VIEW vbvs[4] = {};
+  ID3D12Resource* vbs[] = {_vertexBuffer.Get(), _normalBuffer.Get(),
+                           _tangentBuffer.Get(), _uvBuffer.Get()};
+  uint32_t strides[] = {sizeof(float)*3, sizeof(float)*3, sizeof(float)*3, sizeof(float)*2};
+  for (int k = 0; k < 4; ++k) {
+    vbvs[k].BufferLocation = vbs[k]->GetGPUVirtualAddress();
+    vbvs[k].SizeInBytes = (UINT)vbs[k]->GetDesc().Width;
+    vbvs[k].StrideInBytes = strides[k];
+  }
+  D3D12_INDEX_BUFFER_VIEW ibv = {};
+  ibv.BufferLocation = _indexBuffer->GetGPUVirtualAddress();
+  ibv.SizeInBytes = (UINT)_indexBuffer->GetDesc().Width;
+  ibv.Format = DXGI_FORMAT_R32_UINT;
+
+  // Descriptor table [1]: t0 materials + t3 meshChunks (alpha-mask PS only,
+  // but bound for both pipelines 鈥?the opaque VS never touches it).
+  auto tbl = _cbvSrvUavHeap.AllocateDynamic(2);
+  {
+    auto* dev = _device.GetDevice();
+    auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+    D3D12_SHADER_RESOURCE_VIEW_DESC dm = {};
+    dm.Format = DXGI_FORMAT_UNKNOWN;
+    dm.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    dm.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    dm.Buffer.NumElements = (UINT)_applMesh->_materialCount;
+    dm.Buffer.StructureByteStride = sizeof(AAPLShaderMaterial);
+    dev->CreateShaderResourceView(_materialBuffer.Get(), &dm, tbl.cpu);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC dc = {};
+    dc.Format = DXGI_FORMAT_UNKNOWN;
+    dc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    dc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    dc.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
+    dc.Buffer.StructureByteStride = MESH_CHUNK_STRIDE;
+    dev->CreateShaderResourceView(_meshChunksBuffer.Get(), &dc, {tbl.cpu.ptr + ds});
+  }
+
+  uint32_t dsvSize = _device.GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+  // Argument records must be in INDIRECT_ARGUMENT state for ExecuteIndirect.
+  // Left in that state afterwards 鈥?nothing else ever touches this buffer and
+  // the one-time render never runs again.
+  DX12Util::TransitionBarrier(cmdList, _spotDrawArgsBuffer.Get(),
+      D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+
+  cmdList->SetGraphicsRootSignature(_spotShadowRootSig.Get());
+  cmdList->SetGraphicsRootDescriptorTable(1, tbl.gpu);
+  cmdList->SetGraphicsRootDescriptorTable(2, _cbvSrvUavHeap.GetStaticGPU(SRV_BINDLESS_START));
+  cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  cmdList->IASetVertexBuffers(0, 4, vbvs);
+  cmdList->IASetIndexBuffer(&ibv);
+  cmdList->RSSetViewports(1, &vp);
+  cmdList->RSSetScissorRects(1, &scissor);
+
+  for (uint32_t lightIdx = 0; lightIdx < spotCount; ++lightIdx) {
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = _spotShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    dsv.ptr += (SIZE_T)lightIdx * dsvSize;
+    cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+
+    // Root constants: 16 matrix floats. The stored mat4 is already the
+    // HLSL-ready column-major form (see CreateLights), so upload verbatim.
+    // chunkId (offset 16) is patched per draw by the command signature.
+    cmdList->SetGraphicsRoot32BitConstants(0, 16,
+        _spotViewProjMatrices[lightIdx].value_ptr(), 0);
+
+    if (opaqueCount > 0) {
+      cmdList->SetPipelineState(_spotShadowOpaquePSO.Get());
+      cmdList->ExecuteIndirect(_spotShadowDrawCmdSig.Get(), opaqueCount,
+          _spotDrawArgsBuffer.Get(), 0, nullptr, 0);
+    }
+    if (alphaCount > 0 && _spotShadowAlphaMaskPSO) {
+      cmdList->SetPipelineState(_spotShadowAlphaMaskPSO.Get());
+      cmdList->ExecuteIndirect(_spotShadowDrawCmdSig.Get(), alphaCount,
+          _spotDrawArgsBuffer.Get(),
+          (UINT64)opaqueCount * sizeof(DX12DrawIndexedArgs), nullptr, 0);
+    }
+  }
+
+  // Transition the whole array to SRV for deferred lighting (t13).
+  DX12Util::TransitionBarrier(cmdList, _spotShadowMapArray.Get(),
+      D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+  _spotShadowsRendered = true;
+  spdlog::info("DX12: Spot shadow maps rendered for {} lights", spotCount);
+}
+
+// ---- Debug dump (AVR_DUMP=<dir>) ----
+// Screen captures of the swapchain are unreliable (window z-order, focus,
+// DWM ghost windows), so this dumps the render targets directly from the GPU.
+// Triggered once after 60 frames (TAA converged, streaming settled) when the
+// AVR_DUMP environment variable names an output directory.
+void DX12GpuScene::DebugDumpFrame() {
+  const char* dirEnv = getenv("AVR_DUMP");
+  if (!dirEnv || !*dirEnv) return;
+  std::filesystem::path dir(dirEnv);
+  std::filesystem::create_directories(dir);
+
+  auto* dev = _device.GetDevice();
+
+  // One-shot allocator + command list (the frame's list is closed/presented).
+  ComPtr<ID3D12CommandAllocator> alloc;
+  ComPtr<ID3D12GraphicsCommandList> list;
+  DX12Util::ThrowIfFailed(dev->CreateCommandAllocator(
+      D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc)), "dump alloc");
+  DX12Util::ThrowIfFailed(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+      alloc.Get(), nullptr, IID_PPV_ARGS(&list)), "dump list");
+  list->Close();
+  alloc->Reset();
+  list->Reset(alloc.Get(), nullptr);
+
+  // --- helper: readback staging buffer with copy footprints for a texture ---
+  auto copyTexToBuf = [&](ID3D12Resource* tex, D3D12_RESOURCE_STATES before,
+                          UINT firstSlice, UINT numSlices,
+                          ComPtr<ID3D12Resource>& outBuf,
+                          std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT>& footprints,
+                          UINT64& totalSize) {
+    D3D12_RESOURCE_DESC d = tex->GetDesc();
+    UINT numSub = d.MipLevels * d.DepthOrArraySize;
+    footprints.resize(numSlices);
+    // footprint for the requested contiguous slice range
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> all(numSub);
+    // pNumRows/pRowSizeInBytes are PER-SUBRESOURCE arrays, not scalars.
+    std::vector<UINT> numRowsVec(numSlices, 0);
+    UINT64 size = 0;
+    dev->GetCopyableFootprints(&d, firstSlice, numSlices, 0, all.data(),
+                               numRowsVec.data(), nullptr, &size);
+    UINT64 offset = 0;
+    for (UINT i = 0; i < numSlices; ++i) {
+      footprints[i] = all[i];
+      footprints[i].Offset = offset;
+      offset += (UINT64)all[i].Footprint.RowPitch * all[i].Footprint.Height;
+      offset = (offset + 511) & ~511ull; // D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT
+    }
+    totalSize = offset;
+    D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = totalSize; bd.Height = 1; bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1; bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&hp,
+        D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&outBuf)), "dump staging");
+
+    // transition in, copies, transition back
+    DX12Util::TransitionBarrier(list.Get(), tex, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    for (UINT i = 0; i < numSlices; ++i) {
+      D3D12_TEXTURE_COPY_LOCATION dst = {};
+      dst.pResource = outBuf.Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      dst.PlacedFootprint = footprints[i];
+      D3D12_TEXTURE_COPY_LOCATION src = {};
+      src.pResource = tex;
+      src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      src.SubresourceIndex = firstSlice + i;
+      list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    DX12Util::TransitionBarrier(list.Get(), tex,
+        D3D12_RESOURCE_STATE_COPY_SOURCE, before);
+  };
+
+  // --- helper: readback whole buffer ---
+  auto copyBuf = [&](ID3D12Resource* buf, D3D12_RESOURCE_STATES before,
+                     ComPtr<ID3D12Resource>& outBuf) {
+    UINT64 sz = buf->GetDesc().Width;
+    D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = sz; bd.Height = 1; bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1; bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&hp,
+        D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&outBuf)), "dump staging buf");
+    DX12Util::TransitionBarrier(list.Get(), buf, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyBufferRegion(outBuf.Get(), 0, buf, 0, sz);
+    DX12Util::TransitionBarrier(list.Get(), buf,
+        D3D12_RESOURCE_STATE_COPY_SOURCE, before);
+  };
+
+  // --- PPM writer ---
+  auto writePPM = [&](const std::filesystem::path& p, uint32_t w, uint32_t h,
+                      const std::vector<uint8_t>& rgb) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, p.string().c_str(), "wb") == 0 && f) {
+      fprintf(f, "P6\n%u %u\n255\n", w, h);
+      fwrite(rgb.data(), 1, rgb.size(), f);
+      fclose(f);
+    }
+  };
+
+  // half -> float
+  auto hf = [](uint16_t v) -> float {
+    uint32_t sign = (v >> 15) & 1, exp = (v >> 10) & 0x1f, man = v & 0x3ff;
+    uint32_t bits;
+    if (exp == 0) bits = (sign << 31) | (man << 13); // subnormal -> tiny
+    else if (exp == 31) bits = (sign << 31) | 0x7f800000u | (man << 13);
+    else bits = (sign << 31) | ((exp - 15 + 127) << 23) | (man << 13);
+    float f; memcpy(&f, &bits, 4); return f;
+  };
+  auto sat = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+
+  ComPtr<ID3D12Resource> hdrBuf, spotBuf, csmBuf, sliBuf, pliBuf;
+  std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> hdrFp, spotFp, csmFp;
+  UINT64 sz = 0;
+
+  // HDR buffer (post-lighting, pre-resolve). State after Draw: RENDER_TARGET.
+  copyTexToBuf(_hdrBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+               0, 1, hdrBuf, hdrFp, sz);
+  // Spot shadow array (all slices). State: PIXEL_SHADER_RESOURCE.
+  UINT spotSlices = std::min<UINT>((UINT)_spotLights.size(), MAX_SPOT_SHADOWS);
+  if (_spotShadowMapArray && spotSlices > 0)
+    copyTexToBuf(_spotShadowMapArray.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                 0, spotSlices, spotBuf, spotFp, sz);
+  // CSM cascades. State: DEPTH_WRITE.
+  if (_shadowMapArray)
+    copyTexToBuf(_shadowMapArray.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                 0, SHADOW_CASCADE_COUNT, csmBuf, csmFp, sz);
+  // Tile index buffers. State: COMMON (restored at end of deferred).
+  if (_spotLightIndicesBuffer)
+    copyBuf(_spotLightIndicesBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, sliBuf);
+  if (_lightIndicesBuffer)
+    copyBuf(_lightIndicesBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, pliBuf);
+
+  // Scatter accum volume (3D, single subresource — NOT the 2D-array layout the
+  // helper above assumes). Rests in PSR after a scatter frame, UAV otherwise.
+  ComPtr<ID3D12Resource> scatterBuf;
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT scatterFp = {};
+  if (_scatterAccumVolume) {
+    D3D12_RESOURCE_DESC d = _scatterAccumVolume->GetDesc();
+    UINT numRows = 0; UINT64 scSize = 0;
+    dev->GetCopyableFootprints(&d, 0, 1, 0, &scatterFp, &numRows, nullptr, &scSize);
+    D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = scSize; bd.Height = 1; bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1; bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&scatterBuf)), "scatter staging");
+    D3D12_RESOURCE_STATES before = _scatterAccumIsInPSR
+        ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+        : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    DX12Util::TransitionBarrier(list.Get(), _scatterAccumVolume.Get(), before,
+        D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = scatterBuf.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = scatterFp;
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = _scatterAccumVolume.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    DX12Util::TransitionBarrier(list.Get(), _scatterAccumVolume.Get(),
+        D3D12_RESOURCE_STATE_COPY_SOURCE, before);
+  }
+
+  list->Close();
+  ID3D12CommandList* lists[] = { list.Get() };
+  _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+  FlushCommandQueue();
+  spdlog::info("DX12 dump: analyzing");
+
+  // ================= analysis =================
+  // 1. HDR: stats + ACES-tonemapped PPM
+  if (hdrBuf) {
+    const auto& fp = hdrFp[0].Footprint;
+    uint32_t w = fp.Width, h = fp.Height;
+    uint16_t* mapped = nullptr;
+    if (SUCCEEDED(hdrBuf->Map(0, nullptr, (void**)&mapped))) {
+      std::vector<uint8_t> rgb((size_t)w * h * 3);
+      float mn[4] = {1e30f,1e30f,1e30f,1e30f}, mx[4] = {-1e30f,-1e30f,-1e30f,-1e30f};
+      double sum[4] = {0,0,0,0};
+      size_t px = 0; // byte offset into rgb (3 bytes per pixel)
+      for (uint32_t y = 0; y < h; ++y) {
+        const uint16_t* row = mapped + (size_t)y * (fp.RowPitch / 2);
+        for (uint32_t x = 0; x < w; ++x, px += 3) {
+          float v[4];
+          for (int c = 0; c < 4; ++c) {
+            v[c] = hf(row[(size_t)x * 4 + c]);
+            mn[c] = (std::min)(mn[c], v[c]); mx[c] = (std::max)(mx[c], v[c]);
+            sum[c] += v[c];
+          }
+          // ACES (same curve as resolve.hlsl), then sRGB gamma
+          float ex = _frameConstants.exposure;
+          for (int c = 0; c < 3; ++c) {
+            float t = v[c] * ex;
+            t = sat((t * (2.51f * t + 0.03f)) / (t * (2.43f * t + 0.59f) + 0.14f));
+            t = std::pow(t, 1.0f / 2.2f);
+            rgb[px + c] = (uint8_t)(t * 255.0f + 0.5f);
+          }
+        }
+      }
+      hdrBuf->Unmap(0, nullptr);
+      writePPM(dir / "hdr_tonemapped.ppm", w, h, rgb);
+      FILE* f = nullptr;
+      if (fopen_s(&f, (dir / "hdr_stats.txt").string().c_str(), "w") == 0 && f) {
+        fprintf(f, "HDR buffer %ux%u RGBA16F (pre-resolve, linear):\n", w, h);
+        for (int c = 0; c < 4; ++c)
+          fprintf(f, "  ch%d: min=%.4f max=%.4f mean=%.4f\n", c, mn[c], mx[c],
+                  sum[c] / (double)(w * h));
+        fprintf(f, "exposure=%.4f taaEnabled=%u\n", _frameConstants.exposure,
+                _frameConstants.taaEnabled);
+        fclose(f);
+      }
+    }
+  }
+
+  // 2. Spot shadows: per-slice stats + slice 0 PPM (depth: white=clear 1.0)
+  if (spotBuf) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, (dir / "spotshadow_stats.txt").string().c_str(), "w") == 0 && f) {
+      float* mapped = nullptr;
+      if (SUCCEEDED(spotBuf->Map(0, nullptr, (void**)&mapped))) {
+      for (UINT s = 0; s < spotSlices; ++s) {
+        const auto& fp = spotFp[s].Footprint;
+        const float* base = (const float*)((uint8_t*)mapped + spotFp[s].Offset);
+        float mn = 1e30f, mx = -1e30f; double sum = 0; uint32_t lit = 0;
+        for (uint32_t y = 0; y < fp.Height; ++y)
+          for (uint32_t x = 0; x < fp.Width; ++x) {
+            float d = base[(size_t)y * (fp.RowPitch / 4) + x];
+            mn = (std::min)(mn, d); mx = (std::max)(mx, d); sum += d;
+            if (d < 0.999f) ++lit;
+          }
+        fprintf(f, "slice %2u (%ux%u): min=%.4f max=%.4f mean=%.4f geometry-px=%.2f%%\n",
+                s, fp.Width, fp.Height, mn, mx, sum / (fp.Width * (double)fp.Height),
+                100.0 * lit / (fp.Width * (double)fp.Height));
+        if (s == 0) {
+          std::vector<uint8_t> rgb((size_t)fp.Width * fp.Height * 3);
+          for (uint32_t y = 0; y < fp.Height; ++y)
+            for (uint32_t x = 0; x < fp.Width; ++x) {
+              float d = base[(size_t)y * (fp.RowPitch / 4) + x];
+              uint8_t g = (uint8_t)(sat(d) * 255.0f + 0.5f);
+              size_t i = ((size_t)y * fp.Width + x) * 3;
+              rgb[i] = rgb[i+1] = rgb[i+2] = g;
+            }
+          writePPM(dir / "spotshadow_0.ppm", fp.Width, fp.Height, rgb);
+        }
+      }
+      spotBuf->Unmap(0, nullptr);
+      }
+      fclose(f);
+    }
+  }
+
+  // 3. CSM cascades: stats
+  if (csmBuf) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, (dir / "csm_stats.txt").string().c_str(), "w") == 0 && f) {
+      float* mapped = nullptr;
+      if (SUCCEEDED(csmBuf->Map(0, nullptr, (void**)&mapped))) {
+        for (UINT s = 0; s < SHADOW_CASCADE_COUNT; ++s) {
+          const auto& fp = csmFp[s].Footprint;
+          const float* base = (const float*)((uint8_t*)mapped + csmFp[s].Offset);
+          float mn = 1e30f, mx = -1e30f; double sum = 0; uint32_t lit = 0;
+          for (uint32_t y = 0; y < fp.Height; ++y)
+            for (uint32_t x = 0; x < fp.Width; ++x) {
+              float d = base[(size_t)y * (fp.RowPitch / 4) + x];
+              mn = (std::min)(mn, d); mx = (std::max)(mx, d); sum += d;
+              if (d < 0.999f) ++lit;
+            }
+          fprintf(f, "cascade %u (%ux%u): min=%.4f max=%.4f mean=%.4f geometry-px=%.2f%%\n",
+                  s, fp.Width, fp.Height, mn, mx,
+                  sum / (fp.Width * (double)fp.Height),
+                  100.0 * lit / (fp.Width * (double)fp.Height));
+        }
+        csmBuf->Unmap(0, nullptr);
+      }
+      fclose(f);
+    }
+  }
+
+  // 4. Tile light-index counts (first 400 tiles)
+  if (sliBuf && pliBuf) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, (dir / "tile_stats.txt").string().c_str(), "w") == 0 && f) {
+      uint32_t* sm = nullptr; uint32_t* pm = nullptr;
+      if (SUCCEEDED(sliBuf->Map(0, nullptr, (void**)&sm)) &&
+          SUCCEEDED(pliBuf->Map(0, nullptr, (void**)&pm))) {
+        uint32_t tileW = (_device.GetWidth() + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        uint32_t tileH = (_device.GetHeight() + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        uint32_t tiles = std::min<uint32_t>(tileW * tileH, 400);
+        uint32_t spotTot = 0, ptTot = 0, spotTiles = 0, ptTiles = 0;
+        for (uint32_t t = 0; t < tileW * tileH; ++t) {
+          uint32_t sc = sm[(size_t)t * MAX_LIGHTS_PER_TILE_LC];
+          uint32_t pc = pm[(size_t)t * MAX_LIGHTS_PER_TILE_LC];
+          spotTot += (std::min)(sc, 63u); ptTot += (std::min)(pc, 63u);
+          if (sc > 0) spotTiles++;
+          if (pc > 0) ptTiles++;
+          if (t < tiles)
+            fprintf(f, "tile %3u (row %2u col %2u): points=%u spots=%u\n", t,
+                    t / tileW, t % tileW, pc, sc);
+        }
+        fprintf(f, "\nSUMMARY: tiles=%u  tiles-with-points=%u (avg %.2f)  tiles-with-spots=%u (avg %.2f)\n",
+                tileW * tileH, ptTiles, (double)ptTot / (tileW * (double)tileH),
+                spotTiles, (double)spotTot / (tileW * (double)tileH));
+        sliBuf->Unmap(0, nullptr);
+        pliBuf->Unmap(0, nullptr);
+      }
+      fclose(f);
+    }
+  }
+
+  // 5. Scatter accum volume: per-depth-slice stats. Physics check: alpha
+  // (transmittance) must be monotonically non-increasing with depth, rgb
+  // (accumulated inscatter) non-decreasing; near slices ~1.0 alpha, far < 1.
+  if (scatterBuf) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, (dir / "scatter_stats.txt").string().c_str(), "w") == 0 && f) {
+      uint16_t* mapped = nullptr;
+      if (SUCCEEDED(scatterBuf->Map(0, nullptr, (void**)&mapped))) {
+        const auto& fp = scatterFp.Footprint;
+        fprintf(f, "Scatter accum %ux%ux%u RGBA16F (rgb=inscatter, a=transmittance):\n",
+                fp.Width, fp.Height, fp.Depth);
+        float prevAlpha = 1.0f, prevLum = -1.0f;
+        bool alphaMono = true, lumMono = true;
+        double alphaFirst = 0, alphaLast = 0, lumLast = 0;
+        for (UINT z = 0; z < fp.Depth; ++z) {
+          float aMn = 1e30f, aMx = -1e30f, lumMn = 1e30f, lumMx = -1e30f;
+          double aSum = 0, rSum = 0, gSum = 0, bSum = 0, lumSum = 0;
+          for (uint32_t y = 0; y < fp.Height; ++y) {
+            const uint16_t* row = mapped +
+                ((size_t)z * fp.Height + y) * (fp.RowPitch / 2);
+            for (uint32_t x = 0; x < fp.Width; ++x) {
+              float r = hf(row[(size_t)x * 4 + 0]);
+              float g = hf(row[(size_t)x * 4 + 1]);
+              float b = hf(row[(size_t)x * 4 + 2]);
+              float a = hf(row[(size_t)x * 4 + 3]);
+              aMn = (std::min)(aMn, a); aMx = (std::max)(aMx, a);
+              float lum = r * 0.2126f + g * 0.7152f + b * 0.0722f;
+              lumMn = (std::min)(lumMn, lum); lumMx = (std::max)(lumMx, lum);
+              aSum += a; rSum += r; gSum += g; bSum += b; lumSum += lum;
+            }
+          }
+          double n = fp.Width * (double)fp.Height;
+          float aMean = (float)(aSum / n), lumMean = (float)(lumSum / n);
+          if (z == 0) { alphaFirst = aSum / n; }
+          alphaLast = aSum / n; lumLast = lumSum / n;
+          if (aMean > prevAlpha + 1e-4f) alphaMono = false;
+          if (lumMean < prevLum - 1e-4f) lumMono = false;
+          prevAlpha = aMean; prevLum = lumMean;
+          if (z % 8 == 0 || z == fp.Depth - 1)
+            fprintf(f, "  z=%2u: a[min=%.4f mean=%.4f max=%.4f]  rgb-mean=(%.5f,%.5f,%.5f)\n",
+                    z, aMn, aMean, aMx, rSum / n, gSum / n, bSum / n);
+        }
+        fprintf(f, "alpha(first=%.4f last=%.4f) lum(first-slices~%.4f last=%.4f)\n",
+                alphaFirst, alphaLast, prevLum, lumLast);
+        fprintf(f, "monotonic: alpha-nonincreasing=%s rgb-nondecreasing=%s\n",
+                alphaMono ? "YES" : "NO", lumMono ? "YES" : "NO");
+        scatterBuf->Unmap(0, nullptr);
+      }
+      fclose(f);
+    }
+  }
+
+  spdlog::info("DX12: Debug frame dumped to '{}'", dirEnv);
 }
 
 // ---- Create Command Signature for ExecuteIndirect ----
@@ -1812,7 +2620,7 @@ void DX12GpuScene::FlushCommandQueue() {
   _device.WaitForGpu();
 }
 
-// ---- Texture streaming pipeline(镜像 GpuScene.cpp 的 Vulkan 路径)----
+// ---- Texture streaming pipeline(闀滃儚 GpuScene.cpp 鐨?Vulkan 璺緞)----
 void DX12GpuScene::initTextureStreaming() {
   _retiredResources.resize(DX12Device::FRAME_COUNT);
   auto* dev = _device.GetDevice();
@@ -1833,7 +2641,7 @@ void DX12GpuScene::shutdownTextureStreaming() {
   _pendingCv.notify_all();
   if (_streamingThread.joinable()) _streamingThread.join();
   _pendingWorks.clear();
-  _cpuCompletedWorks.clear(); // ComPtr 自动释放
+  _cpuCompletedWorks.clear(); // ComPtr 鑷姩閲婃斁
   for (auto& slot : _retiredResources) slot.clear();
 }
 
@@ -1844,7 +2652,7 @@ void DX12GpuScene::dispatchStreamingRequest(size_t entryIndex) {
   work.targetMip = entry.requiredMip;
   work.snapshotCurrentMip = entry.currentMip;
   work.snapshotSource = _textures[entryIndex];
-  // 先入队前置位,防下一帧重复 dispatch(对齐 GpuScene.cpp:5442)
+  // 鍏堝叆闃熷墠缃綅,闃蹭笅涓€甯ч噸澶?dispatch(瀵归綈 GpuScene.cpp:5442)
   entry.inFlight = true;
   {
     std::lock_guard<std::mutex> lock(_pendingMutex);
@@ -1854,8 +2662,8 @@ void DX12GpuScene::dispatchStreamingRequest(size_t entryIndex) {
 }
 
 void DX12GpuScene::blitThreadFunc() {
-  // CPU-only:建替代纹理、解压新 mip 进 staging。GPU 命令在主线程录制。
-  // (D3D12 device 方法 free-threaded;命令录制/Execute/SRV 重写在主线程。)
+  // CPU-only:寤烘浛浠ｇ汗鐞嗐€佽В鍘嬫柊 mip 杩?staging銆侴PU 鍛戒护鍦ㄤ富绾跨▼褰曞埗銆?
+  // (D3D12 device 鏂规硶 free-threaded;鍛戒护褰曞埗/Execute/SRV 閲嶅啓鍦ㄤ富绾跨▼銆?
   namespace TSP = DX12TextureStreamingPolicy;
   while (_streamingThreadRunning) {
     std::unique_lock<std::mutex> lock(_pendingMutex);
@@ -1916,7 +2724,7 @@ void DX12GpuScene::blitThreadFunc() {
                 desc._pixelDataOffset + desc._mipOffsets[srcMip];
             auto [mipData, mipSize] = decompressToHeap(compressedSrc,
                 desc._mipLengths[srcMip]);
-            // 紧密行距 -> 256 对齐行距
+            // 绱у瘑琛岃窛 -> 256 瀵归綈琛岃窛
             for (uint32_t row = 0; row < copy.blockRows; ++row) {
               memcpy((uint8_t*)mapped + copy.stagingOffset + row * copy.rowPitch,
                      (uint8_t*)mipData + row * copy.srcRowPitch, copy.srcRowPitch);
@@ -1927,7 +2735,7 @@ void DX12GpuScene::blitThreadFunc() {
         }
       } catch (const std::exception& e) {
         spdlog::warn("DX12 streaming: work failed: {}", e.what());
-        cpuWork.newTexture.Reset(); // 主线程按失败 work 处理:只复位 inFlight
+        cpuWork.newTexture.Reset(); // 涓荤嚎绋嬫寜澶辫触 work 澶勭悊:鍙浣?inFlight
         cpuWork.staging.Reset();
       }
       {
@@ -1948,22 +2756,22 @@ void DX12GpuScene::processStreamingWork() {
 
   auto* dev = _device.GetDevice();
 
-  // 动 static(shader-visible)SRV slot 或 transition 旧纹理前必须 GPU 空闲:
-  // 所有 in-flight 帧共享这份描述符堆。对等于 Vulkan processStreamingWork
-  // 内 endSingleTimeCommands 的 vkQueueWaitIdle——只在真有 work 完成时发生。
+  // 鍔?static(shader-visible)SRV slot 鎴?transition 鏃х汗鐞嗗墠蹇呴』 GPU 绌洪棽:
+  // 鎵€鏈?in-flight 甯у叡浜繖浠芥弿杩扮鍫嗐€傚绛変簬 Vulkan processStreamingWork
+  // 鍐?endSingleTimeCommands 鐨?vkQueueWaitIdle鈥斺€斿彧鍦ㄧ湡鏈?work 瀹屾垚鏃跺彂鐢熴€?
   _device.WaitForGpu();
 
   _streamingCmdAllocator->Reset();
   _streamingCmdList->Reset(_streamingCmdAllocator.Get(), nullptr);
 
   for (auto& work : workItems) {
-    if (!work.newTexture) continue; // 后台失败;inFlight 在下面统一复位
+    if (!work.newTexture) continue; // 鍚庡彴澶辫触;inFlight 鍦ㄤ笅闈㈢粺涓€澶嶄綅
 
     if (!work.plan.imageCopies.empty() && work.sourceTexture) {
       DX12Util::TransitionBarrier(_streamingCmdList.Get(), work.sourceTexture.Get(),
           D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
     }
-    // 共享 mip:old -> new
+    // 鍏变韩 mip:old -> new
     for (const auto& copy : work.plan.imageCopies) {
       D3D12_TEXTURE_COPY_LOCATION dst = {};
       dst.pResource = work.newTexture.Get();
@@ -1973,12 +2781,12 @@ void DX12GpuScene::processStreamingWork() {
       src.pResource = work.sourceTexture.Get();
       src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
       src.SubresourceIndex = copy.srcSubresource;
-      // 全 subresource copy,传 nullptr box:BC 格式的 src box 必须 4x4 块对齐
-      // (#873 COPYTEXTUREREGION_INVALIDSRCBOX),尾部 1x1/2x2 mip 与非 4 倍数
-      // 尺寸会触发;空 box 等价 CopySubresourceRegion,绕开对齐校验。
+      // 鍏?subresource copy,浼?nullptr box:BC 鏍煎紡鐨?src box 蹇呴』 4x4 鍧楀榻?
+      // (#873 COPYTEXTUREREGION_INVALIDSRCBOX),灏鹃儴 1x1/2x2 mip 涓庨潪 4 鍊嶆暟
+      // 灏哄浼氳Е鍙?绌?box 绛変环 CopySubresourceRegion,缁曞紑瀵归綈鏍￠獙銆?
       _streamingCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     }
-    // 新 mip:staging -> new
+    // 鏂?mip:staging -> new
     for (const auto& copy : work.plan.bufferCopies) {
       D3D12_TEXTURE_COPY_LOCATION dst = {};
       dst.pResource = work.newTexture.Get();
@@ -1995,15 +2803,15 @@ void DX12GpuScene::processStreamingWork() {
       src.PlacedFootprint.Footprint.RowPitch = copy.rowPitch;
       _streamingCmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     }
-    // 新纹理出生即 COPY_DEST,无需进入 barrier;旧纹理不转回(即将退役)
+    // 鏂扮汗鐞嗗嚭鐢熷嵆 COPY_DEST,鏃犻渶杩涘叆 barrier;鏃х汗鐞嗕笉杞洖(鍗冲皢閫€褰?
     DX12Util::TransitionBarrier(_streamingCmdList.Get(), work.newTexture.Get(),
         D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
   }
 
-  // Close 会返回录制期间的首个校验错误(如有)。出错时绝不能 Execute/swap:
-  // 否则中毒列表滞留资源引用,而 swap 又改写 SRV/退役旧纹理——
-  // 状态腐败级联到 OBJECT_DELETED_WHILE_STILL_IN_USE 直至 device removed。
-  // 这里整批放弃:只复位 inFlight(下帧重试),list 留待下次 Reset。
+  // Close 浼氳繑鍥炲綍鍒舵湡闂寸殑棣栦釜鏍￠獙閿欒(濡傛湁)銆傚嚭閿欐椂缁濅笉鑳?Execute/swap:
+  // 鍚﹀垯涓瘨鍒楄〃婊炵暀璧勬簮寮曠敤,鑰?swap 鍙堟敼鍐?SRV/閫€褰规棫绾圭悊鈥斺€?
+  // 鐘舵€佽厫璐ョ骇鑱斿埌 OBJECT_DELETED_WHILE_STILL_IN_USE 鐩磋嚦 device removed銆?
+  // 杩欓噷鏁存壒鏀惧純:鍙浣?inFlight(涓嬪抚閲嶈瘯),list 鐣欏緟涓嬫 Reset銆?
   HRESULT closeHr = _streamingCmdList->Close();
   if (FAILED(closeHr)) {
     spdlog::error("DX12 streaming: cmd list close failed (HRESULT: 0x{:08X}), batch dropped",
@@ -2015,8 +2823,8 @@ void DX12GpuScene::processStreamingWork() {
   ID3D12CommandList* lists[] = { _streamingCmdList.Get() };
   _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
 
-  // CPU 侧 swap。GPU 跑 copy 时重写 SRV slot 合法:copy 不读描述符;
-  // 之后录制的命令列表见到的已是新描述符(spec §4)。
+  // CPU 渚?swap銆侴PU 璺?copy 鏃堕噸鍐?SRV slot 鍚堟硶:copy 涓嶈鎻忚堪绗?
+  // 涔嬪悗褰曞埗鐨勫懡浠ゅ垪琛ㄨ鍒扮殑宸叉槸鏂版弿杩扮(spec 搂4)銆?
   for (auto& work : workItems) {
     auto& entry = _streamEntries[work.entryIndex];
     entry.inFlight = false;
@@ -2031,7 +2839,7 @@ void DX12GpuScene::processStreamingWork() {
     dev->CreateShaderResourceView(work.newTexture.Get(), &srvDesc,
         _cbvSrvUavHeap.GetStaticCPU(SRV_BINDLESS_START + (uint32_t)work.entryIndex));
 
-    // 旧纹理 + staging 退役:Draw 开头随帧槽 fence 清空,无需二次 stall
+    // 鏃х汗鐞?+ staging 閫€褰?Draw 寮€澶撮殢甯фЫ fence 娓呯┖,鏃犻渶浜屾 stall
     if (work.sourceTexture)
       _retiredResources[_currentFrame].push_back(work.sourceTexture);
     if (work.staging)
@@ -2044,7 +2852,7 @@ void DX12GpuScene::processStreamingWork() {
   }
 }
 
-// 球-AABB 视锥测试(直抄 GpuScene.cpp:5351 的 file-static)
+// 鐞?AABB 瑙嗛敟娴嬭瘯(鐩存妱 GpuScene.cpp:5351 鐨?file-static)
 static bool SphereInFrustum(const Frustum& frustum, const AAPLSphere& sphere) {
   AAPLBoundingBox3 aabb;
   aabb.min.x = sphere.data.x - sphere.data.w;
@@ -2062,14 +2870,14 @@ void DX12GpuScene::UpdateTextureStreaming() {
 
   namespace TSP = DX12TextureStreamingPolicy;
 
-  // 1. reset requiredMip 到 permanent(允许驱逐回去的最粗 mip)
+  // 1. reset requiredMip 鍒?permanent(鍏佽椹遍€愬洖鍘荤殑鏈€绮?mip)
   for (auto& e : _streamEntries) {
     e.requiredMip = TSP::CalculateMinMip(e.desc->_width, e.desc->_height,
                                          e.totalMips, TSP::PERMANENT_TEXTURE_SIZE);
   }
 
-  // 2. 逐 submesh 覆盖度(镜像 GpuScene.cpp:5784-5832;只取 proj[0][0] 与
-  //    view z,与 NDC Y / 负高度 viewport / mat4 存储约定无关)
+  // 2. 閫?submesh 瑕嗙洊搴?闀滃儚 GpuScene.cpp:5784-5832;鍙彇 proj[0][0] 涓?
+  //    view z,涓?NDC Y / 璐熼珮搴?viewport / mat4 瀛樺偍绾﹀畾鏃犲叧)
   Camera* cam = _mainCamera;
   if (cam && _subMeshes && _applMesh && _cpuMaterials) {
     mat4 viewMatrix = cam->getObjectToCamera();
@@ -2093,7 +2901,7 @@ void DX12GpuScene::UpdateTextureStreaming() {
       if (matIndex >= _applMesh->_materialCount) continue;
       const AAPLMaterial& cpuMat = _cpuMaterials[matIndex];
 
-      // MIN 累积:最近的 submesh 赢(对齐 GpuScene.cpp::setRequiredMip)
+      // MIN 绱Н:鏈€杩戠殑 submesh 璧?瀵归綈 GpuScene.cpp::setRequiredMip)
       auto require = [&](uint32_t hash) {
         auto it = _streamEntryMap.find(hash);
         if (it == _streamEntryMap.end()) return;
@@ -2113,19 +2921,19 @@ void DX12GpuScene::UpdateTextureStreaming() {
   for (auto& e : _streamEntries)
     if (e.requiredMip != e.currentMip) ++_streamWantUpgrade;
 
-  // 3. 清空本帧槽的退役资源——必须先于 dispatch/processStreamingWork:
-  //    后者会往同一槽压新退役资源(copy 刚提交仍在途)。安全性:Draw 开头
-  //    _currentFrame 槽的上轮 fence 已被 MoveToNextFrame 等过(spec §3 步 3)。
+  // 3. 娓呯┖鏈抚妲界殑閫€褰硅祫婧愨€斺€斿繀椤诲厛浜?dispatch/processStreamingWork:
+  //    鍚庤€呬細寰€鍚屼竴妲藉帇鏂伴€€褰硅祫婧?copy 鍒氭彁浜や粛鍦ㄩ€?銆傚畨鍏ㄦ€?Draw 寮€澶?
+  //    _currentFrame 妲界殑涓婅疆 fence 宸茶 MoveToNextFrame 绛夎繃(spec 搂3 姝?3)銆?
   _retiredResources[_currentFrame].clear();
 
-  // 4. dispatch(跳过在途条目)
+  // 4. dispatch(璺宠繃鍦ㄩ€旀潯鐩?
   for (size_t i = 0; i < _streamEntries.size(); ++i) {
     auto& e = _streamEntries[i];
     if (e.currentMip != e.requiredMip && !e.inFlight)
       dispatchStreamingRequest(i);
   }
 
-  // 5. 消费后台完成的 work(GPU copy + swap,本线程)
+  // 5. 娑堣垂鍚庡彴瀹屾垚鐨?work(GPU copy + swap,鏈嚎绋?
   processStreamingWork();
 }
 
@@ -2137,6 +2945,12 @@ void DX12GpuScene::UpdateUniforms() {
   _frameConstants.farPlane = _mainCamera->Far();
   static uint32_t sFrameCounter = 0;
   _frameConstants.frameCounter = sFrameCounter++;
+  // Wind-animated noise offset for the scatter volume's Perlin fog detail
+  // (Vulkan parity, GpuScene.cpp:3942-3944: ~0.5 m/s horizontal wind).
+  {
+    float t = (float)_frameConstants.frameCounter * 0.016f;
+    _frameConstants.globalNoiseOffset = vec3(t * 0.5f, 0.0f, t * 0.3f);
+  }
   _frameConstants.physicalSize = vec2((float)_device.GetWidth(), (float)_device.GetHeight());
 
   // Build FrameData
@@ -2148,7 +2962,12 @@ void DX12GpuScene::UpdateUniforms() {
     for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
       float range = cascadeSplits[i];
       vec3 center = _mainCamera->GetOrigin() + _mainCamera->GetCameraDir() * (range * 0.5f);
-      vec3 eye = center + sunDir * range;
+      // D2 (Vulkan parity, Shadow.cpp:131): retreat a FIXED 100 units along
+      // the sun direction and use a fixed 200-unit far plane. Retreating by
+      // only `range` near-clipped tall casters standing between the shadow
+      // eye and the ground (a 10-unit tree vs. a 3-unit retreat), so their
+      // shadows went missing from the near cascade.
+      vec3 eye = center + sunDir * 100.0f;
       // Must use invLookAt (same convention as Camera::getObjectToCamera): the
       // mat4 members hold the ROWS of the math matrix, and the upload below
       // transposes them so HLSL's column-major cbuffer sees the matrix itself.
@@ -2163,7 +2982,7 @@ void DX12GpuScene::UpdateUniforms() {
       // right matrix. A non-zero near lands -n/(f-n) in what HLSL reads as
       // row 3 col 2, making clip.w != 1. Vulkan (Shadow.cpp) passes 0 too.
       _shadowProjectionMatrices[i] = orthographic(range * 2.0f, range * 2.0f,
-          0.0f, range * 4.0f, 0, 0);
+          0.0f, 200.0f, 0, 0);
 
       // Record the same box invLookAt/orthographic just encoded, in explicit
       // world-space terms, for the GPU cull frustum (see BuildCascadeFrustum).
@@ -2175,7 +2994,7 @@ void DX12GpuScene::UpdateUniforms() {
       box.axisX = normalize(vec3(0, 1, 0).cross(box.axisZ));
       box.axisY = box.axisZ.cross(box.axisX);
       box.halfExtent = range;      // orthographic() width/height = range * 2
-      box.farZ       = range * 4.0f;
+      box.farZ       = 200.0f;     // matches the fixed far plane above
     }
     frameData.camConstants.shadowProjectionMatrix0 = transpose(_shadowProjectionMatrices[0]);
     frameData.camConstants.shadowViewMatrix0 = transpose(_shadowViewMatrices[0]);
@@ -2184,23 +3003,6 @@ void DX12GpuScene::UpdateUniforms() {
     frameData.camConstants.shadowProjectionMatrix2 = transpose(_shadowProjectionMatrices[2]);
     frameData.camConstants.shadowViewMatrix2 = transpose(_shadowViewMatrices[2]);
   }
-  frameData.camConstants.projectionMatrix = transpose(_mainCamera->getProjectMatrix());
-  frameData.camConstants.viewMatrix = transpose(_mainCamera->getObjectToCamera());
-  frameData.camConstants.invViewMatrix = transpose(_mainCamera->getInvViewMatrix());
-  frameData.camConstants.invViewProjectionMatrix = transpose(_mainCamera->getInvViewProjectionMatrix());
-  frameData.camConstants.invProjectionMatrix = transpose(inverse(_mainCamera->getProjectMatrix()));
-
-  // prevViewProjectionMatrix for TAA reprojection:
-  // With mat4 quirk (A*B = math B*A), view*proj gives the mathematical VP.
-  // Must be transposed before uploading (HLSL row-major convention).
-  {
-    static mat4 sPrevVP = mat4(1.0f);
-    frameData.camConstants.prevViewProjectionMatrix = transpose(sPrevVP);
-    // Save current VP for next frame: view * proj = mathematical VP (due to quirk)
-    mat4 curVP = _mainCamera->getObjectToCamera() * _mainCamera->getProjectMatrix();
-    sPrevVP = curVP;
-  }
-
   // Halton jitter for TAA (base 2 and base 3)
   {
     static auto halton = [](uint32_t i, uint32_t base) -> float {
@@ -2217,6 +3019,39 @@ void DX12GpuScene::UpdateUniforms() {
                                            1.0f / (float)_device.GetHeight());
   }
 
+  // TAA sub-pixel jitter on the projection used for vertex shading (Vulkan
+  // parity, GpuScene.cpp:3980): m[2].w scales z into w, so scaling the jitter
+  // by it gives the exact NDC offset regardless of depth.
+  mat4 cleanProj = _mainCamera->getProjectMatrix();
+  mat4 jitteredProj = cleanProj;
+  if (_taaEnabled) {
+    float Zt = cleanProj[2].w;
+    jitteredProj[2][0] += _frameConstants.taaJitter.x * Zt;
+    jitteredProj[2][1] += _frameConstants.taaJitter.y * Zt;
+  }
+  _jitteredProj = jitteredProj; // reused by the GPU/light cull param uploads
+
+  mat4 cleanView = _mainCamera->getObjectToCamera();
+  frameData.camConstants.projectionMatrix = transpose(jitteredProj);
+  frameData.camConstants.viewMatrix = transpose(cleanView);
+  frameData.camConstants.invViewMatrix = transpose(_mainCamera->getInvViewMatrix());
+  // Jittered inverse VP so world-position reconstruction stays consistent
+  // with the jittered depth buffer (same as the Vulkan path).
+  frameData.camConstants.invViewProjectionMatrix =
+      transpose(inverse(cleanView * jitteredProj));
+  frameData.camConstants.invProjectionMatrix = transpose(inverse(cleanProj));
+
+  // prevViewProjectionMatrix for TAA reprojection:
+  // With mat4 quirk (A*B = math B*A), view*proj gives the mathematical VP.
+  // Must be transposed before uploading (HLSL row-major convention).
+  {
+    static mat4 sPrevVP = mat4(1.0f);
+    frameData.camConstants.prevViewProjectionMatrix = transpose(sPrevVP);
+    // Save the current JITTERED VP 鈥?the history lookup then compensates for
+    // the previous frame's sub-pixel offset, giving sharper accumulation.
+    sPrevVP = cleanView * jitteredProj;
+  }
+
   frameData.frameConstants = _frameConstants;
   frameData.frameConstants.scatterScale = DX12ScenePolicy::EffectiveScatterScale(
       _frameConstants.scatterScale, IsScatterReady());
@@ -2230,7 +3065,7 @@ void DX12GpuScene::CreateLights() {
   auto* cmdList = _device.GetCommandList();
 
   // Load point lights from the scene file (matches Vulkan GpuScene.cpp:2822).
-  // sqrt_radius is the SQUARED radius — the cull/lighting shaders use the
+  // sqrt_radius is the SQUARED radius 鈥?the cull/lighting shaders use the
   // sphere radius directly (posRadius.w), so take the square root here.
   if (_sceneFile.contains("point_lights")) {
     for (auto& j : _sceneFile["point_lights"]) {
@@ -2278,6 +3113,91 @@ void DX12GpuScene::CreateLights() {
     // uploadBuf stays alive until FlushCommandQueue returns
   }
 
+  // --- Spot lights from the scene file (mirrors Vulkan GpuScene.cpp:3399) ---
+  // Builds AAPLSpotLightCullingData directly: cos(inner/outer) precomputed,
+  // direction normalized, color.w = 卤1 opaque/transparent sign 鈥?the exact
+  // layout Light.cpp's GpuSpot upload produces on the Vulkan side.
+  if (_sceneFile.contains("spot_lights")) {
+    for (auto& j : _sceneFile["spot_lights"]) {
+      vec3 pos(j["position_x"].template get<float>(),
+               j["position_y"].template get<float>(),
+               j["position_z"].template get<float>());
+      vec3 color(j["color_r"].template get<float>(),
+                 j["color_g"].template get<float>(),
+                 j["color_b"].template get<float>());
+      float coneRad = j["coneRad"].template get<float>();
+      float height  = j["height"].template get<float>();
+      vec3 spotDir(j["direction_x"].template get<float>(),
+                   j["direction_y"].template get<float>(),
+                   j["direction_z"].template get<float>());
+      bool forTransparent = j["for_transparent"].template get<bool>();
+
+      // Apple's addSpotLight assumes a unit direction; normalize defensively.
+      float dirLen = spotDir.length();
+      if (dirLen > 1e-6f)
+        spotDir = vec3(spotDir.x / dirLen, spotDir.y / dirLen, spotDir.z / dirLen);
+
+      // Bounding sphere of the cone (same case split as Vulkan).
+      vec4 boundingSphere;
+      if (coneRad > M_PI_F / 4.0f) {
+        float R = height * tanf(coneRad);
+        boundingSphere = vec4(pos + spotDir * height, R);
+      } else {
+        float R = height / (2 * cos(coneRad) * cos(coneRad));
+        boundingSphere = vec4(pos + spotDir * R, R);
+      }
+
+      AAPLSpotLightCullingData sl;
+      sl.posRadius        = boundingSphere;
+      sl.posAndHeight     = vec4(pos, height);
+      sl.dirAndOuterAngle = vec4(spotDir, std::cos(coneRad));
+      sl.color            = vec4(color, forTransparent ? -1.0f : 1.0f);
+      sl.cosInnerAngle    = std::cos(coneRad * SPOT_LIGHT_INNER_SCALE);
+      sl._padSpot0 = sl._padSpot1 = sl._padSpot2 = 0.0f;
+      _spotLights.push_back(sl);
+
+      // Spot shadow view-projection, in the HLSL-ready transposed form:
+      // `transpose(spotP) * transpose(spotV)` evaluates (mat4 quirk) to the
+      // mathematical P*V stored as standard column-major bytes, so both the
+      // VS push constant and the deferred StructuredBuffer<float4x4> can use
+      // it verbatim with mul(matrix, worldPos). Same expression as Vulkan.
+      vec3 up = (fabsf(spotDir.y) < 0.99f) ? vec3(0.f, 1.f, 0.f) : vec3(0.f, 0.f, 1.f);
+      mat4 spotV = invLookAt(pos, up, spotDir);
+      mat4 spotP = perspective(2.0f * coneRad, 1.0f, 0.1f, height);
+      _spotViewProjMatrices.push_back(transpose(spotP) * transpose(spotV));
+    }
+    spdlog::info("DX12: Loaded {} spot lights from scene file", _spotLights.size());
+  }
+
+  // Upload spot light culling data + per-light view-proj matrices.
+  // Buffers always hold >= 1 element so the descriptors stay valid when the
+  // scene has zero spots (mirrors Vulkan's dummy-entry behavior).
+  {
+    size_t spotCount = std::max<size_t>(_spotLights.size(), 1);
+    std::vector<uint8_t> spotUpload(spotCount * sizeof(AAPLSpotLightCullingData), 0);
+    if (!_spotLights.empty())
+      memcpy(spotUpload.data(), _spotLights.data(),
+             _spotLights.size() * sizeof(AAPLSpotLightCullingData));
+
+    // t15 layout: MAX_SPOT_SHADOWS mat4s, zero-padded past the light count.
+    std::vector<uint8_t> vpUpload(MAX_SPOT_SHADOWS * sizeof(mat4), 0);
+    for (size_t i = 0; i < _spotViewProjMatrices.size() && i < MAX_SPOT_SHADOWS; ++i)
+      memcpy(vpUpload.data() + i * sizeof(mat4),
+             _spotViewProjMatrices[i].value_ptr(), sizeof(mat4));
+
+    ComPtr<ID3D12Resource> uploadA, uploadB;
+    _device.GetCommandAllocator(_currentFrame)->Reset();
+    cmdList->Reset(_device.GetCommandAllocator(_currentFrame), nullptr);
+    _spotLightBuffer = DX12Util::CreateDefaultBuffer(dev, cmdList,
+        spotUpload.data(), (UINT64)spotUpload.size(), uploadA);
+    _spotViewProjBuffer = DX12Util::CreateDefaultBuffer(dev, cmdList,
+        vpUpload.data(), (UINT64)vpUpload.size(), uploadB);
+    cmdList->Close();
+    ID3D12CommandList* lists[] = { cmdList };
+    _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
+  }
+
   // Allocate per-tile light output buffers
   uint32_t w = _device.GetWidth(), h = _device.GetHeight();
   uint32_t tileW = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
@@ -2293,7 +3213,7 @@ void DX12GpuScene::CreateLights() {
       (UINT64)maxSL * 8,
       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 
-  // Light index buffers: [count, idx0, idx1, ...] per tile × MAX_LIGHTS_PER_TILE
+  // Light index buffers: [count, idx0, idx1, ...] per tile 脳 MAX_LIGHTS_PER_TILE
   UINT64 idxBufSize = (UINT64)totalTiles * MAX_LIGHTS_PER_TILE_LC * sizeof(uint32_t);
   _lightIndicesBuffer = DX12Util::CreateGPUBuffer(dev, idxBufSize,
       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
@@ -2313,7 +3233,7 @@ void DX12GpuScene::CreateLights() {
   _lightCullParamsBuffer = DX12Util::CreateUploadBuffer(dev,
       512, &_lightCullParamsMapped);
 
-  spdlog::info("DX12: CreateLights — {} point lights, tileGrid {}x{}", maxPL, tileW, tileH);
+  spdlog::info("DX12: CreateLights 鈥?{} point lights, tileGrid {}x{}", maxPL, tileW, tileH);
 }
 
 // ---- Create Light Cull Pipelines ----
@@ -2337,53 +3257,286 @@ void DX12GpuScene::CreateLightCullPipelines() {
   loadCS("CoarseCull.cs.cso",    _coarseCullPSO);
   loadCS("TraditionalCull.cs.cso", _traditionalCullPSO);
   loadCS("ClearIndices.cs.cso",  _clearIndicesPSO);
+  loadCS("CoarseCullSpot.cs.cso",       _coarseCullSpotPSO);
+  loadCS("TraditionalCullSpot.cs.cso",  _traditionalCullSpotPSO);
+  loadCS("ClearIndicesSpot.cs.cso",     _clearIndicesSpotPSO);
 }
 
 // ---- Create Scatter Volume Resources ----
+void DX12GpuScene::CreateScatterNoiseTextures() {
+  // ---- Blue noise 64x64 R8: Vulkan-identical (ScatteringVolume.cpp uploadBlueNoise) ----
+  // Two interleaved 8x8 Bayer matrices; value = bayer8[y&7][x&7] * 4 → [0,252].
+  auto* dev = _device.GetDevice();
+  {
+    constexpr uint32_t SZ = 64;
+    static const uint8_t bayer8[8][8] = {
+        { 0,32, 8,40, 2,34,10,42},
+        {48,16,56,24,50,18,58,26},
+        {12,44, 4,36,14,46, 6,38},
+        {60,28,52,20,62,30,54,22},
+        { 3,35,11,43, 1,33, 9,41},
+        {51,19,59,27,49,17,57,25},
+        {15,47, 7,39,13,45, 5,37},
+        {63,31,55,23,61,29,53,21}};
+    std::vector<uint8_t> pixels(SZ * SZ);
+    for (uint32_t y = 0; y < SZ; ++y)
+      for (uint32_t x = 0; x < SZ; ++x)
+        pixels[y * SZ + x] = (uint8_t)(bayer8[y & 7][x & 7] * 4);
+
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC d = {};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    d.Width = SZ; d.Height = SZ;
+    d.DepthOrArraySize = 1; d.MipLevels = 1;
+    d.Format = DXGI_FORMAT_R8_UNORM;
+    d.SampleDesc.Count = 1;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&_scatterBlueNoiseTex)),
+        "blue noise tex");
+
+    // Upload via staging buffer
+    constexpr uint32_t rowPitch = SZ; // 64 bytes → already 256-aligned? No: 64 < 256.
+    const uint32_t alignedPitch = (rowPitch + 255) & ~255u;
+    ComPtr<ID3D12Resource> upload;
+    D3D12_HEAP_PROPERTIES up = {};
+    up.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = alignedPitch * SZ;
+    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)),
+        "blue noise upload");
+    uint8_t* mapped = nullptr;
+    upload->Map(0, nullptr, (void**)&mapped);
+    for (uint32_t y = 0; y < SZ; ++y)
+      memcpy(mapped + (size_t)y * alignedPitch, &pixels[y * SZ], SZ);
+    upload->Unmap(0, nullptr);
+
+    auto* cmdList = _device.GetCommandList();
+    _device.GetCommandAllocator(0)->Reset();
+    cmdList->Reset(_device.GetCommandAllocator(0), nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+    dst.pResource = _scatterBlueNoiseTex.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    src.pResource = upload.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8_UNORM;
+    src.PlacedFootprint.Footprint.Width = SZ;
+    src.PlacedFootprint.Footprint.Height = SZ;
+    src.PlacedFootprint.Footprint.Depth = 1;
+    src.PlacedFootprint.Footprint.RowPitch = alignedPitch;
+    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    // Compute-only reads (scatter kernel) → rest in NON_PIXEL_SHADER_RESOURCE.
+    DX12Util::TransitionBarrier(cmdList, _scatterBlueNoiseTex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cmdList->Close();
+    ID3D12CommandList* lists[] = { cmdList };
+    _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
+
+    // Static SRV — read exclusively by the scatter compute kernel.
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+    sd.Format = DXGI_FORMAT_R8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    dev->CreateShaderResourceView(_scatterBlueNoiseTex.Get(), &sd,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_BLUE_NOISE));
+    spdlog::info("DX12: scatter blue noise 64x64 uploaded");
+  }
+
+  // ---- Perlin 32^3 R8 fBm: Vulkan-identical (ScatteringVolume.cpp uploadPerlinNoise) ----
+  {
+    constexpr uint32_t SZ = 32;
+    static const int ptable[256] = {
+        151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,
+        8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,
+        117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,
+        134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,
+        46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+        200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,52,217,226,250,124,
+        123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,
+        223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,129,22,
+        39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,
+        193,238,210,144,12,191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,
+        181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,222,
+        114,67,29,24,72,243,141,128,195,78,66,215,61,156,180};
+    int perm[512];
+    for (int i = 0; i < 256; ++i) perm[i] = perm[256 + i] = ptable[i];
+    auto fade = [](float t) { return t * t * t * (t * (t * 6 - 15) + 10); };
+    auto lerpf = [](float a, float b, float t) { return a + t * (b - a); };
+    auto grad = [](int hash, float x, float y, float z) {
+      int h = hash & 15;
+      float u = h < 8 ? x : y;
+      float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+      return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+    };
+    auto perlin3 = [&](float x, float y, float z) {
+      int X = (int)floorf(x) & 255, Y = (int)floorf(y) & 255, Z = (int)floorf(z) & 255;
+      x -= floorf(x); y -= floorf(y); z -= floorf(z);
+      float u = fade(x), v = fade(y), w = fade(z);
+      int A = perm[X] + Y, AA = perm[A] + Z, AB = perm[A + 1] + Z,
+          B = perm[X + 1] + Y, BA = perm[B] + Z, BB = perm[B + 1] + Z;
+      return lerpf(lerpf(lerpf(grad(perm[AA], x, y, z), grad(perm[BA], x - 1, y, z), u),
+                         lerpf(grad(perm[AB], x, y - 1, z), grad(perm[BB], x - 1, y - 1, z), u), v),
+                   lerpf(lerpf(grad(perm[AA + 1], x, y, z - 1), grad(perm[BA + 1], x - 1, y, z - 1), u),
+                         lerpf(grad(perm[AB + 1], x, y - 1, z - 1), grad(perm[BB + 1], x - 1, y - 1, z - 1), u), v), w);
+    };
+    auto fbm = [&](float x, float y, float z) {
+      return 0.5f * perlin3(x, y, z) + 0.25f * perlin3(x * 2, y * 2, z * 2)
+           + 0.125f * perlin3(x * 4, y * 4, z * 4);
+    };
+
+    std::vector<uint8_t> voxels(SZ * SZ * SZ);
+    for (uint32_t z = 0; z < SZ; ++z)
+      for (uint32_t y = 0; y < SZ; ++y)
+        for (uint32_t x = 0; x < SZ; ++x) {
+          float n = fbm(x / 8.0f, y / 8.0f, z / 8.0f);
+          n = n * 0.5f + 0.5f;
+          n = n < 0.0f ? 0.0f : (n > 1.0f ? 1.0f : n);
+          voxels[(z * SZ + y) * SZ + x] = (uint8_t)(n * 255.0f);
+        }
+
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC d = {};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    d.Width = SZ; d.Height = SZ; d.DepthOrArraySize = (UINT16)SZ;
+    d.MipLevels = 1;
+    d.Format = DXGI_FORMAT_R8_UNORM;
+    d.SampleDesc.Count = 1;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&_scatterPerlinTex)),
+        "perlin tex");
+
+    // 3D upload: row pitch 32 → align to 256; slice pitch = aligned row * 32
+    const uint32_t alignedRow = (SZ + 255) & ~255u;
+    const uint32_t sliceBytes = alignedRow * SZ;
+    ComPtr<ID3D12Resource> upload;
+    D3D12_HEAP_PROPERTIES up = {};
+    up.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = (UINT64)sliceBytes * SZ;
+    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    DX12Util::ThrowIfFailed(dev->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)),
+        "perlin upload");
+    uint8_t* mapped = nullptr;
+    upload->Map(0, nullptr, (void**)&mapped);
+    for (uint32_t z = 0; z < SZ; ++z)
+      for (uint32_t y = 0; y < SZ; ++y)
+        memcpy(mapped + (size_t)z * sliceBytes + (size_t)y * alignedRow,
+               &voxels[(z * SZ + y) * SZ], SZ);
+    upload->Unmap(0, nullptr);
+
+    auto* cmdList = _device.GetCommandList();
+    _device.GetCommandAllocator(0)->Reset();
+    cmdList->Reset(_device.GetCommandAllocator(0), nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+    dst.pResource = _scatterPerlinTex.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    src.pResource = upload.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8_UNORM;
+    src.PlacedFootprint.Footprint.Width = SZ;
+    src.PlacedFootprint.Footprint.Height = SZ;
+    src.PlacedFootprint.Footprint.Depth = SZ;
+    src.PlacedFootprint.Footprint.RowPitch = alignedRow;
+    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    // Compute-only reads (scatter kernel) → rest in NON_PIXEL_SHADER_RESOURCE.
+    DX12Util::TransitionBarrier(cmdList, _scatterPerlinTex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cmdList->Close();
+    ID3D12CommandList* lists[] = { cmdList };
+    _device.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    FlushCommandQueue();
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+    sd.Format = DXGI_FORMAT_R8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture3D.MipLevels = 1;
+    dev->CreateShaderResourceView(_scatterPerlinTex.Get(), &sd,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_PERLIN));
+    spdlog::info("DX12: scatter perlin 32^3 uploaded");
+  }
+}
+
 void DX12GpuScene::CreateScatterResources() {
   if (!_scatterRootSig || !_accumulatePSO) {
-    spdlog::warn("DX12: Scatter PSOs/RootSig not ready — skipping CreateScatterResources");
+    spdlog::warn("DX12: Scatter PSOs/RootSig not ready 鈥?skipping CreateScatterResources");
     return;
   }
   auto* dev = _device.GetDevice();
 
-  auto makeVol = [&](ComPtr<ID3D12Resource>& res, const char* name) {
+  // Volume dims from the SCREEN (Vulkan parity: ScatteringVolume::create uses
+  // ceil(screen / SCATTER_TILE_SIZE=8)), not a fixed 160x90 — the old constants
+  // mismatched the dispatch and left the right/bottom froxels unwritten.
+  _scatterFroxelW = (_device.GetWidth() + 7) / 8;
+  _scatterFroxelH = (_device.GetHeight() + 7) / 8;
+
+  auto makeVol = [&](ComPtr<ID3D12Resource>& res, const char* name,
+                     D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initial) {
     D3D12_RESOURCE_DESC d = {};
     d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-    d.Width = SCATTER_FROXEL_W;
-    d.Height = SCATTER_FROXEL_H;
+    d.Width = _scatterFroxelW;
+    d.Height = _scatterFroxelH;
     d.DepthOrArraySize = (UINT16)SCATTER_FROXEL_D;
     d.MipLevels = 1;
     d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    d.Flags = flags;
     d.SampleDesc.Count = 1;
     d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     D3D12_HEAP_PROPERTIES hp = {};
     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
     HRESULT hr = dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res));
+        initial, nullptr, IID_PPV_ARGS(&res));
     if (FAILED(hr)) {
       spdlog::error("DX12: Failed to create scatter volume resource: {}", name);
     } else {
       spdlog::info("DX12: Created scatter volume resource: {} ({}x{}x{})", name,
-                   SCATTER_FROXEL_W, SCATTER_FROXEL_H, SCATTER_FROXEL_D);
+                   _scatterFroxelW, _scatterFroxelH, SCATTER_FROXEL_D);
     }
   };
-  makeVol(_scatterVolume,     "scatterVolume");
-  makeVol(_scatterAccumVolume, "scatterAccumVolume");
+  makeVol(_scatterVolume,        "scatterVolume",        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);       // UAV (scatterOut)
+  makeVol(_scatterAccumVolume,   "scatterAccumVolume",   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);       // UAV (accumOut) + SRV for deferred
+  // History is copy-dst + compute-read only: no UAV flag, rests in NPSR.
+  makeVol(_scatterHistoryVolume, "scatterHistoryVolume", D3D12_RESOURCE_FLAG_NONE,
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-  // Create static SRV for scatterAccumVolume at SRV_SCATTER_ACCUM
-  D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-  srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-  srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-  srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-  srvDesc.Texture3D.MipLevels = 1;
-  dev->CreateShaderResourceView(_scatterAccumVolume.Get(), &srvDesc,
-      _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM));
+  // Create static SRVs
+  {
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture3D.MipLevels = 1;
+    dev->CreateShaderResourceView(_scatterAccumVolume.Get(), &srvDesc,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM));
+    dev->CreateShaderResourceView(_scatterHistoryVolume.Get(), &srvDesc,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_HISTORY));
+  }
+
+  // Noise textures (blue noise + perlin), once per init — resolution-independent.
+  CreateScatterNoiseTextures();
 
   _scatterAccumIsInPSR = false;
+  _scatterHistoryValid = false;
   spdlog::info("DX12: Scatter resources created (froxel: {}x{}x{})",
-               SCATTER_FROXEL_W, SCATTER_FROXEL_H, SCATTER_FROXEL_D);
+               _scatterFroxelW, _scatterFroxelH, SCATTER_FROXEL_D);
 }
 
 bool DX12GpuScene::IsScatterReady() const {
@@ -2427,7 +3580,7 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
     float    screenWidth;
     float    screenHeight;
     float    vpMatrix[16]; // float4x4 at 16-byte aligned offset
-    // Frustum: 6 planes × (vec3 normal + float w) = 6 × 16 = 96 bytes
+    // Frustum: 6 planes 脳 (vec3 normal + float w) = 6 脳 16 = 96 bytes
     struct {
       struct { float x, y, z, w; } normal_w;
     } frustumPlanes[6];
@@ -2446,9 +3599,9 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
   lcp.screenWidth      = (float)w;
   lcp.screenHeight     = (float)h;
   // mat4 quirk: `A * B` computes the mathematical B*A, so view * proj is the
-  // mathematical P*V — which is what mul(viewProjMatrix, pos) expects.
-  // Matches GpuScene.cpp's Vulkan path.
-  mat4 vp = transpose(_mainCamera->getObjectToCamera() * _mainCamera->getProjectMatrix());
+  // mathematical P*V 鈥?which is what mul(viewProjMatrix, pos) expects.
+  // Matches GpuScene.cpp's Vulkan path (which uploads the jittered VP).
+  mat4 vp = transpose(_mainCamera->getObjectToCamera() * _jitteredProj);
   memcpy(lcp.vpMatrix, vp.value_ptr(), sizeof(float) * 16);
   // Build frustum planes from camera frustum (layout-compatible with HLSL Frustum)
   const Frustum& camFrustum = _mainCamera->getFrustum();
@@ -2485,7 +3638,7 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
   //          slot8=u3 lightXZRange
   //          slot9=u4 lightDebug
   //          slot10=u5 lightIndices
-  //          slot11=u6 null (tradtionDebug Texture2D — skip)
+  //          slot11=u6 null (tradtionDebug Texture2D 鈥?skip)
   //          slot12=u7 lightIndicesTransparent
   //          slot13=u8 null
   //          slot14=u9 spotXZRange
@@ -2552,15 +3705,16 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
     d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     dev->CreateUnorderedAccessView(_lightDebugTexture.Get(), nullptr, &d, {lcDesc.cpu.ptr + 9 * ds});
   }
-  // UAV u5: lightIndices
+  // UAV u5: lightIndices (RWStructuredBuffer<uint>)
   {
     D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
-    d.Format = DXGI_FORMAT_R32_UINT;
+    d.Format = DXGI_FORMAT_UNKNOWN;
     d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    d.Buffer.StructureByteStride = sizeof(uint32_t);
     dev->CreateUnorderedAccessView(_lightIndicesBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 10 * ds});
   }
-  // UAV u6: tradtionDebug — null Texture2D (RWTexture2D<float4> in shader, unused/commented)
+  // UAV u6: tradtionDebug 鈥?null Texture2D (RWTexture2D<float4> in shader, unused/commented)
   {
     D3D12_UNORDERED_ACCESS_VIEW_DESC nd = {};
     nd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -2570,9 +3724,10 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
   // UAV u7: lightIndicesTransparent
   {
     D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
-    d.Format = DXGI_FORMAT_R32_UINT;
+    d.Format = DXGI_FORMAT_UNKNOWN;
     d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    d.Buffer.StructureByteStride = sizeof(uint32_t);
     dev->CreateUnorderedAccessView(_lightIndicesTransparentBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 12 * ds});
   }
   // UAV u8: null (padding slot between u7 and u9)
@@ -2594,17 +3749,19 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
   // UAV u10: spotLightIndices
   {
     D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
-    d.Format = DXGI_FORMAT_R32_UINT;
+    d.Format = DXGI_FORMAT_UNKNOWN;
     d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    d.Buffer.StructureByteStride = sizeof(uint32_t);
     dev->CreateUnorderedAccessView(_spotLightIndicesBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 15 * ds});
   }
   // UAV u11: spotLightIndicesTransparent
   {
     D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
-    d.Format = DXGI_FORMAT_R32_UINT;
+    d.Format = DXGI_FORMAT_UNKNOWN;
     d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     d.Buffer.NumElements = (UINT)(tileW * tileH * MAX_LIGHTS_PER_TILE_LC);
+    d.Buffer.StructureByteStride = sizeof(uint32_t);
     dev->CreateUnorderedAccessView(_spotLightIndicesTransparentBuffer.Get(), nullptr, &d, {lcDesc.cpu.ptr + 16 * ds});
   }
 
@@ -2631,16 +3788,43 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
     DX12Util::UAVBarrier(cmdList, _lightDebugTexture.Get());
   }
 
-  // --- TraditionalCull: tileW × tileH thread groups (16×16 each) ---
+  // --- TraditionalCull: tileW 脳 tileH thread groups (16脳16 each) ---
   if (_traditionalCullPSO) {
     cmdList->SetPipelineState(_traditionalCullPSO.Get());
     cmdList->Dispatch(tileW, tileH, 1);
     DX12Util::UAVBarrier(cmdList, _lightIndicesBuffer.Get());
   }
 
+  // --- Spot light culling chain (clear -> coarse -> traditional) ---
+  // Same kernel sequence as the Vulkan LightCuller (Light.cpp:1731-1775);
+  // the spot kernels share this root signature / descriptor table.
+  if (!_spotLights.empty() && _clearIndicesSpotPSO && _coarseCullSpotPSO &&
+      _traditionalCullSpotPSO) {
+    uint32_t spotCount = (uint32_t)_spotLights.size();
+
+    cmdList->SetPipelineState(_clearIndicesSpotPSO.Get());
+    cmdList->Dispatch(tileW, tileH, 1);
+    DX12Util::UAVBarrier(cmdList, _spotLightIndicesBuffer.Get());
+    DX12Util::UAVBarrier(cmdList, _spotLightIndicesTransparentBuffer.Get());
+
+    cmdList->SetPipelineState(_coarseCullSpotPSO.Get());
+    cmdList->Dispatch((spotCount + 127) / 128, 1, 1);
+    DX12Util::UAVBarrier(cmdList, _spotXZRangeBuffer.Get());
+
+    cmdList->SetPipelineState(_traditionalCullSpotPSO.Get());
+    cmdList->Dispatch(tileW, tileH, 1);
+    DX12Util::UAVBarrier(cmdList, _spotLightIndicesBuffer.Get());
+    DX12Util::UAVBarrier(cmdList, _spotLightIndicesTransparentBuffer.Get());
+  }
+
   // --- Transition lightIndices to SRV for deferred lighting ---
   DX12Util::TransitionBarrier(cmdList, _lightIndicesBuffer.Get(),
       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
+  // Spot indices are also read by deferred lighting (t12) when spots exist.
+  if (!_spotLights.empty()) {
+    DX12Util::TransitionBarrier(cmdList, _spotLightIndicesBuffer.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
+  }
   DX12Util::TransitionBarrier(cmdList, _lightXZRangeBuffer.Get(),
       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
   DX12Util::TransitionBarrier(cmdList, _lightIndicesTransparentBuffer.Get(),
@@ -2649,8 +3833,12 @@ void DX12GpuScene::DispatchLightCulling(ID3D12GraphicsCommandList* cmdList) {
       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
   DX12Util::TransitionBarrier(cmdList, _spotXZRangeBuffer.Get(),
       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-  DX12Util::TransitionBarrier(cmdList, _spotLightIndicesBuffer.Get(),
-      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  // _spotLightIndicesBuffer: already GENERIC_READ when spots exist (deferred
+  // lighting reads it at t12); restore COMMON only when the spot chain never ran.
+  if (_spotLights.empty()) {
+    DX12Util::TransitionBarrier(cmdList, _spotLightIndicesBuffer.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+  }
   DX12Util::TransitionBarrier(cmdList, _spotLightIndicesTransparentBuffer.Get(),
       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
   // Restore depth to DEPTH_WRITE for deferred lighting depth-read transition
@@ -2757,7 +3945,7 @@ void DX12GpuScene::Draw() {
   //
   // Without this, D3D12's Y-up NDC renders everything vertically mirrored
   // relative to Vulkan, which (a) reverses screen-space winding and (b)
-  // invalidates every `uv = ndc.xy * 0.5 + 0.5` in the shaders — all of which
+  // invalidates every `uv = ndc.xy * 0.5 + 0.5` in the shaders 鈥?all of which
   // were written against the Vulkan backend. Flipping here keeps the whole
   // shader set valid verbatim; see docs/dx12-matrix-and-binding-audit.md.
   D3D12_VIEWPORT viewport = {};
@@ -2946,6 +4134,33 @@ void DX12GpuScene::Draw() {
         cmdList->SetGraphicsRootDescriptorTable(2, ciDesc.gpu);
       }
 
+      // Alpha-mask PS tables (params [3]/[4]): materials t0 + meshChunks t3
+      // (space1) and bindless textures (t0+ space2). Bound every cascade for
+      // simplicity; the opaque VS-only PSO ignores them.
+      {
+        auto tbl = _cbvSrvUavHeap.AllocateDynamic(2);
+        UINT ds = _device.GetDevice()->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_SHADER_RESOURCE_VIEW_DESC dm = {};
+        dm.Format = DXGI_FORMAT_UNKNOWN;
+        dm.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        dm.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dm.Buffer.NumElements = (UINT)_applMesh->_materialCount;
+        dm.Buffer.StructureByteStride = sizeof(AAPLShaderMaterial);
+        _device.GetDevice()->CreateShaderResourceView(_materialBuffer.Get(), &dm, tbl.cpu);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC dc = {};
+        dc.Format = DXGI_FORMAT_UNKNOWN;
+        dc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        dc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        dc.Buffer.NumElements = (UINT)_applMesh->_chunkCount;
+        dc.Buffer.StructureByteStride = MESH_CHUNK_STRIDE;
+        _device.GetDevice()->CreateShaderResourceView(_meshChunksBuffer.Get(), &dc, {tbl.cpu.ptr + ds});
+        cmdList->SetGraphicsRootDescriptorTable(3, tbl.gpu);
+        cmdList->SetGraphicsRootDescriptorTable(4,
+            _cbvSrvUavHeap.GetStaticGPU(SRV_BINDLESS_START));
+      }
+
       cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       cmdList->IASetVertexBuffers(0, 4, vbvs);
       cmdList->IASetIndexBuffer(&ibv);
@@ -2957,6 +4172,7 @@ void DX12GpuScene::Draw() {
       uint32_t writeIdxOffset = cascade * 2 * sizeof(uint32_t);
 
       // Opaque draws
+      cmdList->SetPipelineState(_shadowPSO.Get());
       cmdList->SetGraphicsRoot32BitConstants(1, 2, push, 0);
       cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
           (uint32_t)_applMesh->_opaqueChunkCount,
@@ -2964,7 +4180,10 @@ void DX12GpuScene::Draw() {
           (UINT64)shCascadeOpaqueBase * sizeof(DX12DrawIndexedArgs),
           fr.shadowWriteIndex.Get(), writeIdxOffset);
 
-      // Alpha-masked draws
+      // Alpha-masked draws (D1: alpha-test PS clips cutout casters)
+      if (_shadowAlphaMaskPSO) {
+        cmdList->SetPipelineState(_shadowAlphaMaskPSO.Get());
+      }
       cmdList->SetGraphicsRoot32BitConstants(1, 2, push, 0);
       cmdList->ExecuteIndirect(_shadowDrawCmdSig.Get(),
           (uint32_t)_applMesh->_alphaMaskedChunkCount,
@@ -2988,6 +4207,12 @@ void DX12GpuScene::Draw() {
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissor);
   }
+
+  // === Spot Shadow Maps (static scene: rendered once, then reused) ===
+  RenderSpotShadowMaps(cmdList);
+  // Restore the main viewport/scissor (the spot pass shrank it to 256x256).
+  cmdList->RSSetViewports(1, &viewport);
+  cmdList->RSSetScissorRects(1, &scissor);
 
   // Set render target for subsequent passes
   cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
@@ -3030,7 +4255,7 @@ void DX12GpuScene::Draw() {
 
     uint32_t w = _device.GetWidth(), h = _device.GetHeight();
 
-    // Copy: occluder depth → HiZ mip 0
+    // Copy: occluder depth 鈫?HiZ mip 0
     {
       cmdList->SetPipelineState(_hizCopyPSO.Get());
       cmdList->SetComputeRootSignature(_hizRootSig.Get());
@@ -3131,7 +4356,10 @@ void DX12GpuScene::Draw() {
     // the mathematical P*V that gpucull.hlsl's mul(viewProjMatrix, corner)
     // needs. Writing proj * view here yields V*P and corrupts the Hi-Z
     // occlusion test. Matches GpuScene.cpp's Vulkan path.
-    mat4 vp = transpose(_mainCamera->getObjectToCamera() * _mainCamera->getProjectMatrix());
+    // Uses the JITTERED projection (Vulkan parity): culling against the
+    // clean projection lets chunks near frustum edges flicker in/out when
+    // the jitter shifts the projection between frames.
+    mat4 vp = transpose(_mainCamera->getObjectToCamera() * _jitteredProj);
     memcpy(cullParams.viewProjMatrix, vp.value_ptr(), sizeof(float) * 16);
     memcpy(&cullParams.frustum, &_mainCamera->getFrustum(), sizeof(Frustum));
     memcpy(fr.cullParamsMapped, &cullParams, sizeof(GPUCullParams));
@@ -3204,7 +4432,7 @@ void DX12GpuScene::Draw() {
     uint32_t groupX = (totalChunks + 127) / 128;
     cmdList->Dispatch(groupX, 1, 1);
 
-    // Barrier: compute UAV writes → indirect draw read
+    // Barrier: compute UAV writes 鈫?indirect draw read
     DX12Util::UAVBarrier(cmdList, fr.drawParamsBuffer.Get());
     DX12Util::UAVBarrier(cmdList, fr.writeIndexBuffer.Get());
 
@@ -3339,7 +4567,7 @@ void DX12GpuScene::Draw() {
     DX12Util::TransitionBarrier(cmdList, _saoDepthPyramid.Get(),
         D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    // Copy window depth → SAO pyramid mip 0
+    // Copy window depth 鈫?SAO pyramid mip 0
     {
       cmdList->SetPipelineState(_hizCopyPSO.Get());
       cmdList->SetComputeRootSignature(_hizRootSig.Get());
@@ -3452,13 +4680,17 @@ void DX12GpuScene::Draw() {
     auto* dev = _device.GetDevice();
     uint32_t w = _device.GetWidth(), h = _device.GetHeight();
 
-    // PushConstants layout: volumeWidth, volumeHeight, screenWidth, screenHeight, resetHistory
-    float sw = (float)w, sh = (float)h;
+    // PushConstants layout: volumeWidth, volumeHeight, screenWidth, screenHeight, resetHistory.
+    // Vulkan parity (ScatteringVolume::dispatch): screenWidth/Height are the PADDED
+    // size volumeW*8 / volumeH*8, which the kernel uses only for the light-tile
+    // count. resetHistory=1 until a frame's result has been copied into the
+    // history volume (first frame, toggle-off gap, or resize).
+    float sw = (float)(_scatterFroxelW * 8), sh = (float)(_scatterFroxelH * 8);
     uint32_t pcData[5] = {
-      SCATTER_FROXEL_W, SCATTER_FROXEL_H,
+      _scatterFroxelW, _scatterFroxelH,
       *reinterpret_cast<const uint32_t*>(&sw),
       *reinterpret_cast<const uint32_t*>(&sh),
-      (!_scatterAccumIsInPSR) ? 1u : 0u  // resetHistory = 1 if no valid history (first frame or gap)
+      (!_scatterHistoryValid) ? 1u : 0u
     };
 
     // --- ScatterVolume pass ---
@@ -3476,17 +4708,17 @@ void DX12GpuScene::Draw() {
     // Slot layout (13 descriptors total):
     //   slot0 = u0 scatterOut UAV
     //   slot1 = t2 shadowMaps SRV
-    //   slot2 = t3 (null — s3 is static sampler shadowSampler)
-    //   slot3 = t4 scatterPrev SRV (or null if first frame)
-    //   slot4 = t5 blueNoiseTex SRV (null — no blue noise tex)
+    //   slot2 = t3 (null 鈥?s3 is static sampler shadowSampler)
+    //   slot3 = t4 scatterPrev SRV (history volume; ignored when resetHistory=1)
+    //   slot4 = t5 blueNoiseTex SRV
     //   slot5 = t6 pointLightData SRV
     //   slot6 = t7 pointLightIndices SRV
     //   slot7 = t8 spotLightData SRV
     //   slot8 = t9 spotLightIndices SRV
-    //   slot9 = t10 spotShadowMaps SRV (null)
-    //   slot10 = t11 (null — s11 is static sampler spotShadowSampler)
-    //   slot11 = t12 spotViewProjMatrices SRV (null)
-    //   slot12 = t13 perlinNoiseTex SRV (null)
+    //   slot9 = t10 spotShadowMaps SRV
+    //   slot10 = t11 (null 鈥?s11 is static sampler spotShadowSampler)
+    //   slot11 = t12 spotViewProjMatrices SRV
+    //   slot12 = t13 perlinNoiseTex SRV
     // Total: 1 UAV + 12 SRVs = 13 descriptors
     {
       auto scDesc = _cbvSrvUavHeap.AllocateDynamic(13);
@@ -3507,7 +4739,7 @@ void DX12GpuScene::Draw() {
           _cbvSrvUavHeap.GetStaticCPU(SRV_SHADOW_MAPS),
           D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-      // slot2: t3 (shadowSampler static — fill with null SRV to satisfy range)
+      // slot2: t3 (shadowSampler static 鈥?fill with null SRV to satisfy range)
       {
         D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
         nd.Format = DXGI_FORMAT_R8_UNORM;
@@ -3517,28 +4749,15 @@ void DX12GpuScene::Draw() {
         dev->CreateShaderResourceView(nullptr, &nd, {scDesc.cpu.ptr + 2u * ds});
       }
 
-      // slot3: t4 scatterPrev SRV (use scatterAccumVolume as history, or null on first frame / gap)
-      if (!_scatterAccumIsInPSR) {
-        // No valid history — bind null 3D SRV
-        D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
-        nd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        nd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-        nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nd.Texture3D.MipLevels = 1;
-        dev->CreateShaderResourceView(nullptr, &nd, {scDesc.cpu.ptr + 3u * ds});
-      } else {
-        // scatterAccumVolume is in PIXEL_SHADER_RESOURCE — transition to NPSR for compute read
-        DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        dev->CopyDescriptorsSimple(1, {scDesc.cpu.ptr + 3u * ds},
-            _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM),
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-      }
+      // slot3: t4 scatterPrev SRV — dedicated history volume (Vulkan parity:
+      // copy of LAST FRAME's scatter, not the accumulated integral). Its
+      // content is irrelevant when resetHistory=1 (kernel skips the blend),
+      // so always bind the static SRV; the resource rests in NPSR.
+      dev->CopyDescriptorsSimple(1, {scDesc.cpu.ptr + 3u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_HISTORY),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-      // slots 4-12: t5..t13 — null SRVs for blueNoise, lights, spot shadows, perlinNoise
-      // (no real data available yet for these; light data would come from light cull buffers)
-      // Bind point light data where available
+      // slots 4-12: t5..t13 (null defaults, overwritten below where data exists)
       for (int k = 4; k <= 12; ++k) {
         D3D12_SHADER_RESOURCE_VIEW_DESC nd = {};
         nd.Format = DXGI_FORMAT_R32_FLOAT;
@@ -3546,6 +4765,10 @@ void DX12GpuScene::Draw() {
         nd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         dev->CreateShaderResourceView(nullptr, &nd, {scDesc.cpu.ptr + (UINT64)k * ds});
       }
+      // slot4 (t5): blueNoiseTex — 64x64 R8, rests in NPSR (compute-only reads)
+      dev->CopyDescriptorsSimple(1, {scDesc.cpu.ptr + 4u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_BLUE_NOISE),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
       // slot5 (t6): pointLightData
       if (_pointLightBuffer && !_pointLights.empty()) {
         D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
@@ -3556,7 +4779,7 @@ void DX12GpuScene::Draw() {
         d.Buffer.StructureByteStride = sizeof(AAPLPointLightCullingData);
         dev->CreateShaderResourceView(_pointLightBuffer.Get(), &d, {scDesc.cpu.ptr + 5u * ds});
       }
-      // slot6 (t7): pointLightIndices (from light cull — transition to read)
+      // slot6 (t7): pointLightIndices (from light cull 鈥?transition to read)
       if (_lightIndicesBuffer && !_pointLights.empty()) {
         uint32_t tW2 = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
         uint32_t tH2 = (h + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
@@ -3567,21 +4790,83 @@ void DX12GpuScene::Draw() {
         d.Buffer.NumElements = tW2 * tH2 * MAX_LIGHTS_PER_TILE_LC;
         dev->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {scDesc.cpu.ptr + 6u * ds});
       }
+      // slot7 (t8): spotLightData
+      if (_spotLightBuffer && !_spotLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_spotLights.size();
+        d.Buffer.StructureByteStride = sizeof(AAPLSpotLightCullingData);
+        dev->CreateShaderResourceView(_spotLightBuffer.Get(), &d, {scDesc.cpu.ptr + 7u * ds});
+      }
+      // slot8 (t9): spotLightIndices (GENERIC_READ covers compute reads)
+      if (_spotLightIndicesBuffer && !_spotLights.empty()) {
+        uint32_t tW2 = (w + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        uint32_t tH2 = (h + LIGHT_TILE_SIZE - 1) / LIGHT_TILE_SIZE;
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = tW2 * tH2 * MAX_LIGHTS_PER_TILE_LC;
+        d.Buffer.StructureByteStride = sizeof(uint32_t);
+        dev->CreateShaderResourceView(_spotLightIndicesBuffer.Get(), &d, {scDesc.cpu.ptr + 8u * ds});
+      }
+      // slot9 (t10): spotShadowMaps 鈥?compute reads need a non-pixel SRV
+      // state, so transition PSR -> NPSR here and back after the dispatch.
+      if (_spotShadowMapArray && _spotShadowsRendered && !_spotLights.empty()) {
+        DX12Util::TransitionBarrier(cmdList, _spotShadowMapArray.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2DArray.MipLevels = 1;
+        d.Texture2DArray.ArraySize = MAX_SPOT_SHADOWS;
+        dev->CreateShaderResourceView(_spotShadowMapArray.Get(), &d,
+            {scDesc.cpu.ptr + 9u * ds});
+      }
+      // slot11 (t12): spotViewProjMatrices
+      if (_spotViewProjBuffer && !_spotLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = MAX_SPOT_SHADOWS;
+        d.Buffer.StructureByteStride = sizeof(mat4);
+        dev->CreateShaderResourceView(_spotViewProjBuffer.Get(), &d,
+            {scDesc.cpu.ptr + 11u * ds});
+      }
+      // slot12 (t13): perlinNoiseTex — 32^3 R8, rests in NPSR (compute-only reads)
+      dev->CopyDescriptorsSimple(1, {scDesc.cpu.ptr + 12u * ds},
+          _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_PERLIN),
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
       cmdList->SetComputeRootDescriptorTable(2, scDesc.gpu);
     }
 
+    // ScatterVolume kernel is numthreads(4,4,4) — ceil/4 in ALL THREE dims
+    // (the old /8 in XY launched half the froxels; Z=64 groups quadrupled it).
     cmdList->Dispatch(
-        (SCATTER_FROXEL_W + 7) / 8,
-        (SCATTER_FROXEL_H + 7) / 8,
-        SCATTER_FROXEL_D);
-    DX12Util::UAVBarrier(cmdList, _scatterVolume.Get());
+        (_scatterFroxelW + 3) / 4,
+        (_scatterFroxelH + 3) / 4,
+        (SCATTER_FROXEL_D + 3) / 4);
 
-    // Transition scatterAccumVolume to UAV for the accumulate write
-    // (if history was used, it's in NPSR; if no history, it's still UAV)
+    // Spot shadow maps back to PSR for the deferred lighting read (the
+    // scatter kernel read them as non-pixel SRV).
+    if (_spotShadowMapArray && _spotShadowsRendered && !_spotLights.empty()) {
+      DX12Util::TransitionBarrier(cmdList, _spotShadowMapArray.Get(),
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+
+    // Transition scatterAccumVolume to UAV for the accumulate write. After a
+    // scatter frame it rests in PSR (deferred read); on the first frame it is
+    // already UAV; the toggle-off path also returns it to UAV.
     if (_scatterAccumIsInPSR) {
       DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
-          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
 
@@ -3598,7 +4883,7 @@ void DX12GpuScene::Draw() {
       auto ds = _cbvSrvUavHeap.GetDescriptorSize();
 
       // slot0: t0 scatterIn SRV (read from scatterVolume)
-      // Transition scatterVolume UAV → SRV
+      // Transition scatterVolume UAV 鈫?SRV
       DX12Util::TransitionBarrier(cmdList, _scatterVolume.Get(),
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -3625,16 +4910,43 @@ void DX12GpuScene::Draw() {
     }
 
     cmdList->Dispatch(
-        (SCATTER_FROXEL_W + 7) / 8,
-        (SCATTER_FROXEL_H + 7) / 8, 1);
+        (_scatterFroxelW + 7) / 8,
+        (_scatterFroxelH + 7) / 8, 1);
     DX12Util::UAVBarrier(cmdList, _scatterAccumVolume.Get());
 
-    // Transition scatterVolume back to UAV for next frame
-    DX12Util::TransitionBarrier(cmdList, _scatterVolume.Get(),
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    // ===== Copy this frame's scatter into the history volume (Vulkan parity:
+    // the t4 scatterPrev of frame N+1 is the RAW scatter of frame N, NOT the
+    // accumulated integral — blending accum would double-count transmittance
+    // and make the temporal blend converge toward the front-slab only).
+    // scatterVolume is in NPSR (t0 read above); history rests in NPSR.
+    {
+      DX12Util::TransitionBarrier(cmdList, _scatterVolume.Get(),
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+          D3D12_RESOURCE_STATE_COPY_SOURCE);
+      DX12Util::TransitionBarrier(cmdList, _scatterHistoryVolume.Get(),
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+          D3D12_RESOURCE_STATE_COPY_DEST);
 
-    // Transition scatterAccumVolume → PIXEL_SHADER_RESOURCE for deferred lighting
+      D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+      dst.pResource = _scatterHistoryVolume.Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      dst.SubresourceIndex = 0;
+      src.pResource = _scatterVolume.Get();
+      src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      src.SubresourceIndex = 0;
+      cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+      DX12Util::TransitionBarrier(cmdList, _scatterHistoryVolume.Get(),
+          D3D12_RESOURCE_STATE_COPY_DEST,
+          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      // scatterVolume returns to UAV for next frame's scatterOut write
+      DX12Util::TransitionBarrier(cmdList, _scatterVolume.Get(),
+          D3D12_RESOURCE_STATE_COPY_SOURCE,
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    _scatterHistoryValid = true;
+
+    // Transition scatterAccumVolume 鈫?PIXEL_SHADER_RESOURCE for deferred lighting
     DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -3649,8 +4961,11 @@ void DX12GpuScene::Draw() {
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
         D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_READ);
 
-    // Output directly to swapchain
-    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    // Output to the HDR buffer; the resolve pass below tone-maps (+TAA) into
+    // the swapchain and writes the new TAA history.
+    D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv =
+        _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    cmdList->OMSetRenderTargets(1, &hdrRtv, FALSE, nullptr);
     cmdList->SetPipelineState(_deferredLightingPSO.Get());
     cmdList->SetGraphicsRootSignature(_deferredLightingRootSig.Get());
     cmdList->SetGraphicsRootConstantBufferView(0,
@@ -3737,19 +5052,55 @@ void DX12GpuScene::Draw() {
         d.Buffer.StructureByteStride = sizeof(uint32_t);
         dv->CreateShaderResourceView(_lightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 9 * ds});
       } else { nullBuf(9, sizeof(uint32_t)); }
-      // t10: AO texture — must be at offset 10, was incorrectly at offset 5 via static table
+      // t10: AO texture 鈥?must be at offset 10, was incorrectly at offset 5 via static table
       { D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
         d.Format = DXGI_FORMAT_R8_UNORM;
         d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         d.Texture2D.MipLevels = 1;
         dv->CreateShaderResourceView(_aoTexture.Get(), &d, {dlDesc.cpu.ptr + 10 * ds}); }
-      // t11: spot light culling data (null — no spot lights yet)
-      nullBuf(11, sizeof(AAPLSpotLightCullingData));
-      // t12: spot light indices (null)
-      nullBuf(12, sizeof(uint32_t));
-      // t13-t15: unused
-      for (uint32_t s = 13; s <= 15; ++s) nullTex2D(s);
+      // t11: spot light culling data
+      if (_spotLightBuffer && !_spotLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)_spotLights.size();
+        d.Buffer.StructureByteStride = sizeof(AAPLSpotLightCullingData);
+        dv->CreateShaderResourceView(_spotLightBuffer.Get(), &d, {dlDesc.cpu.ptr + 11 * ds});
+      } else { nullBuf(11, sizeof(AAPLSpotLightCullingData)); }
+      // t12: spot light tile indices
+      if (_spotLightIndicesBuffer && !_spotLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = (UINT)(_spotLightIndicesBuffer->GetDesc().Width / sizeof(uint32_t));
+        d.Buffer.StructureByteStride = sizeof(uint32_t);
+        dv->CreateShaderResourceView(_spotLightIndicesBuffer.Get(), &d, {dlDesc.cpu.ptr + 12 * ds});
+      } else { nullBuf(12, sizeof(uint32_t)); }
+      // t13: spot shadow maps (Texture2DArray, rendered once per light)
+      if (_spotShadowMapArray && _spotShadowsRendered) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Texture2DArray.MipLevels = 1;
+        d.Texture2DArray.ArraySize = MAX_SPOT_SHADOWS;
+        dv->CreateShaderResourceView(_spotShadowMapArray.Get(), &d, {dlDesc.cpu.ptr + 13 * ds});
+      } else { nullTex2D(13); }
+      // t14: unused texture slot
+      nullTex2D(14);
+      // t15: spot view-proj matrices (StructuredBuffer<float4x4>)
+      if (_spotViewProjBuffer && !_spotLights.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Format = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.NumElements = MAX_SPOT_SHADOWS;
+        d.Buffer.StructureByteStride = sizeof(mat4);
+        dv->CreateShaderResourceView(_spotViewProjBuffer.Get(), &d, {dlDesc.cpu.ptr + 15 * ds});
+      } else { nullBuf(15, sizeof(mat4)); }
       // t16: scatter accum volume (Texture3D)
       if (_scatterAccumVolume && _scatterAccumIsInPSR) {
         D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
@@ -3768,7 +5119,6 @@ void DX12GpuScene::Draw() {
     // Draw fullscreen triangle (3 vertices, no VB)
     cmdList->DrawInstanced(3, 1, 0, 0);
 
-    // === Resolve: HDR + TAA history DISABLED ===
     // Transition window depth back to write
     DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
         D3D12_RESOURCE_STATE_DEPTH_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE);
@@ -3778,9 +5128,13 @@ void DX12GpuScene::Draw() {
       DX12Util::TransitionBarrier(cmdList, _lightIndicesBuffer.Get(),
           D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COMMON);
     }
+    if (_spotLightIndicesBuffer && !_spotLights.empty()) {
+      DX12Util::TransitionBarrier(cmdList, _spotLightIndicesBuffer.Get(),
+          D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COMMON);
+    }
   }
 
-  // === Copy writeIndex GPU → readback buffer for CPU stats ===
+  // === Copy writeIndex GPU 鈫?readback buffer for CPU stats ===
   {
     auto& fr = _frameResources[_currentFrame];
     DX12Util::TransitionBarrier(cmdList, fr.writeIndexBuffer.Get(),
@@ -3804,8 +5158,11 @@ void DX12GpuScene::Draw() {
     uint32_t transpOffset = opaqueCount + alphaCount;
 
     if (transpCount > 0) {
-      // Render transparent objects onto swap chain with alpha blending
-      cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+      // Render transparent objects onto the HDR buffer with alpha blending
+      // (the resolve pass tone-maps everything to the swapchain afterwards).
+      D3D12_CPU_DESCRIPTOR_HANDLE hdrRtv =
+          _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+      cmdList->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsvHandle);
       cmdList->SetPipelineState(_forwardPSO.Get());
       cmdList->SetGraphicsRootSignature(_drawClusterRootSig.Get());
       cmdList->SetGraphicsRootConstantBufferView(0,
@@ -3876,6 +5233,96 @@ void DX12GpuScene::Draw() {
     }
   }
 
+  // === Resolve pass: HDR -> swapchain (+ TAA history write) ===
+  // Tone-maps (ACES) the HDR buffer into the swapchain and, when TAA is on,
+  // blends against/reprojects the previous frame's history. MRT layout:
+  //   SV_Target0 = swapchain, SV_Target1 = TAA history write slot.
+  {
+    auto* dev = _device.GetDevice();
+    auto ds = _cbvSrvUavHeap.GetDescriptorSize();
+
+    // HDR: RT (written by deferred + forward) -> PSR for the resolve read.
+    DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    // History ping-pong: `_taaHistoryIndex` is the write slot this frame,
+    // `_taaHistoryIndex ^ 1` is the read (stays in PSR).
+    ID3D12Resource* histWrite = _taaHistory[_taaHistoryIndex].Get();
+    ID3D12Resource* histRead  = _taaHistory[_taaHistoryIndex ^ 1].Get();
+    DX12Util::TransitionBarrier(cmdList, histWrite,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    // Window depth: DEPTH_WRITE (forward pass just used the DSV) -> DEPTH_READ
+    // so the resolve PS can reconstruct world positions from it.
+    DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_DEPTH_READ);
+
+    // (Re)create the write-slot RTV at heap slot [1] 鈥?it follows the
+    // ping-pong index, so it cannot be a one-time static descriptor.
+    {
+      D3D12_CPU_DESCRIPTOR_HANDLE histRtv =
+          _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+      histRtv.ptr += _hdrRtvSize;
+      dev->CreateRenderTargetView(histWrite, nullptr, histRtv);
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {rtvHandle, {}};
+    rtvs[1] = _hdrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvs[1].ptr += _hdrRtvSize;
+    cmdList->OMSetRenderTargets(2, rtvs, FALSE, nullptr);
+
+    cmdList->SetPipelineState(_resolvePSO.Get());
+    cmdList->SetGraphicsRootSignature(_resolveRootSig.Get());
+    cmdList->SetGraphicsRootConstantBufferView(0,
+        _frameResources[_currentFrame].uniformBuffer->GetGPUVirtualAddress());
+    cmdList->RSSetViewports(1, &viewport);
+    cmdList->RSSetScissorRects(1, &scissor);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // Descriptor table: t0=hdrBuffer, t1=history(read), t2=window depth
+    {
+      auto rDesc = _cbvSrvUavHeap.AllocateDynamic(3);
+      D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+      d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      // t0: HDR
+      d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+      d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      d.Texture2D.MipLevels = 1;
+      dev->CreateShaderResourceView(_hdrBuffer.Get(), &d, {rDesc.cpu.ptr});
+      // t1: history (read slot)
+      dev->CreateShaderResourceView(histRead, &d, {rDesc.cpu.ptr + ds});
+      // t2: window depth (SRV view of D32)
+      d.Format = DXGI_FORMAT_R32_FLOAT;
+      dev->CreateShaderResourceView(_device.GetDepthStencilBuffer(), &d,
+          {rDesc.cpu.ptr + 2 * ds});
+      cmdList->SetGraphicsRootDescriptorTable(1, rDesc.gpu);
+    }
+
+    cmdList->DrawInstanced(3, 1, 0, 0);
+
+    // Restore states: HDR back to RT for the next frame's deferred pass.
+    DX12Util::TransitionBarrier(cmdList, _hdrBuffer.Get(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    // History write: RT -> PSR (becomes next frame's read).
+    DX12Util::TransitionBarrier(cmdList, histWrite,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    // Window depth back to DEPTH_WRITE for the next frame's clear + base pass.
+    DX12Util::TransitionBarrier(cmdList, _device.GetDepthStencilBuffer(),
+        D3D12_RESOURCE_STATE_DEPTH_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    // Flip the ping-pong so the next frame reads what this one wrote.
+    _taaHistoryIndex ^= 1;
+
+    // Back to a single render target (the ImGui overlay draws to the
+    // swapchain with a 1-RT pipeline state).
+    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+  }
+
   // === Transition G-buffers back to RTV for next frame ===
   {
     D3D12_RESOURCE_BARRIER barriers[4];
@@ -3902,12 +5349,14 @@ void DX12GpuScene::Draw() {
   }
 
   // If scatter was active last frame but is disabled now, transition scatterAccumVolume
-  // back to UAV so it starts in a known state when scatter is re-enabled.
+  // back to UAV so it starts in a known state when scatter is re-enabled, and
+  // invalidate the temporal history (Vulkan parity: invalidateHistory()).
   if (_scatterAccumIsInPSR && _frameConstants.scatterScale <= 0.0f && _scatterAccumVolume) {
     DX12Util::TransitionBarrier(cmdList, _scatterAccumVolume.Get(),
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     _scatterAccumIsInPSR = false;
+    _scatterHistoryValid = false;
   }
 
   // ImGui overlay
@@ -3915,6 +5364,13 @@ void DX12GpuScene::Draw() {
 
   _device.EndFrameAndPresent();
   if (_imguiInitialized) EditorUi::RenderPlatformWindows();
+
+  // One-shot debug dump (AVR_DUMP=<dir>) after the frame has settled.
+  ++_drawCount;
+  if (!_dumpDone && _drawCount > 60) {
+    DebugDumpFrame();
+    _dumpDone = true;
+  }
 }
 
 // ---- ImGui ----
@@ -3936,7 +5392,7 @@ void DX12GpuScene::InitImGui(SDL_Window* window) {
                        _cbvSrvUavHeap.GetHeap(),
                        fontDesc, fontDescGPU);
 
-  // Build font atlas on CPU side — required by legacy Init path which
+  // Build font atlas on CPU side 鈥?required by legacy Init path which
   // removes ImGuiBackendFlags_RendererHasTextures.
   {
     unsigned char* pixels; int width, height;
@@ -3979,7 +5435,7 @@ void DX12GpuScene::BuildImGuiFrame() {
   ImGui::Text("Transp:    %u / %u", _cullingStats.visibleTransparent, _cullingStats.totalTransparent);
   ImGui::Separator();
   ImGui::Checkbox("TAA", &_taaEnabled);
-  ImGui::SliderFloat("Scatter", &_frameConstants.scatterScale, 0.0f, 1.0f);
+  ImGui::SliderFloat("Scatter", &_frameConstants.scatterScale, 0.0f, 4.0f);
 
   // Texture streaming stats
   if (!_streamEntries.empty()) {
@@ -3992,7 +5448,7 @@ void DX12GpuScene::BuildImGuiFrame() {
     }
     ImGui::Text("Textures: %u full | %u half | %u low", fullRes, halfRes, qtrRes);
     ImGui::Text("Stream want-swap: %u", _streamWantUpgrade);
-    // 常驻显存估算(CPU 侧近似,不含 256 行距 padding)
+    // 甯搁┗鏄惧瓨浼扮畻(CPU 渚ц繎浼?涓嶅惈 256 琛岃窛 padding)
     uint64_t residentBytes = 0;
     for (auto& e : _streamEntries) {
       uint64_t bs, bpb;
@@ -4048,7 +5504,7 @@ void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
   _hizTexture.Reset();
   _saoDepthPyramid.Reset();
 
-  // Release light-tile resources (sized by tileW × tileH)
+  // Release light-tile resources (sized by tileW 脳 tileH)
   _lightIndicesBuffer.Reset();
   _lightIndicesTransparentBuffer.Reset();
   _spotLightIndicesBuffer.Reset();
@@ -4100,11 +5556,53 @@ void DX12GpuScene::OnResize(uint32_t newWidth, uint32_t newHeight) {
   // Re-create static SRV/UAV descriptors for changed resources
   CreateStaticDescriptors();
 
-  // Reset scatter accumulation state.
-  // NOTE: froxel volumes (scatter) are intentionally NOT recreated on resize
-  // because SCATTER_FROXEL_W, SCATTER_FROXEL_H, and SCATTER_FROXEL_D are
-  // compile-time constants independent of screen resolution.
+  // Scatter volume: froxel dims derive from the screen (ceil(w/8) x ceil(h/8)),
+  // so the three volumes must be re-created on resize. Stale temporal history
+  // is discarded (Vulkan parity: invalidateHistory on re-create).
+  if (_scatterRootSig && _accumulatePSO) {
+    _scatterVolume.Reset();
+    _scatterAccumVolume.Reset();
+    _scatterHistoryVolume.Reset();
+    // Recreate with the same state machine as init (CreateScatterResources
+    // re-derives dims from the NEW screen size and rewrites the static SRVs).
+    // Noise textures are resolution-independent and stay alive.
+    auto* dev = _device.GetDevice();
+    _scatterFroxelW = (_device.GetWidth() + 7) / 8;
+    _scatterFroxelH = (_device.GetHeight() + 7) / 8;
+    auto makeVol = [&](ComPtr<ID3D12Resource>& res, D3D12_RESOURCE_FLAGS flags,
+                       D3D12_RESOURCE_STATES initial) {
+      D3D12_RESOURCE_DESC d = {};
+      d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+      d.Width = _scatterFroxelW;
+      d.Height = _scatterFroxelH;
+      d.DepthOrArraySize = (UINT16)SCATTER_FROXEL_D;
+      d.MipLevels = 1;
+      d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+      d.Flags = flags;
+      d.SampleDesc.Count = 1;
+      D3D12_HEAP_PROPERTIES hp = {};
+      hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+      dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+          initial, nullptr, IID_PPV_ARGS(&res));
+    };
+    makeVol(_scatterVolume, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    makeVol(_scatterAccumVolume, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    makeVol(_scatterHistoryVolume, D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture3D.MipLevels = 1;
+    dev->CreateShaderResourceView(_scatterAccumVolume.Get(), &srvDesc,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_ACCUM));
+    dev->CreateShaderResourceView(_scatterHistoryVolume.Get(), &srvDesc,
+        _cbvSrvUavHeap.GetStaticCPU(SRV_SCATTER_HISTORY));
+  }
   _scatterAccumIsInPSR = false;
+  _scatterHistoryValid = false;
 
   spdlog::info("DX12GpuScene resized to {}x{}", newWidth, newHeight);
 }

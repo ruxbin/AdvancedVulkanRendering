@@ -51,7 +51,19 @@ struct AAPLShaderMaterial
 // #endif
 };
 
+// Vulkan: specialization constant (vkCmdPushDescriptorSet / pipeline
+// specialization sets it per variant). DX12: dxc ignores constant_id and a
+// plain `const bool` global would materialize as a $Globals cbuffer at b0 —
+// which the spot-shadow root signature does not provide — so both DX12
+// variants select the value at compile time via macro (see
+// compile_shaders_dx12.bat: -D SPEC_ALPHA_MASK).
+#if defined(SPEC_ALPHA_MASK)
+#define specAlphaMask true
+#elif defined(DX12_BACKEND)
+#define specAlphaMask false
+#else
 [[vk::constant_id(0)]] const bool  specAlphaMask  = false;
+#endif
 //[[vk::constant_id(1)]] const bool specTransparent = false;
 
 VK_BINDING(0,0)
