@@ -2,6 +2,7 @@
 #include "GpuScene.h"
 #include "SDL.h"
 #include "SceneInput.h"
+#include "SceneSelectionInput.h"
 #include "imgui.h"
 #include "VlmCommandLine.h"
 #include "VulkanSetup.h"
@@ -213,7 +214,7 @@ int main(int nargs, char **args) {
   SDL_Event e;
   bool quit = false;
 
-  bool mouseDown = false;
+  scene_selection::MouseInput selectionMouse;
   float currentZDegree = 0;
   float currentYDegree = 0;
   constexpr float rotateSpeed = 0.1f;
@@ -234,8 +235,10 @@ int main(int nargs, char **args) {
       const auto input = RouteSceneInput(e, SDL_GetWindowID(window),
                                         io.WantCaptureMouse, io.WantCaptureKeyboard);
       if (input.toggleEditor) gpuScene.ToggleEditor();
+      const auto mouseAction = selectionMouse.Handle(e, input, gpuScene.IsDecalMode());
+      if (mouseAction.cancelPick) gpuScene.CancelScenePick();
+      if (mouseAction.pick) gpuScene.RequestScenePick(float(e.button.x), float(e.button.y));
       if (input.resetDrag) {
-        mouseDown = false;
         currentZDegree = currentYDegree = 0;
         if (!input.deliver || e.type != SDL_MOUSEBUTTONUP) gpuScene.OnDecalMouseUp();
       }
@@ -248,6 +251,10 @@ int main(int nargs, char **args) {
         spdlog::info("Scancode: {}\n", e.key.keysym.scancode);
         switch (e.key.keysym.scancode) {
 
+        case SDL_SCANCODE_ESCAPE:
+          selectionMouse.Cancel();
+          gpuScene.ClearSceneSelection();
+          break;
         case SDL_SCANCODE_A: // a
           gpuScene.GetMainCamera()->MoveRight(moveSpeed);
           break;
@@ -271,6 +278,7 @@ int main(int nargs, char **args) {
           gpuScene.TriggerClusterLighting();
           break;
         case SDL_SCANCODE_T:
+          selectionMouse.Cancel();
           gpuScene.ToggleDecalMode();
           spdlog::info("Decal mode: {}", gpuScene.IsDecalMode() ? "ON" : "OFF");
           break;
@@ -297,7 +305,7 @@ int main(int nargs, char **args) {
       } else if (e.type == SDL_MOUSEMOTION) {
         if (gpuScene.IsDecalMode()) {
           gpuScene.OnDecalMouseMove((float)e.motion.x, (float)e.motion.y);
-        } else if (mouseDown) {
+        } else if (mouseAction.rotate) {
           spdlog::info("xrel:{} yrel:{} zdegree{}", e.motion.xrel,
                        e.motion.yrel, currentZDegree);
           if (abs(e.motion.xrel) > abs(e.motion.yrel)) {
@@ -316,14 +324,11 @@ int main(int nargs, char **args) {
       } else if (e.type == SDL_MOUSEBUTTONDOWN) {
         if (gpuScene.IsDecalMode() && e.button.button == SDL_BUTTON_LEFT) {
           gpuScene.OnDecalMouseDown((float)e.button.x, (float)e.button.y);
-        } else {
-          mouseDown = true;
         }
       } else if (e.type == SDL_MOUSEBUTTONUP) {
         if (gpuScene.IsDecalMode() && e.button.button == SDL_BUTTON_LEFT) {
           gpuScene.OnDecalMouseUp();
         } else {
-          mouseDown = false;
           currentZDegree = 0;
           currentYDegree = 0;
         }

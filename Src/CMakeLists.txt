@@ -29,6 +29,7 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Mesh.cpp
     ${CMAKE_CURRENT_LIST_DIR}/VulkanSetup.cpp
     ${CMAKE_CURRENT_LIST_DIR}/GpuScene.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/ScenePicking.cpp
     ${CMAKE_CURRENT_LIST_DIR}/SphericalHarmonics.cpp
     ${CMAKE_CURRENT_LIST_DIR}/KtxTexture.cpp
     ${CMAKE_CURRENT_LIST_DIR}/IBLGenerator.cpp

@@ -2,6 +2,7 @@
 #include "SphericalHarmonics.h"
 #include "Camera.h"
 #include "EditorUi.h"
+#include "SceneSelection.h"
 #include "Common.h"
 #include "AssetLoader.h"
 #include "Light.h"
@@ -385,6 +386,7 @@ private:
       VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R16G16B16A16_SFLOAT,
       VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_SRGB};
   std::vector<VkImage> _gbuffers[4];       // per-frame, [channel][frame]
+  std::vector<VkDeviceMemory> _gbuffersMemory[4];
   std::vector<VkImageView> _gbuffersView[4]; // per-frame, [channel][frame]
   std::vector<VkFramebuffer> _basePassFrameBuffer; // per-frame
   VkRenderPass _basePass;
@@ -442,11 +444,32 @@ private:
   bool _showOccluderWireframe = false;  // ImGui debug toggle
   bool _showSpotLightViz      = false;  // ImGui debug toggle: spot light cones
   bool _showPointLightViz     = false;  // ImGui debug toggle: point light range spheres
-  bool _meshPickerActive      = false;
-  std::string _pickedMeshName;
+  scene_selection::Controller _selection;
+  struct PickSlot {
+    VkImage id = VK_NULL_HANDLE, depth = VK_NULL_HANDLE;
+    VkDeviceMemory idMemory = VK_NULL_HANDLE, depthMemory = VK_NULL_HANDLE;
+    VkImageView idView = VK_NULL_HANDLE, depthView = VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkBuffer readback = VK_NULL_HANDLE;
+    VkDeviceMemory readbackMemory = VK_NULL_HANDLE;
+    bool coherent = true;
+    std::optional<scene_selection::Request> request;
+  };
+  std::vector<PickSlot> _pickSlots;
+  VkRenderPass _pickPass = VK_NULL_HANDLE;
+  VkPipeline _pickPipelines[3] = {};
+  bool _pickFailed = false;
+  void createPicking();
+  void destroyPicking();
+  void recordPicking(VkCommandBuffer commandBuffer);
+  void consumePicking(uint32_t slot);
+  VkRenderPass _selectionUiPass = VK_NULL_HANDLE;
+  std::vector<VkFramebuffer> _selectionUiFrames;
+  void createSelectionUiPass();
+  void destroySelectionUiPass();
+  void recordSelectionUi(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   SDL_Window* _sdlWindow = nullptr;
 
-  std::string queryMeshAtScreenPos(float mouseX, float mouseY);
 
   // Hardware ray tracing (optional path).
   class RayTracing *_raytracing = nullptr;
@@ -703,6 +726,9 @@ public:
   void InitImGui(SDL_Window *window) { initImGui(window); }
   void ProcessImGuiEvent(SDL_Event *event);
   void ToggleEditor() { _editorUi.Toggle(); }
+  void RequestScenePick(float mx, float my);
+  void ClearSceneSelection() { _selection.Clear(); }
+  void CancelScenePick() { _selection.Cancel(); }
 
   VkShaderModule createShaderModule(const std::vector<char> &code) const;
 
@@ -731,7 +757,7 @@ public:
   void TriggerClusterLighting() { useClusterLighting = !useClusterLighting; }
 
   // Decal interaction
-  void ToggleDecalMode() { _decalEditMode = !_decalEditMode; }
+  void ToggleDecalMode() { _decalEditMode = !_decalEditMode; _selection.Cancel(); }
   bool IsDecalMode() const { return _decalEditMode; }
   void OnDecalMouseDown(float mx, float my) {
     if (_decalEditMode) onMouseDownDecal(mx, my);
@@ -748,7 +774,6 @@ public:
   void OnDecalCycleTexture() {
     if (_decalEditMode) cycleDecalTexture();
   }
-  void ToggleMeshPicker() { _meshPickerActive = !_meshPickerActive; }
   void OnDecalStartRotate() {
     if (_decalEditMode) { _isDraggingDecal = false; _isRotatingDecal = true; }
   }

@@ -17,6 +17,13 @@ REM === DrawCluster (vertex + pixel variants) ===
 %DXC% %DXFLAGS% -T ps_6_0 drawcluster.hlsl -E RenderSceneForwardPSIndirect -Fo drawcluster.forward.indirect.ps.cso
 %DXC% %DXFLAGS% -T vs_6_0 drawcluster.hlsl -E RenderSceneVSShadow -Fo drawclusterShadow.vs.cso
 
+REM === Cluster/mesh picking ID pass ===
+%DXC% %DXFLAGS% -T vs_6_0 picking.hlsl -E RenderScenePickingVS -Fo picking.vs.cso
+%DXC% %DXFLAGS% -T ps_6_0 picking.hlsl -E PickOpaque -Fo picking.opaque.ps.cso
+%DXC% %DXFLAGS% -T ps_6_0 picking.hlsl -E PickAlphaMask -Fo picking.mask.ps.cso
+%DXC% %DXFLAGS% -T ps_6_0 picking.hlsl -E PickTransparent -Fo picking.transparent.ps.cso
+
+
 REM === Spot Shadow (per-light depth, direct draws) ===
 %DXC% %DXFLAGS% -T vs_6_0 drawclusterShadowSpot.hlsl -E RenderSceneVSShadowSpot -Fo drawclusterShadowSpot.vs.cso
 

@@ -7,6 +7,13 @@ D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePS -Fo drawcluster.ps.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneBasePass -Fo drawcluster.base.ps.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 drawcluster.hlsl -fspv-debug=vulkan-with-source -E RenderSceneForwardPS -Fo drawcluster.forward.ps.spv
+
+REM On-demand cluster/mesh picking ID pass
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 picking.hlsl -E RenderScenePickingVS -Fo picking.vs.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 picking.hlsl -E PickOpaque -Fo picking.opaque.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 picking.hlsl -E PickAlphaMask -Fo picking.mask.ps.spv
+D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 picking.hlsl -E PickTransparent -Fo picking.transparent.ps.spv
+
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T vs_6_0 deferredlighting.hlsl -fspv-debug=vulkan-with-source -E AAPLSimpleTexVertexOutFSQuadVertexShader -Fo deferredlighting.vs.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 deferredlighting.hlsl -E DeferredLighting -Fo deferredlighting.ps.spv
 D:\VulkanSDK\1.3.296.0\Bin\dxc.exe -spirv -T ps_6_0 pointspotlight.hlsl -fspv-debug=vulkan-with-source -E DeferredLighting -Fo deferredPointLighting.ps.spv

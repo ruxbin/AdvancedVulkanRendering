@@ -1,6 +1,7 @@
 ﻿#include "VlmRuntime.h"
 
 #include "GpuScene.h"
+#include "SceneSelectionUi.h"
 #include "AssetLoader.h"
 #include "IBLGenerator.h"
 #include "Light.h"
@@ -2187,6 +2188,7 @@ void GpuScene::CreateGBuffers() {
 
   for (int i = 0; i < 4; i++) {
     _gbuffers[i].resize(framesInFlight);
+    _gbuffersMemory[i].resize(framesInFlight);
     _gbuffersView[i].resize(framesInFlight);
 
     VkImageCreateInfo imageInfo{};
@@ -2224,7 +2226,7 @@ void GpuScene::CreateGBuffers() {
     allocInfo.memoryTypeIndex = device.findMemoryType(
         memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    VkDeviceMemory textureImageMemory;
+    VkDeviceMemory &textureImageMemory = _gbuffersMemory[i][f];
     if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
                          &textureImageMemory) != VK_SUCCESS) {
       throw std::runtime_error("failed to allocate image memory!");
@@ -2548,6 +2550,7 @@ GpuScene::~GpuScene() {
 
   // SVT 资源先于其余清理销毁（等待设备空闲，避免在用销毁）。
   vkDeviceWaitIdle(device.getLogicalDevice());
+  destroyPicking();
   destroySvt();
 
   // IBL 资源销毁(Task 9):view 先于 image;窗口关闭时可能仍有帧在飞,
@@ -2561,6 +2564,7 @@ GpuScene::~GpuScene() {
     ImGui::DestroyContext();
     _imguiInitialized = false;
   }
+  destroySelectionUiPass();
   if (_equirectView != VK_NULL_HANDLE) {
     vkDestroyImageView(device.getLogicalDevice(), _equirectView, nullptr);
     _equirectView = VK_NULL_HANDLE;
@@ -3260,6 +3264,9 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
   m_SubMeshes = (AAPLSubMesh *)uncompressData(
       (unsigned char *)applMesh->_meshData, applMesh->compressedMeshDataLength,
       applMesh->_meshCount * sizeof(AAPLSubMesh));
+  if (!_selection.BuildMapping(applMesh->_chunkCount, m_SubMeshes, applMesh->_meshCount)) {
+    spdlog::error("Scene picking disabled: {}", _selection.error);
+  }
 
   CreateDepthTexture();
   CreateZdepthView();
@@ -4174,9 +4181,10 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     _raytracing->RecordTraceRays(commandBuffer, (uint32_t)imageIndex, extent);
     _raytracing->RecordBlitToSwapchain(commandBuffer, (uint32_t)imageIndex);
     _raytracing->BeginImGuiCompositePass(commandBuffer, (uint32_t)imageIndex, extent);
-    renderImGuiOverlay(commandBuffer, (uint32_t)imageIndex);
+
     _raytracing->EndImGuiCompositePass(commandBuffer);
     _raytracing->RecordHdrToSwapchain(commandBuffer, (uint32_t)imageIndex);
+    recordSelectionUi(commandBuffer, (uint32_t)imageIndex);
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
       throw std::runtime_error("failed to record command buffer!");
     }
@@ -4221,6 +4229,11 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
   };
 
   vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+  // The visible draw slots and indirect counts are now available to graphics.
+  // Picking resources/readback are sync-slot scoped; scene descriptors remain
+  // image-index scoped inside recordPicking().
+  recordPicking(commandBuffer);
 
 
   {
@@ -4451,8 +4464,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
         drawPointLightSpheres(commandBuffer,currentPointLightIndex);
       }
 
-      // ImGui overlay (rendered last in forward pass)
-      renderImGuiOverlay(commandBuffer, imageIndex);
+      // Scene UI is composited after resolve, outside TAA history.
 
       vkCmdEndRenderPass(commandBuffer);
     }
@@ -4481,6 +4493,8 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdEndRenderPass(commandBuffer);
   }
+
+  recordSelectionUi(commandBuffer, (uint32_t)imageIndex);
 
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
     throw std::runtime_error("failed to record command buffer!");
@@ -4620,6 +4634,9 @@ void GpuScene::Draw() {
     spdlog::error("failed to wait for fence! {}", static_cast<int>(fenceResult));
     return;
   }
+  // This slot's previous submission is complete; consume before resetting or
+  // reusing its fence, command buffer and picking readback resources.
+  consumePicking(_syncSlot);
 
   // 获取下一个 swapchain image
   uint32_t imageIndex;
@@ -4738,8 +4755,36 @@ void GpuScene::Draw() {
 }
 
 void GpuScene::cleanupSwapChainResources() {
+  // recreateSwapChain() has idled the device, so in-flight readbacks are safe
+  // to discard. Cancellation invalidates their logical results but preserves
+  // the current selection across a same-scene resize.
+  destroyPicking();
+  destroySelectionUiPass();
+
   // 清理依赖 swapchain 尺寸的资源
   // 这些资源需要在 swapchain 重建时重新创建
+
+  // Base-pass framebuffers reference both the GBuffer views and the device's
+  // swapchain-scoped depth views, so they must be rebuilt together.
+  for (auto framebuffer : _basePassFrameBuffer) {
+    if (framebuffer != VK_NULL_HANDLE)
+      vkDestroyFramebuffer(device.getLogicalDevice(), framebuffer, nullptr);
+  }
+  _basePassFrameBuffer.clear();
+
+  for (int i = 0; i < 4; ++i) {
+    for (uint32_t f = 0; f < _gbuffers[i].size(); ++f) {
+      if (_gbuffersView[i][f] != VK_NULL_HANDLE)
+        vkDestroyImageView(device.getLogicalDevice(), _gbuffersView[i][f], nullptr);
+      if (_gbuffers[i][f] != VK_NULL_HANDLE)
+        vkDestroyImage(device.getLogicalDevice(), _gbuffers[i][f], nullptr);
+      if (_gbuffersMemory[i][f] != VK_NULL_HANDLE)
+        vkFreeMemory(device.getLogicalDevice(), _gbuffersMemory[i][f], nullptr);
+    }
+    _gbuffersView[i].clear();
+    _gbuffers[i].clear();
+    _gbuffersMemory[i].clear();
+  }
 
   // 清理 deferred framebuffers
   for (auto framebuffer : _deferredFrameBuffer) {
@@ -4792,28 +4837,11 @@ void GpuScene::cleanupSwapChainResources() {
   _taaFirstFrame = true;
   _taaFrameIndex = 0;
 
-  // 清理 GBuffer 资源
-  if (_gbufferAlbedoAlphaTextureView != VK_NULL_HANDLE) {
-    vkDestroyImageView(device.getLogicalDevice(), _gbufferAlbedoAlphaTextureView, nullptr);
-  }
-  if (_gbufferNormalsTextureView != VK_NULL_HANDLE) {
-    vkDestroyImageView(device.getLogicalDevice(), _gbufferNormalsTextureView, nullptr);
-  }
-  if (_gbufferEmissiveTextureView != VK_NULL_HANDLE) {
-    vkDestroyImageView(device.getLogicalDevice(), _gbufferEmissiveTextureView, nullptr);
-  }
-  if (_gbufferF0RoughnessTextureView != VK_NULL_HANDLE) {
-    vkDestroyImageView(device.getLogicalDevice(), _gbufferF0RoughnessTextureView, nullptr);
-  }
-
   // 清理 decal framebuffers
   for (auto framebuffer : _decalFramebuffers) {
     vkDestroyFramebuffer(device.getLogicalDevice(), framebuffer, nullptr);
   }
   _decalFramebuffers.clear();
-
-  // 注意：如果 GBuffer images 也是独立创建的，也需要在这里销毁
-  // vkDestroyImage, vkFreeMemory 等
 
   // RT path's size-dependent resources (output / accum images + composite
   // framebuffers). Pipeline / SBT / descriptor pool / set layout are kept.
@@ -4827,10 +4855,51 @@ void GpuScene::recreateSwapChainResources() {
   createHDRLightingBuffer();
   createTAAHistoryBuffer();
 
+  // Recreate the GBuffer and every framebuffer/descriptor that references it
+  // or the device's newly created depth views.
+  CreateGBuffers();
+  CreateBasePassFrameBuffer();
+
   // 重新创建 deferred/forward framebuffers
   CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
   CreateForwardLightingFrameBuffer(device.getSwapChainImageCount());
   createResolveFrameBuffer(device.getSwapChainImageCount());
+  if (_imguiInitialized) createSelectionUiPass();
+
+  for (uint32_t f = 0; f < framesInFlight; ++f) {
+    std::array<VkDescriptorImageInfo, 5> imageInfo{};
+    for (int i = 0; i < 4; ++i) {
+      imageInfo[i].imageView = _gbuffersView[i][f];
+      imageInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    imageInfo[4].imageView = device.getWindowDepthOnlyImageView(f);
+    imageInfo[4].imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    for (uint32_t i = 0; i < writes.size(); ++i) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = deferredLightingDescriptorSet[f];
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      writes[i].pImageInfo = &imageInfo[i];
+    }
+    vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
+
+    // SAO's mip-0 copy reuses the Hi-Z pipeline but samples the device's
+    // swapchain-scoped depth view, which has just been replaced.
+    if (f < _saoCopyDescriptorSet.size()) {
+      VkDescriptorImageInfo depthInfo{};
+      depthInfo.imageView = device.getWindowDepthOnlyImageView(f);
+      depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+      VkWriteDescriptorSet depthWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      depthWrite.dstSet = _saoCopyDescriptorSet[f];
+      depthWrite.dstBinding = 0;
+      depthWrite.descriptorCount = 1;
+      depthWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      depthWrite.pImageInfo = &depthInfo;
+      vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &depthWrite, 0, nullptr);
+    }
+  }
 
   // Update resolve descriptor sets with new image views
   if (!_resolveDescriptorSets.empty()) {
@@ -9639,7 +9708,8 @@ void GpuScene::initImGui(SDL_Window *window) {
   init_info.DescriptorPoolSize = 64;
   init_info.MinImageCount = framesInFlight;
   init_info.ImageCount = framesInFlight;
-  init_info.PipelineInfoMain.RenderPass = _forwardLightingPass;
+  createSelectionUiPass();
+  init_info.PipelineInfoMain.RenderPass = _selectionUiPass;
   init_info.PipelineInfoMain.Subpass = 0;
   init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   init_info.PipelineInfoForViewports.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
@@ -9677,59 +9747,6 @@ void GpuScene::readbackCullingStats(uint32_t previousFrame) {
   }
 }
 
-std::string GpuScene::queryMeshAtScreenPos(float mouseX, float mouseY) {
-  if (!m_SubMeshes || !applMesh || applMesh->_meshCount == 0)
-    return "(no scene)";
-
-  Camera* cam = GetMainCamera();
-  if (!cam) return "(no camera)";
-
-  float w = (float)device.getSwapChainExtent().width;
-  float h = (float)device.getSwapChainExtent().height;
-
-  vec3 nearPoint = cam->ScreenToWorldPos(mouseX, mouseY, w, h, 1.0f);
-  vec3 farPoint  = cam->ScreenToWorldPos(mouseX, mouseY, w, h, 0.0f);
-  vec3 rayDir = normalize(farPoint - nearPoint);
-
-  // Slab-method ray–AABB intersection against each submesh.
-  int bestMesh = -1;
-  float bestT = 1e30f;
-  float bestVolumeFallback = 1e30f;
-  int fallbackMesh = -1;
-  for (int m = 0; m < (int)applMesh->_meshCount; ++m) {
-    const AAPLSubMesh& sub = m_SubMeshes[m];
-    float tmin = -1e30f, tmax = 1e30f;
-    const float* bmin = &sub.boundingBox.min.x;
-    const float* bmax = &sub.boundingBox.max.x;
-    for (int a = 0; a < 3; ++a) {
-      float d = (&rayDir.x)[a];
-      if (std::fabsf(d) < 1e-8f) {
-        if ((&nearPoint.x)[a] < bmin[a] || (&nearPoint.x)[a] > bmax[a])
-          { tmin = 1e30f; break; }
-        continue;
-      }
-      float t1 = (bmin[a] - (&nearPoint.x)[a]) / d;
-      float t2 = (bmax[a] - (&nearPoint.x)[a]) / d;
-      if (t1 > t2) std::swap(t1, t2);
-      if (t1 > tmin) tmin = t1;
-      if (t2 < tmax) tmax = t2;
-      if (tmin > tmax) break;
-    }
-    if (tmin <= tmax && tmax > 0.0f) {
-      if (tmin > 0.0f && tmin < bestT) {
-        bestT = tmin; bestMesh = m;
-      } else if (tmin <= 0.0f) {
-        vec3 d = sub.boundingBox.max - sub.boundingBox.min;
-        float vol = d.x * d.y * d.z;
-        if (vol < bestVolumeFallback) { bestVolumeFallback = vol; fallbackMesh = m; }
-      }
-    }
-  }
-  if (bestMesh < 0) bestMesh = fallbackMesh;
-  if (bestMesh < 0) return "(none)";
-  return "mesh_" + std::to_string(bestMesh) + ".ply";
-}
-
 void GpuScene::buildImGuiFrame() {
   if (!_imguiInitialized) return;
 
@@ -9743,10 +9760,12 @@ void GpuScene::buildImGuiFrame() {
   float cullPercent = totalChunks > 0 ? 100.0f * culledCount / totalChunks : 0.0f;
 
   if (!_editorUi.Begin()) {
+    if (!useRayTracing) scene_selection::DrawBounds(_selection, m_Chunks, m_SubMeshes, maincamera, _sdlWindow);
     ImGui::Render();
     return;
   }
   ImGui::Text("Backend: Vulkan");
+  scene_selection::DrawPanel(_selection, m_Chunks, m_SubMeshes, !useRayTracing && !_decalEditMode);
 
   ImGui::Text("Total Chunks: %u", totalChunks);
   ImGui::Text("Visible: %u", totalVisible);
@@ -9761,7 +9780,7 @@ void GpuScene::buildImGuiFrame() {
     const bool rtSupported = device.isRayTracingSupported();
     if (!rtSupported) useRayTracing = false;
     ImGui::BeginDisabled(!rtSupported);
-    ImGui::Checkbox("Ray Tracing", &useRayTracing);
+    if (ImGui::Checkbox("Ray Tracing", &useRayTracing)) _selection.Cancel();
     ImGui::EndDisabled();
     if (!rtSupported) {
       ImGui::SameLine();
@@ -9848,25 +9867,8 @@ void GpuScene::buildImGuiFrame() {
       }
   }
 
-  ImGui::Separator();
-  ImGui::Checkbox("Mesh Picker", &_meshPickerActive);
-  if (_meshPickerActive && _sdlWindow) {
-    // SDL mouse coordinates are relative to the focused window. Only query
-    // scene geometry while hovering the scene, never over the Editor.
-    if (SDL_GetMouseFocus() == _sdlWindow && !ImGui::GetIO().WantCaptureMouse) {
-      int mx, my;
-      SDL_GetMouseState(&mx, &my);
-      int width, height;
-      SDL_GetWindowSize(_sdlWindow, &width, &height);
-      if (width > 0 && height > 0)
-        _pickedMeshName = queryMeshAtScreenPos(
-            (float)mx * device.getSwapChainExtent().width / width,
-            (float)my * device.getSwapChainExtent().height / height);
-    }
-    ImGui::Text("PLY: %s", _pickedMeshName.c_str());
-  }
-
   ImGui::End();
+  if (!useRayTracing) scene_selection::DrawBounds(_selection, m_Chunks, m_SubMeshes, maincamera, _sdlWindow);
 
   ImGui::Render();
 }
