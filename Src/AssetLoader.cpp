@@ -1,5 +1,6 @@
 #include "AssetLoader.h"
 #include <fstream>
+#include <algorithm>
 #include <stdexcept>
 
 #ifdef __ANDROID__
@@ -121,4 +122,47 @@ void AssetLoader::BinaryFileReader::close() {
     file = nullptr;
   }
 #endif
+}
+
+uint64_t AssetLoader::BinaryFileReader::remaining() const {
+  if (!isOpen())
+    throw std::runtime_error("Binary asset is not open");
+#ifdef __ANDROID__
+  const auto size = AAsset_getRemainingLength64(asset);
+  if (size < 0) throw std::runtime_error("Cannot query binary asset size");
+  return static_cast<uint64_t>(size);
+#else
+#ifdef _WIN32
+  const auto position = _ftelli64(file);
+  if (position < 0 || _fseeki64(file, 0, SEEK_END) != 0)
+    throw std::runtime_error("Cannot query binary asset size");
+  const auto end = _ftelli64(file);
+  const auto restored = _fseeki64(file, position, SEEK_SET);
+#else
+  const auto position = ftello(file);
+  if (position < 0 || fseeko(file, 0, SEEK_END) != 0)
+    throw std::runtime_error("Cannot query binary asset size");
+  const auto end = ftello(file);
+  const auto restored = fseeko(file, position, SEEK_SET);
+#endif
+  if (end < position || restored != 0)
+    throw std::runtime_error("Cannot seek binary asset");
+  return static_cast<uint64_t>(end - position);
+#endif
+}
+
+void AssetLoader::BinaryFileReader::readExact(void *dst, size_t bytes) {
+  if (bytes > remaining())
+    throw std::runtime_error("Truncated binary asset");
+  if (bytes && !dst)
+    throw std::runtime_error("Null binary asset destination");
+  auto *out = static_cast<unsigned char*>(dst);
+  while (bytes) {
+    // AAsset_read returns int; bounded requests also support short reads.
+    const size_t request = std::min(bytes, size_t(1024 * 1024));
+    const size_t got = read(out, 1, request);
+    if (!got) throw std::runtime_error("Short binary asset read");
+    bytes -= got;
+    out += got;
+  }
 }

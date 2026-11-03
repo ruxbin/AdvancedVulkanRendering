@@ -74,10 +74,10 @@ uint32_t findMemoryType(uint32_t typeFilter,
 
       throw std::runtime_error("failed to find suitable memory type!");
     }
-#ifndef __ANDROID__
+// Shared RT code is linked on Android too, but remains disabled there by
+// rayTracingSupported. Keep its property accessors available for compilation.
 const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& getRTPipelineProperties() const { return rtPipelineProperties; }
 const VkPhysicalDeviceAccelerationStructurePropertiesKHR& getASProperties() const { return asProperties; }
-#endif
   // Startup probe result: true only when the device exposes every RT
   // extension AND the accelerationStructure + rayTracingPipeline features.
   bool isRayTracingSupported() const { return rayTracingSupported; }
@@ -121,12 +121,10 @@ private:
 
   VkRenderPass renderPass;
 
-#ifndef __ANDROID__
   VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
   VkPhysicalDeviceAccelerationStructurePropertiesKHR asProperties{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-#endif
 
   // Startup RT probe result (extensions AND features). Set in
   // createLogicalDevice; false on Android and on devices without full RT

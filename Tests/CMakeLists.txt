@@ -8,6 +8,19 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 set(extra_cpu_tests)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(NAME BistroConverterTests COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}" -p test_convert_bistro_astc.py)
+endif()
+find_path(BISTRO_VULKAN_INCLUDE_DIR vulkan/vulkan_core.h HINTS "$ENV{VULKAN_SDK}/Include")
+if(BISTRO_VULKAN_INCLUDE_DIR)
+    add_executable(BistroTextureFormatTests BistroTextureFormatTests.cpp)
+    target_include_directories(BistroTextureFormatTests PRIVATE ${BISTRO_VULKAN_INCLUDE_DIR})
+    list(APPEND extra_cpu_tests BistroTextureFormatTests)
+endif()
+add_executable(AssetLoaderTests AssetLoaderTests.cpp ../Src/AssetLoader.cpp)
+list(APPEND extra_cpu_tests AssetLoaderTests)
 foreach(picking_test IN ITEMS SceneSelectionTests SceneClickTrackerTests SceneSelectionInputTests)
     add_executable(${picking_test} ${picking_test}.cpp)
     target_compile_features(${picking_test} PRIVATE cxx_std_17)
@@ -34,6 +47,16 @@ add_executable(TextureBlobReaderTests TextureBlobReaderTests.cpp ../Src/TextureB
 target_compile_features(TextureBlobReaderTests PRIVATE cxx_std_17)
 target_include_directories(TextureBlobReaderTests PRIVATE ../Src/Include)
 list(APPEND extra_cpu_tests TextureBlobReaderTests)
+
+add_executable(BistroRuntimeAssetTests BistroRuntimeAssetTests.cpp ../Src/AssetLoader.cpp
+    ../Src/SvtCooker.cpp ../Src/SvtAsset.cpp ${SVT_LZFSE_SOURCES})
+target_compile_features(BistroRuntimeAssetTests PRIVATE cxx_std_17)
+target_include_directories(BistroRuntimeAssetTests PRIVATE ../Src/Include
+    ${SVT_LZFSE_DIR} ../ThirdParty/json/single_include)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../bistro.astc.runtime.bin")
+    add_test(NAME BistroRuntimeAssetTests COMMAND BistroRuntimeAssetTests
+        "${CMAKE_CURRENT_SOURCE_DIR}/../bistro.astc.runtime.bin")
+endif()
 
 add_executable(SvtAssetTests SvtAssetTests.cpp
     ../Src/SvtAsset.cpp ../Src/SvtCooker.cpp ${SVT_LZFSE_SOURCES})

@@ -14,6 +14,7 @@
 #include <string_view>
 #include <cstring>
 #include <charconv>
+#include <utility>
 
 #ifdef ENABLE_DX12
 #include "DX12/DX12Setup.h"
@@ -34,6 +35,11 @@ int WINDOW_HEIGHT = 0;
 
 int main(int nargs, char **args) {
   int applicationExitCode=0;
+#ifdef __ANDROID__
+  // SDL also requests orientation at window creation; match the manifest's
+  // landscape setting instead of inferring portrait from the initial display.
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft");
+#endif
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     spdlog::error("SDL init failed");
   }
@@ -85,6 +91,8 @@ int main(int nargs, char **args) {
     WINDOW_WIDTH = 1920;
     WINDOW_HEIGHT = 1080;
   }
+  if (WINDOW_WIDTH < WINDOW_HEIGHT)
+    std::swap(WINDOW_WIDTH, WINDOW_HEIGHT);
 
   // Initialize AAssetManager from SDL's JNI
   {

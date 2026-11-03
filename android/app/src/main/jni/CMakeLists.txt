@@ -57,10 +57,30 @@ set(APP_SOURCES
     ${SRC_DIR}/Mesh.cpp
     ${SRC_DIR}/VulkanSetup.cpp
     ${SRC_DIR}/GpuScene.cpp
+    ${SRC_DIR}/ScenePicking.cpp
+    ${SRC_DIR}/SphericalHarmonics.cpp
+    ${SRC_DIR}/KtxTexture.cpp
+    ${SRC_DIR}/IBLGenerator.cpp
+    ${SRC_DIR}/ScatteringVolume.cpp
     ${SRC_DIR}/ObjLoader.cpp
     ${SRC_DIR}/Shadow.cpp
     ${SRC_DIR}/Light.cpp
     ${SRC_DIR}/AssetLoader.cpp
+    ${SRC_DIR}/Raytracing.cpp
+    ${SRC_DIR}/PbrtExporter.cpp
+    ${SRC_DIR}/VlmSh.cpp
+    ${SRC_DIR}/VlmLayout.cpp
+    ${SRC_DIR}/VlmAsset.cpp
+    ${SRC_DIR}/VlmBaker.cpp
+    ${SRC_DIR}/VlmEnvironment.cpp
+    ${SRC_DIR}/VlmRuntime.cpp
+    ${SRC_DIR}/TextureBlobReader.cpp
+    ${SRC_DIR}/SvtAsset.cpp
+    ${SRC_DIR}/SvtCooker.cpp
+    ${SRC_DIR}/SvtPhysicalCache.cpp
+    ${SRC_DIR}/SvtSystem.cpp
+    ${SRC_DIR}/SvtTileStreamer.cpp
+    ${SRC_DIR}/SvtVulkanRuntime.cpp
 )
 
 # Build as shared library (libmain.so) for SDL Android

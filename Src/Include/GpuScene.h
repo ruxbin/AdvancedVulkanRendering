@@ -74,14 +74,14 @@ struct AAPLMeshData {
       _meshCount, _opaqueChunkCount, _opaqueMeshCount, _alphaMaskedChunkCount,
       _alphaMaskedMeshCount, _transparentChunkCount, _transparentMeshCount,
       _materialCount;
-  void *_vertexData;
-  void *_normalData;
-  void *_tangentData;
-  void *_uvData;
-  void *_indexData;
-  void *_chunkData;
-  void *_meshData;
-  void *_materialData;
+  void *_vertexData = nullptr;
+  void *_normalData = nullptr;
+  void *_tangentData = nullptr;
+  void *_uvData = nullptr;
+  void *_indexData = nullptr;
+  void *_chunkData = nullptr;
+  void *_meshData = nullptr;
+  void *_materialData = nullptr;
   uint64_t compressedVertexDataLength;
   uint64_t compressedNormalDataLength;
   uint64_t compressedTangentDataLength;

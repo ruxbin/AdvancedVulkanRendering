@@ -2,6 +2,21 @@ plugins {
     id("com.android.application")
 }
 
+val generatedAssets = layout.buildDirectory.dir("generated/bistroAssets")
+val runtimeBistro = layout.buildDirectory.file("generated/bistro/bistro.astc.runtime.bin")
+val assetRoot = rootProject.projectDir.parentFile
+val convertBistroAstc = tasks.register<Exec>("convertBistroAstc") {
+    val converter = file("$assetRoot/Tools/convert_bistro_astc.py")
+    val source = file("$assetRoot/bistro.astc.bin")
+    val reference = file("$assetRoot/bistro.dxt.bin")
+    inputs.files(converter, source, reference)
+    outputs.file(runtimeBistro)
+    commandLine(providers.gradleProperty("bistroPython").getOrElse("python"),
+        converter.absolutePath, source.absolutePath,
+        "--reference", reference.absolutePath,
+        "--output", runtimeBistro.get().asFile.absolutePath)
+}
+
 android {
     namespace = "com.vulkan.advancedrendering"
     compileSdk = 34
@@ -45,22 +60,28 @@ android {
 
     sourceSets {
         getByName("main") {
-            assets.srcDirs("src/main/assets")
+            // Only this staged directory is packaged, so old raw archives copied
+            // by previous builds cannot accidentally enter the APK.
+            assets.setSrcDirs(listOf(generatedAssets.get().asFile))
         }
     }
 }
 
-// Copy assets from project root into src/main/assets before build
-tasks.register<Copy>("copyAssets") {
+// Keep hand-authored extra assets, but replace the legacy generated resources.
+tasks.register<Sync>("copyAssets") {
+    dependsOn(convertBistroAstc)
+    from("src/main/assets") {
+        exclude("bistro*.bin", "debug1.bin", "scene.scene", "shaders/**")
+    }
     from("${rootProject.projectDir}/../shaders") {
         include("*.spv")
         into("shaders")
     }
     from("${rootProject.projectDir}/..") {
-        include("bistro.astc.bin")
         include("scene.scene")
     }
-    into("${projectDir}/src/main/assets")
+    from(runtimeBistro)
+    into(generatedAssets)
 }
 
 tasks.matching { it.name.startsWith("externalNativeBuild") || it.name.startsWith("merge") && it.name.contains("Assets") }.configureEach {

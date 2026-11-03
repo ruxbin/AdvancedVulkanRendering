@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -29,6 +30,9 @@ public:
 
   bool isOpen() const;
   size_t read(void *dst, size_t size, size_t count);
+  uint64_t remaining() const;
+  // Reject truncated/oversized requests before touching the destination.
+  void readExact(void *dst, size_t bytes);
   void close();
 
 private:

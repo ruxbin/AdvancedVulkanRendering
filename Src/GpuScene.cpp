@@ -3,6 +3,7 @@
 #include "GpuScene.h"
 #include "SceneSelectionUi.h"
 #include "AssetLoader.h"
+#include "BistroTextureFormat.h"
 #include "IBLGenerator.h"
 #include "Light.h"
 #include "ObjLoader.h"
@@ -33,6 +34,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <vector>
 
 namespace {
@@ -1270,17 +1272,39 @@ enum MTLPixelFormat {
 };
 
 VkFormat mapFromApple(MTLPixelFormat appleformat) {
-  switch (appleformat) {
-  case MTLPixelFormatBC3_RGBA_sRGB:
-    return VK_FORMAT_BC3_SRGB_BLOCK;
-  case MTLPixelFormatBC5_RGUnorm:
-    return VK_FORMAT_BC5_UNORM_BLOCK;
-  case MTLPixelFormatBC1_RGBA_sRGB:
-    return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
-  default:
-    spdlog::error("unsupported appleformat {}", appleformat);
+  const VkFormat format = bistro::mapTextureFormat(static_cast<uint32_t>(appleformat));
+  if (format == VK_FORMAT_UNDEFINED)
+    throw std::runtime_error("Unsupported Bistro Metal pixel format " +
+                             std::to_string(static_cast<uint32_t>(appleformat)));
+  return format;
+}
+
+// Check once per format before any scene textures/staging allocations. The
+// logical device enables the queried base features in VulkanSetup.cpp.
+static void validateBistroTextureSupport(VkPhysicalDevice physicalDevice,
+                                        const std::vector<AAPLTextureData>& textures) {
+  VkPhysicalDeviceFeatures features{};
+  vkGetPhysicalDeviceFeatures(physicalDevice, &features);
+  std::map<VkFormat, VkImageFormatProperties> supported;
+  for (const auto& texture : textures) {
+    const VkFormat format = mapFromApple(static_cast<MTLPixelFormat>(texture._pixelFormat));
+    if (!supported.count(format)) {
+      VkFormatProperties properties{};
+      vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
+      if (const char* error = bistro::textureFormatError(format, features, properties))
+        throw std::runtime_error("Bistro texture " + texture._path + ": " + error);
+      VkImageFormatProperties imageProperties{};
+      if (vkGetPhysicalDeviceImageFormatProperties(physicalDevice, format, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, &imageProperties) != VK_SUCCESS)
+        throw std::runtime_error("Bistro texture format cannot be used for streaming: " + texture._path);
+      supported.emplace(format, imageProperties);
+    }
+    const auto& limits = supported.at(format);
+    if (texture._width > limits.maxExtent.width || texture._height > limits.maxExtent.height ||
+        texture._mipmapLevelCount > limits.maxMipLevels)
+      throw std::runtime_error("Bistro texture exceeds device image limits: " + texture._path);
   }
-  return VK_FORMAT_UNDEFINED;
 }
 
 void GpuScene::init_deferredlighting_descriptors() {
@@ -2629,10 +2653,12 @@ GpuScene::GpuScene(std::filesystem::path &root, const VulkanDevice &deviceref,
 
   applMesh =
 #ifdef __ANDROID__
-      new AAPLMeshData("bistro.astc.bin");
+      new AAPLMeshData("bistro.astc.runtime.bin");
 #else
       new AAPLMeshData((_rootPath / "bistro.dxt.bin").generic_string().c_str(), (svtArg == "on" || svtArg == "1" || svtArg == "true"));
 #endif
+
+  validateBistroTextureSupport(device.getPhysicalDevice(), applMesh->_textures);
 
 #ifdef __ANDROID__
   {
@@ -5529,30 +5555,32 @@ AAPLTextureData::AAPLTextureData(FILE *f) {
 
 #ifdef __ANDROID__
 AAPLTextureData::AAPLTextureData(AssetLoader::BinaryFileReader &reader) {
-  int path_length = 0;
-  reader.read(&path_length, sizeof(int), 1);
-  char *cstring = (char *)malloc(path_length + 1);
-  reader.read(cstring, 1, path_length);
-  cstring[path_length] = 0;
-  _path = std::string(cstring);
-  free(cstring);
-  reader.read(&_pathHash, sizeof(uint32_t), 1);
-  reader.read(&_width, sizeof(unsigned long long), 1);
-  reader.read(&_height, sizeof(unsigned long long), 1);
-  reader.read(&_mipmapLevelCount, sizeof(unsigned long long), 1);
-  reader.read(&_pixelFormat, sizeof(uint32_t), 1);
-  reader.read(&_pixelDataOffset, sizeof(unsigned long long), 1);
-  reader.read(&_pixelDataLength, sizeof(unsigned long long), 1);
+  uint32_t path_length = 0;
+  reader.readExact(&path_length, sizeof(path_length));
+  if (path_length == 0 || path_length > 4096)
+    throw std::runtime_error("Invalid Bistro texture path length");
+  _path.resize(path_length);
+  reader.readExact(_path.data(), path_length);
+  reader.readExact(&_pathHash, sizeof(_pathHash));
+  reader.readExact(&_width, sizeof(_width));
+  reader.readExact(&_height, sizeof(_height));
+  reader.readExact(&_mipmapLevelCount, sizeof(_mipmapLevelCount));
+  reader.readExact(&_pixelFormat, sizeof(_pixelFormat));
+  reader.readExact(&_pixelDataOffset, sizeof(_pixelDataOffset));
+  reader.readExact(&_pixelDataLength, sizeof(_pixelDataLength));
+  if (!_width || !_height || _width > 16384 || _height > 16384 ||
+      !_mipmapLevelCount || _mipmapLevelCount > 15)
+    throw std::runtime_error("Invalid Bistro texture dimensions/mips: " + _path);
 
   for (int i = 0; i < _mipmapLevelCount; i++) {
     unsigned long long offset_c;
-    reader.read(&offset_c, sizeof(offset_c), 1);
+    reader.readExact(&offset_c, sizeof(offset_c));
     _mipOffsets.push_back(offset_c);
   }
 
   for (int i = 0; i < _mipmapLevelCount; i++) {
     unsigned long long length_c;
-    reader.read(&length_c, sizeof(length_c), 1);
+    reader.readExact(&length_c, sizeof(length_c));
     _mipLengths.push_back(length_c);
   }
 }
@@ -5579,84 +5607,69 @@ AAPLMeshData::~AAPLMeshData() {
     free(_textureData);
 }
 
-enum MTLIndexType { MTLIndexTypeUInt16 = 0, MTLIndexTypeUInt32 = 1 };
+// The asset stores index element size in bytes, not the Metal API enum (0/1).
+enum MTLIndexType { MTLIndexTypeUInt16 = 2, MTLIndexTypeUInt32 = 4 };
 
 AAPLMeshData::AAPLMeshData(const char *filepath, bool lazyTextures) {
 #ifdef __ANDROID__
   AssetLoader::BinaryFileReader reader(filepath);
-  if (reader.isOpen()) {
-    reader.read(&_vertexCount, sizeof(_vertexCount), 1);
-    reader.read(&_indexCount, sizeof(_indexCount), 1);
-    reader.read(&_indexType, sizeof(_indexType), 1);
-    if (_indexType != MTLIndexTypeUInt32)
-      spdlog::error("index type error!!!");
-    reader.read(&_chunkCount, sizeof(_chunkCount), 1);
-    reader.read(&_meshCount, sizeof(_meshCount), 1);
-    reader.read(&_opaqueChunkCount, sizeof(_opaqueChunkCount), 1);
-    reader.read(&_opaqueMeshCount, sizeof(_opaqueMeshCount), 1);
-    reader.read(&_alphaMaskedChunkCount, sizeof(_alphaMaskedChunkCount), 1);
-    reader.read(&_alphaMaskedMeshCount, sizeof(_alphaMaskedMeshCount), 1);
-    reader.read(&_transparentChunkCount, sizeof(_transparentChunkCount), 1);
-    reader.read(&_transparentMeshCount, sizeof(_transparentMeshCount), 1);
-    reader.read(&_materialCount, sizeof(_materialCount), 1);
+  if (!reader.isOpen())
+    throw std::runtime_error(std::string("Bistro runtime asset not found: ") + filepath);
+  try {
+    reader.readExact(&_vertexCount, sizeof(_vertexCount));
+    if (memcmp(&_vertexCount, "MESH", 4) == 0)
+      throw std::runtime_error("Raw Apple MESH archive: run Tools/convert_bistro_astc.py first");
+    for (auto *field : {&_indexCount, &_indexType, &_chunkCount, &_meshCount,
+                       &_opaqueChunkCount, &_opaqueMeshCount, &_alphaMaskedChunkCount,
+                       &_alphaMaskedMeshCount, &_transparentChunkCount,
+                       &_transparentMeshCount, &_materialCount})
+      reader.readExact(field, sizeof(*field));
+    if (_indexType != MTLIndexTypeUInt32 || _chunkCount > 1000000 ||
+        _meshCount > 1000000 || _materialCount > 65536 ||
+        _opaqueChunkCount + _alphaMaskedChunkCount + _transparentChunkCount != _chunkCount ||
+        _opaqueMeshCount + _alphaMaskedMeshCount + _transparentMeshCount != _meshCount)
+      throw std::runtime_error("Invalid Bistro runtime scene header");
 
-    unsigned long long bytes_length = 0;
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedVertexDataLength = bytes_length;
-    _vertexData = malloc(bytes_length);
-    reader.read(_vertexData, 1, bytes_length);
+    auto readBlock = [&](void*& data, uint64_t& length) {
+      reader.readExact(&length, sizeof(length));
+      if (!length || length > reader.remaining())
+        throw std::runtime_error("Invalid Bistro data block length");
+      data = malloc(static_cast<size_t>(length));
+      if (!data) throw std::bad_alloc();
+      reader.readExact(data, static_cast<size_t>(length));
+    };
+    readBlock(_vertexData, compressedVertexDataLength);
+    readBlock(_normalData, compressedNormalDataLength);
+    readBlock(_tangentData, compressedTangentDataLength);
+    readBlock(_uvData, compressedUvDataLength);
+    readBlock(_indexData, compressedIndexDataLength);
+    readBlock(_chunkData, compressedChunkDataLength);
+    readBlock(_meshData, compressedMeshDataLength);
+    readBlock(_materialData, compressedMaterialDataLength);
 
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedNormalDataLength = bytes_length;
-    _normalData = malloc(bytes_length);
-    reader.read(_normalData, 1, bytes_length);
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedTangentDataLength = bytes_length;
-    _tangentData = malloc(bytes_length);
-    reader.read(_tangentData, 1, bytes_length);
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedUvDataLength = bytes_length;
-    _uvData = malloc(bytes_length);
-    reader.read(_uvData, 1, bytes_length);
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedIndexDataLength = bytes_length;
-    _indexData = malloc(bytes_length);
-    reader.read(_indexData, 1, bytes_length);
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedChunkDataLength = bytes_length;
-    _chunkData = malloc(bytes_length);
-    reader.read(_chunkData, 1, bytes_length);
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedMeshDataLength = bytes_length;
-    _meshData = malloc(bytes_length);
-    reader.read(_meshData, 1, bytes_length);
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    compressedMaterialDataLength = bytes_length;
-    _materialData = malloc(bytes_length);
-    reader.read(_materialData, 1, bytes_length);
-
-    unsigned long long texture_count = 0;
-    reader.read(&texture_count, sizeof(bytes_length), 1);
-
-    for (int i = 0; i < texture_count; ++i) {
-      _textures.push_back(AAPLTextureData(reader));
+    uint64_t texture_count = 0;
+    reader.readExact(&texture_count, sizeof(texture_count));
+    if (!texture_count || texture_count > 65536)
+      throw std::runtime_error("Invalid Bistro texture count");
+    for (uint64_t i = 0; i < texture_count; ++i)
+      _textures.emplace_back(reader);
+    readBlock(_textureData, _textureDataLength);
+    if (reader.remaining() != 0)
+      throw std::runtime_error("Unexpected trailing Bistro data");
+    for (const auto& texture : _textures) {
+      if (texture._pixelDataOffset > _textureDataLength ||
+          texture._pixelDataLength > _textureDataLength - texture._pixelDataOffset)
+        throw std::runtime_error("Bistro texture range outside blob: " + texture._path);
+      for (size_t mip = 0; mip < texture._mipOffsets.size(); ++mip)
+        if (texture._mipOffsets[mip] > texture._pixelDataLength ||
+            texture._mipLengths[mip] > texture._pixelDataLength - texture._mipOffsets[mip])
+          throw std::runtime_error("Bistro mip range outside texture: " + texture._path);
     }
-
-    reader.read(&bytes_length, sizeof(bytes_length), 1);
-    _textureData = malloc(bytes_length);
-    _textureDataLength = _textureData ? reader.read(_textureData, 1, bytes_length) : 0;
-
-    reader.close();
-  }
-
-  else {
-    spdlog::error("file not found {}", filepath);
+  } catch (...) {
+    for (void* data : {_vertexData, _normalData, _tangentData, _uvData,
+                      _indexData, _chunkData, _meshData, _materialData, _textureData})
+      free(data);
+    throw;
   }
 #else
   FILE *rawFile = fopen(filepath, "rb");
