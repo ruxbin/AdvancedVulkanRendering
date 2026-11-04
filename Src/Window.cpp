@@ -27,6 +27,7 @@
 #include <jni.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
+#include "spdlog/sinks/android_sink.h"
 
 int WINDOW_WIDTH = 0;
 int WINDOW_HEIGHT = 0;
@@ -36,6 +37,7 @@ int WINDOW_HEIGHT = 0;
 int main(int nargs, char **args) {
   int applicationExitCode=0;
 #ifdef __ANDROID__
+  spdlog::set_default_logger(spdlog::android_logger_mt("android", "Bistro"));
   // SDL also requests orientation at window creation; match the manifest's
   // landscape setting instead of inferring portrait from the initial display.
   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft");

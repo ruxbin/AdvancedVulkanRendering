@@ -1,5 +1,6 @@
 #include "Light.h"
 #include "GpuScene.h"
+#include "ScreenViewport.h"
 #include "VulkanCompat.h"
 #include <math.h>
 
@@ -518,6 +519,7 @@ void PointLight::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
         &drawPointLightVertexInputInfo;
     pointLightingPipelineInfo.pInputAssemblyState = &inputAssembly;
     pointLightingPipelineInfo.pViewportState = &viewportState;
+    pointLightingPipelineInfo.pDynamicState = ScreenViewportDynamicState();
     pointLightingPipelineInfo.pRasterizationState = &rasterizer;
     pointLightingPipelineInfo.pMultisampleState = &multisampling;
     pointLightingPipelineInfo.pColorBlendState = &colorBlendingAlphaAdd;
@@ -545,6 +547,7 @@ void PointLight::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene) {
         &drawPointLightVertexInputInfo;
     pointLightingPipelineInfoStencil.pInputAssemblyState = &inputAssembly;
     pointLightingPipelineInfoStencil.pViewportState = &viewportState;
+    pointLightingPipelineInfoStencil.pDynamicState = ScreenViewportDynamicState();
     pointLightingPipelineInfoStencil.pRasterizationState = &rasterizer1;
     pointLightingPipelineInfoStencil.pMultisampleState = &multisampling;
     pointLightingPipelineInfoStencil.pColorBlendState = &colorBlendingAlphaAdd;

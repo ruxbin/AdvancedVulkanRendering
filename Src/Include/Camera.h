@@ -23,6 +23,7 @@ private:
 public:
   Camera(float fov, float n, float f, vec3 origin, float aspect, vec3 lookat,
          vec3 right);
+  void setAspectRatio(float aspect);
   void *getProjectionMatrixData();
   void *getObjectToCameraData();
   mat4 &getObjectToCamera();

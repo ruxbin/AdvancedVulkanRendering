@@ -42,6 +42,17 @@ Camera::Camera(float fov, float n, float f, vec3 origin, float aspect,
   updateCameraMatrix();
 }
 
+void Camera::setAspectRatio(float aspect) {
+  if (!(aspect > 0.f)) return;
+  mat4 flipx;
+  flipx.x[0] = -1;
+  flipx.y[1] = 1;
+  flipx.z[2] = 1;
+  flipx.w[3] = 1;
+  _projectionMatrix = reverseZperspective(_fov, aspect, _near, _far) * flipx;
+  updateCameraMatrix();
+}
+
 vec3 Camera::GetCameraDir() const {
   vec4 z(0, 0, 1, 1);
   vec3 lookatpos = (transpose(_invViewMatrix) * z).xyz();

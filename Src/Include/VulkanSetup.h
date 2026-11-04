@@ -103,6 +103,7 @@ private:
   VkQueue presentQueue;
   VkQueue computeQueue;
   VkSurfaceKHR wsiSurface;
+  SDL_Window* presentationWindow = nullptr;
   VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 
   VkSwapchainKHR swapChain;
@@ -502,7 +503,8 @@ private:
   void createDepthResources();
 
   public:
-  void recreateSwapChain();
+  void recreateSwapChain(bool recreateSurface = false);
+  bool shouldRecreateSuboptimalSwapChain() const;
 
       VkCommandBuffer beginSingleTimeCommands() const;
       void endSingleTimeCommands(VkCommandBuffer commandBuffer) const;

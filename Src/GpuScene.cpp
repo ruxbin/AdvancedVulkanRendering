@@ -1,6 +1,7 @@
 ﻿#include "VlmRuntime.h"
 
 #include "GpuScene.h"
+#include "ScreenViewport.h"
 #include "SceneSelectionUi.h"
 #include "AssetLoader.h"
 #include "BistroTextureFormat.h"
@@ -267,6 +268,7 @@ void GpuScene::createRenderOccludersPipeline(VkRenderPass renderPass) {
   pipelineInfo.pVertexInputState = &occluderVertexInputInfo;
   pipelineInfo.pInputAssemblyState = &inputAssembly;
   pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pDynamicState = ScreenViewportDynamicState();
   pipelineInfo.pRasterizationState = &rasterizer;
   pipelineInfo.pMultisampleState = &multisampling;
   pipelineInfo.pColorBlendState = &colorBlending;
@@ -713,6 +715,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
    edwardpipelineInfo.pVertexInputState = &edwardVertexInputInfo;
    edwardpipelineInfo.pInputAssemblyState = &inputAssembly;
    edwardpipelineInfo.pViewportState = &viewportState;
+   edwardpipelineInfo.pDynamicState = ScreenViewportDynamicState();
    edwardpipelineInfo.pRasterizationState = &rasterizer_wireframe;
    edwardpipelineInfo.pMultisampleState = &multisampling;
    edwardpipelineInfo.pColorBlendState = &colorBlending;
@@ -790,6 +793,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   drawclusterpipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
   drawclusterpipelineInfo.pInputAssemblyState = &inputAssembly;
   drawclusterpipelineInfo.pViewportState = &viewportState;
+  drawclusterpipelineInfo.pDynamicState = ScreenViewportDynamicState();
   drawclusterpipelineInfo.pRasterizationState = &rasterizer;
   drawclusterpipelineInfo.pMultisampleState = &multisampling;
   drawclusterpipelineInfo.pColorBlendState = &colorBlendings;
@@ -820,6 +824,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   drawclusterBasePipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
   drawclusterBasePipelineInfo.pInputAssemblyState = &inputAssembly;
   drawclusterBasePipelineInfo.pViewportState = &viewportState;
+  drawclusterBasePipelineInfo.pDynamicState = ScreenViewportDynamicState();
   drawclusterBasePipelineInfo.pRasterizationState = &rasterizer;
   drawclusterBasePipelineInfo.pMultisampleState = &multisampling;
   drawclusterBasePipelineInfo.pColorBlendState = &colorBlendings;
@@ -864,6 +869,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
     forwardIndirectPipelineInfo.pVertexInputState = &drawclusterVertexInputInfo;
     forwardIndirectPipelineInfo.pInputAssemblyState = &inputAssembly;
     forwardIndirectPipelineInfo.pViewportState = &viewportState;
+    forwardIndirectPipelineInfo.pDynamicState = ScreenViewportDynamicState();
     forwardIndirectPipelineInfo.pRasterizationState = &rasterizer;
     forwardIndirectPipelineInfo.pMultisampleState = &multisampling;
     forwardIndirectPipelineInfo.pColorBlendState = &colorBlendingAlpha;
@@ -926,6 +932,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
         pi.pVertexInputState = &drawclusterVertexInputInfo;
         pi.pInputAssemblyState = &inputAssembly;
         pi.pViewportState = &viewportState;
+        pi.pDynamicState = ScreenViewportDynamicState();
         pi.pRasterizationState = &rasterizer;
         pi.pMultisampleState = &multisampling;
         pi.pColorBlendState = &colorBlendingAlpha;
@@ -957,6 +964,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       &drawclusterVertexInputInfo;
   drawclusterForwardPipelineInfo.pInputAssemblyState = &inputAssembly;
   drawclusterForwardPipelineInfo.pViewportState = &viewportState;
+  drawclusterForwardPipelineInfo.pDynamicState = ScreenViewportDynamicState();
   drawclusterForwardPipelineInfo.pRasterizationState = &rasterizer;
   drawclusterForwardPipelineInfo.pMultisampleState = &multisampling;
   drawclusterForwardPipelineInfo.pColorBlendState = &colorBlendingAlpha;
@@ -982,6 +990,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
       &emptyVertexInputInfo; 
   deferredLightingPipelineInfo.pInputAssemblyState = &inputAssembly;
   deferredLightingPipelineInfo.pViewportState = &viewportState;
+  deferredLightingPipelineInfo.pDynamicState = ScreenViewportDynamicState();
   deferredLightingPipelineInfo.pRasterizationState = &rasterizerBackFace;
   deferredLightingPipelineInfo.pMultisampleState = &multisampling;
   deferredLightingPipelineInfo.pColorBlendState = &colorBlending;
@@ -1009,6 +1018,7 @@ void GpuScene::createGraphicsPipeline(VkRenderPass renderPass) {
   deferredLightingPipelineInfo_clusterlighting.pInputAssemblyState =
       &inputAssembly;
   deferredLightingPipelineInfo_clusterlighting.pViewportState = &viewportState;
+  deferredLightingPipelineInfo_clusterlighting.pDynamicState = ScreenViewportDynamicState();
   deferredLightingPipelineInfo_clusterlighting.pRasterizationState =
       &rasterizerBackFace;
   deferredLightingPipelineInfo_clusterlighting.pMultisampleState =
@@ -3924,6 +3934,7 @@ void GpuScene::DrawOccluders(VkCommandBuffer commandBuffer) {
   VkBuffer vertexBuffers[] = {_occludersVertBuffer};
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     drawOccluderPipeline);
+  SetScreenViewport(commandBuffer, device.getSwapChainExtent());
   vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
   vkCmdBindIndexBuffer(commandBuffer, _occludersIndexBuffer, 0,
                        VK_INDEX_TYPE_UINT32);
@@ -4287,6 +4298,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo,
                          VK_SUBPASS_CONTENTS_INLINE);
+    SetScreenViewport(commandBuffer, device.getSwapChainExtent());
 
     // vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
     // graphicsPipeline); vkCmdBindDescriptorSets(commandBuffer,
@@ -4410,6 +4422,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
     vkCmdBeginRenderPass(commandBuffer, &blitPassInfo,
                          VK_SUBPASS_CONTENTS_INLINE);
+    SetScreenViewport(commandBuffer, device.getSwapChainExtent());
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       useClusterLighting
@@ -4459,6 +4472,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
 
       vkCmdBeginRenderPass(commandBuffer, &forwardPassInfo,
                            VK_SUBPASS_CONTENTS_INLINE);
+      SetScreenViewport(commandBuffer, device.getSwapChainExtent());
 
       // Stage 4: GPU indirect forward pass for transparent objects
       // Transparent materials retain their legacy textures and alpha semantics.
@@ -4509,6 +4523,7 @@ void GpuScene::recordCommandBuffer(int imageIndex, VkCommandBuffer commandBuffer
     resolvePassInfo.clearValueCount = 0;
 
     vkCmdBeginRenderPass(commandBuffer, &resolvePassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    SetScreenViewport(commandBuffer, device.getSwapChainExtent());
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _resolvePipeline);
     VkDescriptorSet resolveSets[] = {globalDescriptorSets[currentFrame],
@@ -4641,6 +4656,20 @@ void GpuScene::DrawChunks(VkCommandBuffer commandBuffer) {
 }
 
 void GpuScene::Draw() {
+#ifdef __ANDROID__
+  if (_androidBackgrounded) {
+    SDL_Delay(10);
+    return;
+  }
+  // SDL has installed the replacement native window before delivering resume.
+  // Recover before acquire or starting an ImGui frame against the old surface.
+  if (_surfaceRecreationPending && _sdlWindow &&
+      !(SDL_GetWindowFlags(_sdlWindow) & SDL_WINDOW_MINIMIZED)) {
+    recreateSwapChain(true);
+    _surfaceRecreationPending = false;
+    framebufferResized = false;
+  }
+#endif
   buildImGuiFrame();
   if (_sdlWindow && (SDL_GetWindowFlags(_sdlWindow) & SDL_WINDOW_MINIMIZED)) {
     if (_imguiInitialized) EditorUi::RenderPlatformWindows();
@@ -4669,6 +4698,14 @@ void GpuScene::Draw() {
   VkResult acquireResult = vkAcquireNextImageKHR(device.getLogicalDevice(), device.getSwapChain(),
                         UINT64_MAX, imageAvailableSemaphores[_syncSlot], VK_NULL_HANDLE,
                         &imageIndex);
+
+#ifdef __ANDROID__
+  if (acquireResult == VK_ERROR_SURFACE_LOST_KHR) {
+    spdlog::warn("Android surface lost during acquire; deferring recreation");
+    _surfaceRecreationPending = true;
+    return;
+  }
+#endif
 
   // 处理 swapchain 过期的情况（例如窗口大小改变）
   if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -4766,11 +4803,19 @@ void GpuScene::Draw() {
   if (_imguiInitialized) EditorUi::RenderPlatformWindows();
 
   // 检查呈现结果，处理 swapchain 需要重建的情况
-  if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || framebufferResized) {
+#ifdef __ANDROID__
+  if (presentResult == VK_ERROR_SURFACE_LOST_KHR) {
+    spdlog::warn("Android surface lost during present; deferring recreation");
+    _surfaceRecreationPending = true;
+    return;
+  }
+#endif
+  if (presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
+      (presentResult == VK_SUBOPTIMAL_KHR && device.shouldRecreateSuboptimalSwapChain()) || framebufferResized) {
     framebufferResized = false;
     spdlog::warn("Swapchain suboptimal or out of date after present, needs recreation");
     recreateSwapChain();
-  } else if (presentResult != VK_SUCCESS) {
+  } else if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR) {
     spdlog::error("failed to present swap chain image! {}", static_cast<int>(presentResult));
     throw std::runtime_error("failed to present swap chain image!");
   }
@@ -4987,8 +5032,7 @@ void GpuScene::recreateSwapChainResources() {
   if (maincamera) {
     float aspect = device.getSwapChainExtent().width /
                    static_cast<float>(device.getSwapChainExtent().height);
-    // 如果 Camera 类有设置 aspect ratio 的方法，在这里调用
-    // maincamera->setAspectRatio(aspect);
+    maincamera->setAspectRatio(aspect);
   }
 
   // RT path resize: rebuild output / accum images + composite framebuffers,
@@ -5002,7 +5046,7 @@ void GpuScene::recreateSwapChainResources() {
                device.getSwapChainExtent().height);
 }
 
-void GpuScene::recreateSwapChain() {
+void GpuScene::recreateSwapChain(bool recreateSurface) {
   // 等待设备空闲
   vkDeviceWaitIdle(device.getLogicalDevice());
 
@@ -5010,12 +5054,13 @@ void GpuScene::recreateSwapChain() {
   cleanupSwapChainResources();
   
   // 调用 VulkanDevice 的重建方法（重建 swapchain、image views、depth 资源）
-  const_cast<VulkanDevice&>(device).recreateSwapChain();
+  const_cast<VulkanDevice&>(device).recreateSwapChain(recreateSurface);
   
   // 检查 swapchain 图像数量是否变化，如果变化则需要重建同步对象和命令缓冲区
   uint32_t newImageCount = device.getSwapChainImageCount();
-  if (newImageCount != framesInFlight) {
-    spdlog::info("Swapchain image count changed from {} to {}", framesInFlight, newImageCount);
+  if (newImageCount != framesInFlight || recreateSurface) {
+    spdlog::info("Rebuilding swapchain synchronization: {} -> {} images, surface replaced={}",
+                 framesInFlight, newImageCount, recreateSurface);
     
     // 清理旧的同步对象
     for (size_t i = 0; i < framesInFlight; i++) {
@@ -5026,8 +5071,14 @@ void GpuScene::recreateSwapChain() {
     
     // 重新创建同步对象（这会更新 framesInFlight）
     createSyncObjects();
+    // Retirement queues are indexed by sync slot and may need to grow when
+    // the replacement swapchain has more images than the original one.
+    if (textureToDelete.size() < framesInFlight)
+      textureToDelete.resize(framesInFlight);
     
     // 重新创建命令缓冲区
+    vkFreeCommandBuffers(device.getLogicalDevice(), device.getCommandPool(),
+                         static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
     createCommandBuffers(device.getCommandPool());
 
     // 重置 frame 索引以避免越界访问
@@ -6123,7 +6174,7 @@ void GpuScene::setRequiredMip(uint32_t textureHash, float screenArea) {
 }
 
 void GpuScene::initTextureStreaming() {
-  textureToDelete.resize(TEXTURE_RETENTION_FRAMES);
+  textureToDelete.resize(std::max<size_t>(TEXTURE_RETENTION_FRAMES, framesInFlight));
   blitThreadRunning = true;
   blitThread = std::thread(&GpuScene::blitThreadFunc, this);
 }
@@ -6583,7 +6634,11 @@ void GpuScene::UpdateTextureStreaming(int frameIndex) {
   processStreamingWork(frameIndex);
 
   // 3. Release old textures now that the GPU is done with them
-  //    (endSingleTimeCommands inside processStreamingWork called vkQueueWaitIdle).
+  // The retired texture may still be referenced by submissions from other
+  // sync slots. processStreamingWork only waits when it has completed work;
+  // in particular, an empty batch does not wait for the graphics queue.
+  if (!toFreeThisFrame.empty() && vkDeviceWaitIdle(device.getLogicalDevice()) != VK_SUCCESS)
+    throw std::runtime_error("failed to wait before retiring streamed textures");
   for (auto& [img, view, mem] : toFreeThisFrame) {
     vkDestroyImageView(device.getLogicalDevice(), view, nullptr);
     vkDestroyImage(device.getLogicalDevice(), img, nullptr);
@@ -7371,6 +7426,7 @@ void GpuScene::createOccluderWireframePipeline() {
   pipelineInfo.pVertexInputState = &vertexInput;
   pipelineInfo.pInputAssemblyState = &inputAssembly;
   pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pDynamicState = ScreenViewportDynamicState();
   pipelineInfo.pRasterizationState = &rasterizer;
   pipelineInfo.pMultisampleState = &multisampling;
   pipelineInfo.pDepthStencilState = &depthStencil;
@@ -7480,6 +7536,7 @@ void GpuScene::createLineListWireframePipeline() {
   pi.pVertexInputState   = &vertexInput;
   pi.pInputAssemblyState = &inputAssembly;
   pi.pViewportState      = &viewportState;
+  pi.pDynamicState = ScreenViewportDynamicState();
   pi.pRasterizationState = &rast;
   pi.pMultisampleState   = &ms;
   pi.pDepthStencilState  = &ds;
@@ -8495,6 +8552,7 @@ void GpuScene::createResolvePipeline() {
   pipelineInfo.pVertexInputState = &vertexInput;
   pipelineInfo.pInputAssemblyState = &inputAssembly;
   pipelineInfo.pViewportState = &viewportState;
+  pipelineInfo.pDynamicState = ScreenViewportDynamicState();
   pipelineInfo.pRasterizationState = &rasterizer;
   pipelineInfo.pMultisampleState = &multisampling;
   pipelineInfo.pDepthStencilState = &depthStencil;
@@ -9734,6 +9792,14 @@ void GpuScene::initImGui(SDL_Window *window) {
 }
 
 void GpuScene::ProcessImGuiEvent(SDL_Event *event) {
+#ifdef __ANDROID__
+  if (event->type == SDL_APP_WILLENTERBACKGROUND || event->type == SDL_APP_DIDENTERBACKGROUND) {
+    _androidBackgrounded = true;
+    _surfaceRecreationPending = true;
+  } else if (event->type == SDL_APP_DIDENTERFOREGROUND) {
+    _androidBackgrounded = false;
+  }
+#endif
   if (_imguiInitialized) {
     ImGui_ImplSDL2_ProcessEvent(event);
   }

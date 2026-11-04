@@ -62,7 +62,7 @@ void VulkanDevice::setupDebugMessager() {
   }
 }
 
-VulkanDevice::VulkanDevice(SDL_Window *sdl_window) {
+VulkanDevice::VulkanDevice(SDL_Window *sdl_window) : presentationWindow(sdl_window) {
   checkValidationLayerSupport();
   VkApplicationInfo appInfo{};
   appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -530,12 +530,24 @@ void VulkanDevice::createSwapChain() {
     createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   }
 
-  createInfo.preTransform = swapChainSupport.capabilities.currentTransform;
+  // Render in the surface's displayed orientation. Android often reports a
+  // 90-degree currentTransform even when SDL's window is already landscape;
+  // claiming that transform without rotating our rendering rotates and
+  // stretches the entire frame (including ImGui).
+  createInfo.preTransform =
+      (swapChainSupport.capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+          ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+          : swapChainSupport.capabilities.currentTransform;
   createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   createInfo.presentMode = presentMode;
   createInfo.clipped = VK_TRUE;
 
   createInfo.oldSwapchain = VK_NULL_HANDLE;
+
+  spdlog::info("Swapchain {}x{}, images={}, transform={}, currentTransform={}, supportedTransforms={}",
+               extent.width, extent.height, imageCount, static_cast<uint32_t>(createInfo.preTransform),
+               static_cast<uint32_t>(swapChainSupport.capabilities.currentTransform),
+               swapChainSupport.capabilities.supportedTransforms);
 
   if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain) !=
       VK_SUCCESS) {
@@ -767,12 +779,37 @@ void VulkanDevice::cleanupSwapChain() {
   vkDestroySwapchainKHR(device, swapChain, nullptr);
 }
 
-void VulkanDevice::recreateSwapChain() {
+bool VulkanDevice::shouldRecreateSuboptimalSwapChain() const {
+#ifdef __ANDROID__
+  // With IDENTITY preTransform, Android may report SUBOPTIMAL every frame
+  // because the compositor handles rotation. Rebuilding an unchanged extent
+  // would continuously discard presented frames without fixing that condition.
+  VkSurfaceCapabilitiesKHR caps{};
+  if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, wsiSurface, &caps) != VK_SUCCESS)
+    return false; // Acquire/present handles a lost surface separately.
+  return caps.currentExtent.width != swapChainExtent.width ||
+         caps.currentExtent.height != swapChainExtent.height;
+#else
+  return true;
+#endif
+}
+
+void VulkanDevice::recreateSwapChain(bool recreateSurface) {
   // 等待设备空闲
   vkDeviceWaitIdle(device);
 
   // 清理旧的 swapchain 资源
   cleanupSwapChain();
+
+#ifdef __ANDROID__
+  if (recreateSurface) {
+    vkDestroySurfaceKHR(vkInstance, wsiSurface, nullptr);
+    wsiSurface = VK_NULL_HANDLE;
+    if (SDL_Vulkan_CreateSurface(presentationWindow, vkInstance, &wsiSurface) == SDL_FALSE)
+      throw std::runtime_error(std::string("failed to recreate Android Vulkan surface: ") + SDL_GetError());
+    spdlog::info("Android Vulkan surface recreated");
+  }
+#endif
 
   // 重新创建 swapchain 和相关资源
   createSwapChain();

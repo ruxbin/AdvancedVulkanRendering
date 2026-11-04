@@ -245,6 +245,10 @@ private:
 
   // 标记是否需要重建 swapchain
   bool framebufferResized = false;
+#ifdef __ANDROID__
+  bool _androidBackgrounded = false;
+  bool _surfaceRecreationPending = false;
+#endif
 
   AAPLMeshData *applMesh;
 
@@ -718,7 +722,7 @@ public:
   GpuScene() = delete;
   GpuScene(const GpuScene &) = delete;
   void Draw();
-  void recreateSwapChain();
+  void recreateSwapChain(bool recreateSurface = false);
   void setFramebufferResized(bool resized) { framebufferResized = resized; }
   const std::filesystem::path &RootPath() const { return _rootPath; }
   bool QuitRequested() const { return _vlmQuitRequested; }
