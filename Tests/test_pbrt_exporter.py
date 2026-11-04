@@ -187,8 +187,56 @@ class ExporterTests(unittest.TestCase):
 
     def test_constant_roughness_matches_engine_alpha(self):
         _, scene = self.export('rough_constant')
-        self.assertIn('"float uroughness" [ 0.250000 ]',scene)
+        # RT ClosestHitPrimary initializes materialData=0 without an MR map.
+        self.assertIn('"float uroughness" [ 0.006400 ]',scene)
         self.assertIn('"bool remaproughness" [false]',scene)
+
+    def test_metallic_b_channel_drives_material_mix(self):
+        d,scene=self.export('metallic_texture')
+        _,_,p=self.texture(d,scene,'metallic_0')
+        self.assertAlmostEqual(p[0],((16/31+0.055)/1.055)**2.4,places=6)
+        self.assertIn('"string type" "mix"',scene)
+        self.assertIn('"string materials" [ "material_0_dielectric" "material_0_metal" ]',scene)
+        self.assertIn('"texture amount" "metallic_0"',scene)
+
+    def test_absent_or_failed_mr_map_uses_rt_default_without_missing_references(self):
+        for mode in ('missing_mr','untextured_metal'):
+            with self.subTest(mode=mode):
+                _,scene=self.export(mode)
+                self.assertIn('"string type" "coateddiffuse"',scene)
+                self.assertIn('"float uroughness" [ 0.006400 ]',scene)
+                self.assertNotIn('"string type" "conductor"',scene)
+                self.assertNotIn('"string type" "mix"',scene)
+                self.assertNotIn('"texture uroughness"',scene)
+                self.assertNotIn('"texture amount"',scene)
+
+    def test_rt_sky_uses_equalarea_environment_with_y_up(self):
+        d,scene=self.export('rt_sky')
+        self.assertIn('LightSource "infinite"',scene)
+        self.assertIn('"string filename" "rt_sky.pfm"',scene)
+        w,h,p=read_pfm(d/'rt_sky.pfm')
+        self.assertEqual(w,h)
+        for x,y in ((w//2,0),(w//2,h-1),(0,h//2),(w//2,h//2)):
+            u,v=2*(x+0.5)/w-1,2*(y+0.5)/h-1
+            r=1-abs(1-abs(u)-abs(v))
+            phi=((abs(v)-abs(u))/r+1)*math.pi/4 if r else math.pi/4
+            dy=math.copysign(math.sin(phi),v)*r*math.sqrt(2-r*r)
+            factor=0.6+0.4*(dy*0.5+0.5)**2
+            for c,color in enumerate((0.2,0.4,0.8)):
+                self.assertAlmostEqual(p[(y*w+x)*3+c],color*factor,places=6)
+        self.assertIn('"float scale" [ 106.856895 ]',scene)
+
+    def test_disabled_or_failed_sky_is_not_silently_referenced(self):
+        _,scene=self.export('rough_constant')
+        self.assertNotIn('LightSource "infinite"',scene)
+        self.export('rt_sky_failure',expected='failure')
+
+    def test_analytic_lights_match_rt_pi_and_pbrt_photometric_normalization(self):
+        _,scene=self.export('point_positions')
+        scales=re.findall(r'LightSource "(?:point|distant)".*?"float scale" \[ ([^]]+) \]',scene,re.S)
+        self.assertEqual(len(scales),3)
+        for value in scales:
+            self.assertAlmostEqual(float(value),math.pi*106.856895,places=5)
 
     def test_roughness_map_decodes_srgb_before_squaring(self):
         d, scene = self.export('rough_texture')
@@ -222,7 +270,7 @@ class ExporterTests(unittest.TestCase):
         _, scene = self.export('emissive')
         self.assertRegex(scene,r'(?s)AttributeBegin.*AreaLightSource "diffuse".*Shape "plymesh".*AttributeEnd')
         self.assertIn('"rgb L" [ 1.000000 0.500000 0.250000 ]',scene)
-        self.assertIn('"float scale" [ 2.000000 ]',scene)
+        self.assertIn('"float scale" [ 213.713790 ]',scene)
 
     def test_emissive_texture_uses_filename_not_texture_L(self):
         d, scene = self.export('emissive_texture')

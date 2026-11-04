@@ -46,6 +46,10 @@ int main(int argc,char** argv) {
     mesh._uvData=uv; mesh._indexData=indices;
     GpuScene scene; Camera cam;
     scene.applMesh=&mesh; scene.cpuMaterials=materials; scene.m_SubMeshes=submeshes; scene.maincamera=&cam;
+    if(mode=="rt_sky" || mode=="rt_sky_failure") {
+        scene.frameConstants.skyColor={0.2f,0.4f,0.8f};
+        if(mode=="rt_sky_failure") std::filesystem::create_directory(dir/"rt_sky.pfm");
+    }
     if(mode.rfind("proxy_",0)==0) {
         std::vector<vec3> pv={{0,0,0},{2,0,0},{0,2,0},{0,0,2},
                               {10,0,0},{12,0,0},{10,2,0},{10,0,2}};
@@ -142,6 +146,17 @@ int main(int argc,char** argv) {
     uint8_t block[32]={255,0,1,0,0,0,0,0,255,255,0,0,0,0,0,0,
                        255,255,0,0,0,0,0,0,0,248,0,248,0,0,0,0};
     mesh._textureData=block; tex._mipOffsets={0}; tex._mipLengths={16}; tex._pixelDataLength=16;
+    if(mode=="metallic_texture") {
+        // B=16/31, G=0, R=0: verifies B-channel extraction and sRGB decoding.
+        block[8]=16; block[9]=0; block[10]=16; block[11]=0;
+        materials[0].hasMetallicRoughnessTexture=true; materials[0].metallicRoughnessHash=1;
+        materials[0].metallicRoughness={1,0.7f,0,0};
+    }
+    if(mode=="missing_mr" || mode=="untextured_metal") {
+        materials[0].metallicRoughness={1,0.7f,0,0};
+        materials[0].hasMetallicRoughnessTexture=(mode=="missing_mr");
+        materials[0].metallicRoughnessHash=99;
+    }
     scene.streamingEntryMap[1]=0; scene.streamingEntries.push_back({&tex});
     if(mode=="missing_color") { materials[0].hasBaseColorTexture=true; materials[0].baseColorTextureHash=99; }
     if(mode=="normal" || mode=="cropped_normal") {

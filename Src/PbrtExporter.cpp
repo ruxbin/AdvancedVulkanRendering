@@ -15,6 +15,11 @@
 namespace {
 
 constexpr int kPrecision = 6;
+constexpr double kPi = 3.14159265358979323846;
+// PBRT-v4 divides RGB light scale by the photometric integral of the
+// normalized sRGB illuminant (CIE_Y_integral). Undo this to preserve the RT
+// shader's linear RGB radiance. Keep the exported ColorSpace explicitly sRGB.
+constexpr double kPbrtRgbRadianceScale = 106.856895;
 // ---- BCn decompression (BC1 / BC3 / BC5) ----
 
 // MTLPixelFormat enum subset (matching GpuScene.cpp MTLPixelFormat enum)
@@ -944,6 +949,7 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
     const std::vector<bool>& usedMaterials,
     const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
     const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames,
+    const std::unordered_map<uint32_t, std::string>& exportedMetalTexNames,
     const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames) {
     if (!scene.cpuMaterials || scene.applMesh->_materialCount == 0) {
         spdlog::warn("PbrtExporter: no materials to export");
@@ -953,53 +959,71 @@ void PbrtExporter::WriteMaterials(std::ofstream& out, const GpuScene& scene,
     for (int i = 0; i < materialCount; ++i) {
         if (!usedMaterials[i]) continue;
         const AAPLMaterial& mat = scene.cpuMaterials[i];
-        float metallic = mat.metallicRoughness.x;
-
-        // pbrt-v4: use "conductor" for metals, "coateddiffuse" for dielectrics.
-        // "uber" was removed in v4. Each parameter must appear EXACTLY ONCE
-        // (inline value OR texture reference, never both).
-        out << Indent(1) << "MakeNamedMaterial \"material_" << i << "\"\n";
-        out << Indent(1) << "\"string type\" \""
-            << (metallic > 0.5f ? "conductor" : "coateddiffuse") << "\"\n";
-        // BaseColor: only reference the texture if it actually exported;
-        // otherwise fall back to the constant color instead of leaving a
-        // dangling reference that fails scene load (issue 3).
-        if (mat.hasBaseColorTexture &&
-            exportedColorTexNames.count(mat.baseColorTextureHash)) {
-            out << Indent(1) << "\"texture reflectance\" \"color_" << i << "\"\n";
-        } else {
-            if (mat.hasBaseColorTexture)
-                spdlog::warn("PbrtExporter: material {} base color texture "
-                             "(hash {}) not exported; using constant",
-                             i, mat.baseColorTextureHash);
-            out << Indent(1) << "\"rgb reflectance\" [ "
-                << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
-        }
-        // GGX alpha matching the realtime shader: clamp to the 0.08 floor,
-        // then square. pbrt's remaproughness must be off so uroughness/
-        // vroughness are used as the alpha directly (issue 4).
-        auto writeRoughnessConstant = [&](float roughness) {
-            float r = (std::max)(roughness, 0.08f);
-            float alpha = r * r;
-            out << Indent(1) << "\"float uroughness\" [ " << alpha << " ]\n";
-            out << Indent(1) << "\"float vroughness\" [ " << alpha << " ]\n";
-        };
-        if (mat.hasMetallicRoughnessTexture) {
-            auto it = exportedRoughTexNames.find(mat.metallicRoughnessHash);
-            if (it != exportedRoughTexNames.end()) {
-                out << Indent(1) << "\"texture uroughness\" \"roughness_" << i << "\"\n";
-                out << Indent(1) << "\"texture vroughness\" \"roughness_" << i << "\"\n";
+        const std::string materialName = "material_" + std::to_string(i);
+        const bool hasMetallic = mat.hasMetallicRoughnessTexture &&
+            exportedMetalTexNames.count(mat.metallicRoughnessHash);
+        // RT reads metallic from the packed texture's B channel. PBRT's mix
+        // approximates that continuous dielectric/metal transition; selecting
+        // one material from the CPU constant loses all spatial variation.
+        auto writeSurface = [&](const std::string& name, bool metal) {
+            out << Indent(1) << "MakeNamedMaterial \"" << name << "\"\n";
+            out << Indent(1) << "\"string type\" \""
+                << (metal ? "conductor" : "coateddiffuse") << "\"\n";
+            if (!metal)
+                out << Indent(1) << "\"float eta\" [ 1.500000 ]\n"; // RT dielectric F0 = 0.04
+            // BaseColor: only reference the texture if it actually exported;
+            // otherwise fall back to the constant color instead of leaving a
+            // dangling reference that fails scene load (issue 3).
+            if (mat.hasBaseColorTexture &&
+                exportedColorTexNames.count(mat.baseColorTextureHash)) {
+                out << Indent(1) << "\"texture reflectance\" \"color_" << i << "\"\n";
             } else {
-                writeRoughnessConstant(mat.metallicRoughness.y);
+                if (mat.hasBaseColorTexture)
+                    spdlog::warn("PbrtExporter: material {} base color texture "
+                                 "(hash {}) not exported; using constant",
+                                 i, mat.baseColorTextureHash);
+                out << Indent(1) << "\"rgb reflectance\" [ "
+                    << mat.baseColor.x << ' ' << mat.baseColor.y << ' ' << mat.baseColor.z << " ]\n";
             }
+            // GGX alpha matching the realtime shader: clamp to the 0.08 floor,
+            // then square. pbrt's remaproughness must be off so uroughness/
+            // vroughness are used as the alpha directly (issue 4).
+            auto writeRoughnessConstant = [&](float roughness) {
+                float r = (std::max)(roughness, 0.08f);
+                float alpha = r * r;
+                out << Indent(1) << "\"float uroughness\" [ " << alpha << " ]\n";
+                out << Indent(1) << "\"float vroughness\" [ " << alpha << " ]\n";
+            };
+            if (mat.hasMetallicRoughnessTexture) {
+                auto it = exportedRoughTexNames.find(mat.metallicRoughnessHash);
+                if (it != exportedRoughTexNames.end()) {
+                    out << Indent(1) << "\"texture uroughness\" \"roughness_" << i << "\"\n";
+                    out << Indent(1) << "\"texture vroughness\" \"roughness_" << i << "\"\n";
+                } else {
+                    writeRoughnessConstant(0.08f);
+                }
+            } else {
+                // ClosestHitPrimary initializes materialData to zero without an
+                // MR map; CPU metallicRoughness constants are not sent to RT.
+                writeRoughnessConstant(0.08f);
+            }
+            out << Indent(1) << "\"bool remaproughness\" [false]\n";
+            if (mat.hasNormalMap) {
+                auto it = exportedNormalTexNames.find(mat.normalMapHash);
+                if (it != exportedNormalTexNames.end())
+                    out << Indent(1) << "\"string normalmap\" \"" << it->second << "\"\n";
+            }
+        };
+        if (hasMetallic) {
+            writeSurface(materialName + "_dielectric", false);
+            writeSurface(materialName + "_metal", true);
+            out << Indent(1) << "MakeNamedMaterial \"" << materialName << "\"\n";
+            out << Indent(1) << "\"string type\" \"mix\"\n";
+            out << Indent(1) << "\"string materials\" [ \"" << materialName
+                << "_dielectric\" \"" << materialName << "_metal\" ]\n";
+            out << Indent(1) << "\"texture amount\" \"metallic_" << i << "\"\n";
         } else {
-            writeRoughnessConstant(mat.metallicRoughness.y);
-        }
-        out << Indent(1) << "\"bool remaproughness\" [false]\n";
-        if (mat.hasNormalMap) {
-            auto it = exportedNormalTexNames.find(mat.normalMapHash);
-            if (it != exportedNormalTexNames.end())
-                out << Indent(1) << "\"string normalmap\" \"" << it->second << "\"\n";
+            writeSurface(materialName, false);
         }
     }
 }
@@ -1114,7 +1138,7 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
                     out << Indent(2) << "AreaLightSource \"diffuse\"\n";
                     out << Indent(3) << "\"string filename\" \"" << it->second << "\"\n";
                     out << Indent(3) << "\"float scale\" [ "
-                        << scene.frameConstants.emissiveScale << " ]\n";
+                        << scene.frameConstants.emissiveScale * kPbrtRgbRadianceScale << " ]\n";
                     wroteLight = true;
                 }
             }
@@ -1126,7 +1150,7 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
                     << subMat->emissiveColor.x << ' ' << subMat->emissiveColor.y << ' '
                     << subMat->emissiveColor.z << " ]\n";
                 out << Indent(3) << "\"float scale\" [ "
-                    << scene.frameConstants.emissiveScale << " ]\n";
+                    << scene.frameConstants.emissiveScale * kPbrtRgbRadianceScale << " ]\n";
             }
         }
         out << Indent(2) << R"(Shape "plymesh" "string filename" ")" << plyName << "\"\n";
@@ -1156,10 +1180,9 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
 }
 
 void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
-    // Game engines store colors in normalized [0,1] linear sRGB; pbrt treats
-    // "rgb L/I" as physical W/(m²·sr) / W·sr⁻¹. Scale by 1/π so a diffuse-white
-    // surface lit head-on by a normalized sun produces exactly 1.0 output radiance.
-    constexpr float kLightScale = 1.0f / 3.14159265358979323846f;
+    // RT multiplies both sun and local light colors by PI before evalBRDF.
+    // Also compensate PBRT-v4's RGB light photometric normalization.
+    constexpr double kLightScale = kPi * kPbrtRgbRadianceScale;
 
     const vec3& sunDir = scene.frameConstants.sunDirection;
     const vec3& sunColor = scene.frameConstants.sunColor;
@@ -1206,6 +1229,40 @@ void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
     }
 }
 
+bool PbrtExporter::WriteEnvironment(std::ofstream& out, const GpuScene& scene,
+                                     const std::filesystem::path& outputDir) {
+    const auto& sky = scene.frameConstants.skyColor;
+    if (sky.x <= 0 && sky.y <= 0 && sky.z <= 0) return true;
+
+    // RT miss evaluates a Y-up gradient, not the raster renderer's HDR IBL.
+    // PBRT-v4 image infinite lights use a square equal-area octahedral map.
+    constexpr uint32_t resolution = 128;
+    std::vector<float> pixels(resolution * resolution * 3);
+    for (uint32_t y = 0; y < resolution; ++y) {
+        for (uint32_t x = 0; x < resolution; ++x) {
+            double u = 2.0 * (x + 0.5) / resolution - 1.0;
+            double v = 2.0 * (y + 0.5) / resolution - 1.0;
+            double r = 1.0 - std::abs(1.0 - std::abs(u) - std::abs(v));
+            double phi = (r == 0 ? 1 : (std::abs(v) - std::abs(u)) / r + 1) * kPi / 4;
+            double directionY = std::copysign(std::sin(phi), v) * r * std::sqrt(2 - r * r);
+            double t = directionY * 0.5 + 0.5;
+            float factor = static_cast<float>(0.6 + 0.4 * t * t);
+            size_t offset = (y * resolution + x) * 3;
+            pixels[offset] = sky.x * factor;
+            pixels[offset + 1] = sky.y * factor;
+            pixels[offset + 2] = sky.z * factor;
+        }
+    }
+    if (!WritePFM(outputDir / "rt_sky.pfm", resolution, resolution, 3, pixels.data(), 3)) {
+        spdlog::error("PbrtExporter: failed to write RT sky environment");
+        return false;
+    }
+    out << '\n' << Indent(1) << "LightSource \"infinite\"\n";
+    out << Indent(2) << "\"string filename\" \"rt_sky.pfm\"\n";
+    out << Indent(2) << "\"float scale\" [ " << kPbrtRgbRadianceScale << " ]\n";
+    return true;
+}
+
 // ---- Public API ----
 
 bool PbrtExporter::Export(const GpuScene& scene,
@@ -1244,6 +1301,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         if (outputDir.empty()) outputDir = ".";
         std::unordered_map<uint32_t, std::string> exportedColorTexNames; // hash -> color BMP filename
         std::unordered_map<uint32_t, std::string> exportedRoughTexNames; // hash -> roughness PFM filename (linear)
+        std::unordered_map<uint32_t, std::string> exportedMetalTexNames; // hash -> metallic B-channel PFM
         std::unordered_map<uint32_t, std::string> exportedNormalTexNames; // hash -> normal map PFM filename (linear)
         std::unordered_map<uint32_t, std::string> exportedEmissiveTexNames; // hash -> emissive BMP filename
         // Alpha masks are per (hash, opacity, cutout) — a shared source image
@@ -1284,6 +1342,14 @@ bool PbrtExporter::Export(const GpuScene& scene,
                     if (!name.empty())
                         exportedRoughTexNames[hash] = name;
                 };
+                auto exportMetalTex = [&](uint32_t hash) {
+                    if (hash == 0 || exportedMetalTexNames.count(hash)) return;
+                    std::string name = ExportTextureDataLinear(hash,
+                        scene.streamingEntryMap, scene.streamingEntries,
+                        scene.applMesh, outputDir, /*channel=*/2, /*suffix=*/"_metal");
+                    if (!name.empty())
+                        exportedMetalTexNames[hash] = name;
+                };
                 // Export normal maps as linear PFM (pbrt reads PFM as linear
                 // float; BMP would be sRGB-decoded — issue 1). Tangent-frame
                 // matching is a separate validation; PLY stores no tangents.
@@ -1306,7 +1372,10 @@ bool PbrtExporter::Export(const GpuScene& scene,
                         exportedEmissiveTexNames[hash] = name;
                 };
                 if (mat.hasBaseColorTexture)        exportTex(mat.baseColorTextureHash);
-                if (mat.hasMetallicRoughnessTexture) exportRoughTex(mat.metallicRoughnessHash);
+                if (mat.hasMetallicRoughnessTexture) {
+                    exportRoughTex(mat.metallicRoughnessHash);
+                    exportMetalTex(mat.metallicRoughnessHash);
+                }
                 if (mat.hasNormalMap)               exportNormalTex(mat.normalMapHash);
                 if (mat.hasEmissiveTexture)         exportEmissiveTex(mat.emissiveTextureHash);
 
@@ -1365,6 +1434,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         }
         out << std::fixed << std::setprecision(kPrecision);
 
+        out << "ColorSpace \"srgb\"\n";
         out << R"(Integrator "path" "integer maxdepth" [8])" << '\n';
         out << R"(Sampler "zsobol" "integer pixelsamples" [256])" << '\n';
         const VkExtent2D& ext = scene.device.getSwapChainExtent();
@@ -1389,9 +1459,9 @@ bool PbrtExporter::Export(const GpuScene& scene,
                     out << Indent(2) << "\"string filename\" \""
                         << it->second << "\"\n";
                 };
-                auto declRoughTex = [&](uint32_t hash, const char* prefix) {
-                    auto it = exportedRoughTexNames.find(hash);
-                    if (it == exportedRoughTexNames.end()) return;
+                auto declFloatTex = [&](const auto& exportedNames, uint32_t hash, const char* prefix) {
+                    auto it = exportedNames.find(hash);
+                    if (it == exportedNames.end()) return;
                     out << Indent(1) << "Texture \"" << prefix << i << "\" "
                         << "\"float\" \"imagemap\"" << '\n';
                     out << Indent(2) << "\"string filename\" \""
@@ -1399,8 +1469,10 @@ bool PbrtExporter::Export(const GpuScene& scene,
                 };
                 if (mat.hasBaseColorTexture)
                     declColorTex(mat.baseColorTextureHash, "color_", "spectrum");
-                if (mat.hasMetallicRoughnessTexture)
-                    declRoughTex(mat.metallicRoughnessHash, "roughness_");
+                if (mat.hasMetallicRoughnessTexture) {
+                    declFloatTex(exportedRoughTexNames, mat.metallicRoughnessHash, "roughness_");
+                    declFloatTex(exportedMetalTexNames, mat.metallicRoughnessHash, "metallic_");
+                }
                 // Alpha mask declarations; shared combos declare once.
                 auto ait = alphaExports.find(i);
                 if (ait != alphaExports.end() &&
@@ -1414,10 +1486,12 @@ bool PbrtExporter::Export(const GpuScene& scene,
             }
         }
 
-        WriteMaterials(out, scene, usedMaterials, exportedColorTexNames, exportedRoughTexNames, exportedNormalTexNames);
+        WriteMaterials(out, scene, usedMaterials, exportedColorTexNames, exportedRoughTexNames,
+                       exportedMetalTexNames, exportedNormalTexNames);
         if (!WriteGeometry(out, scene, outputDir, filteredIndices, materialAlphaTexNames, exportedEmissiveTexNames))
             return false;
         WriteLights(out, scene);
+        if (!WriteEnvironment(out, scene, outputDir)) return false;
 
         // Explicitly complete the write before reporting success (issue 7):
         // a truncated main scene file must not count as a successful export.

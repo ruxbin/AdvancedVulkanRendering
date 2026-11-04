@@ -49,7 +49,7 @@ struct FixtureSpotLight { SpotLightData* _spotLightData=nullptr; };
 struct GpuScene {
     AAPLMeshData* applMesh=nullptr; AAPLMaterial* cpuMaterials=nullptr; AAPLSubMesh* m_SubMeshes=nullptr;
     Camera* maincamera=nullptr; FixtureDevice device;
-    struct { vec3 sunDirection{0,1,0},sunColor{1,1,1}; float localLightIntensity=1,emissiveScale=2; } frameConstants;
+    struct { vec3 sunDirection{0,1,0},sunColor{1,1,1},skyColor{}; float localLightIntensity=1,emissiveScale=2; } frameConstants;
     std::vector<FixturePointLight> _pointLights; std::vector<FixtureSpotLight> _spotLights;
     std::unordered_map<uint32_t,size_t> streamingEntryMap;
     std::vector<TextureStreamingEntry> streamingEntries;

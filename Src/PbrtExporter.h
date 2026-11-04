@@ -13,6 +13,9 @@ class PbrtExporter {
 public:
     // Write a pbrt-v4 scene description file at outputPath.
     // Textures are referenced by relative path.
+    // Match RT metallic/roughness textures and light radiance conventions.
+    // A nonzero frame skyColor exports the RT gradient as an infinite light.
+    // PBRT BSDFs and UV-derived normal frames remain approximations to RT.
     // Realtime point-light policy: omit emissive components enclosing
     // a point light, and resources used only by those components.
     // Known Bistro street-light glass/metal/support surfaces additionally omit
@@ -28,6 +31,7 @@ private:
                                 const std::vector<bool>& usedMaterials,
                                 const std::unordered_map<uint32_t, std::string>& exportedColorTexNames,
                                 const std::unordered_map<uint32_t, std::string>& exportedRoughTexNames,
+                                const std::unordered_map<uint32_t, std::string>& exportedMetalTexNames,
                                 const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames);
     static bool WriteGeometry(std::ofstream& out, const GpuScene& scene,
                                const std::filesystem::path& outputDir,
@@ -35,4 +39,6 @@ private:
                                const std::unordered_map<int, std::string>& materialAlphaTexNames,
                                const std::unordered_map<uint32_t, std::string>& exportedEmissiveTexNames);
     static void WriteLights(std::ofstream& out, const GpuScene& scene);
+    static bool WriteEnvironment(std::ofstream& out, const GpuScene& scene,
+                                 const std::filesystem::path& outputDir);
 };
