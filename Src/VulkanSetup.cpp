@@ -1,4 +1,5 @@
 #include "VulkanSetup.h"
+#include "SwapchainFormat.h"
 #ifndef __ANDROID__
 #include "SDL_syswm.h"
 #endif
@@ -475,20 +476,24 @@ void VulkanDevice::createLogicalDevice() {
 
 VkSurfaceFormatKHR VulkanDevice::chooseSwapSurfaceFormat(
     const std::vector<VkSurfaceFormatKHR> &availableFormats) {
-  // sRGB backbuffer (Apple parity: MTLPixelFormatBGRA8Unorm_sRGB). The resolve
-  // pass writes tone-mapped LINEAR values and relies on the hardware OETF, so
-  // the format must be *_SRGB. (This used to request B8G8R8A8_UINT, which is
-  // never presentable — the request never matched and the code silently fell
-  // through to availableFormats[0], typically linear BGRA8_UNORM, leaving the
-  // presented image without an sRGB encode.)
-  for (const auto &availableFormat : availableFormats) {
-    if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
-        availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-      return availableFormat;
-    }
-  }
+  return ChooseSrgbSurfaceFormat(availableFormats);
+}
 
-  return availableFormats[0];
+VkExtent2D VulkanDevice::chooseSwapExtent(const VkSurfaceCapabilitiesKHR &caps) const {
+#ifndef __ANDROID__
+  if (caps.currentExtent.width != std::numeric_limits<uint32_t>::max())
+    return caps.currentExtent;
+#endif
+  // Android allows an extent different from currentExtent. During rotation,
+  // currentExtent can still describe the previous swapchain's buffers, so use
+  // SDL's current drawable size to avoid presenting a stretched old extent.
+  // https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateAndroidSurfaceKHR.html
+  int width = WINDOW_WIDTH, height = WINDOW_HEIGHT;
+  if (presentationWindow)
+    SDL_Vulkan_GetDrawableSize(presentationWindow, &width, &height);
+  return {
+      std::clamp(uint32_t(std::max(width, 1)), caps.minImageExtent.width, caps.maxImageExtent.width),
+      std::clamp(uint32_t(std::max(height, 1)), caps.minImageExtent.height, caps.maxImageExtent.height)};
 }
 
 void VulkanDevice::createSwapChain() {
@@ -497,6 +502,9 @@ void VulkanDevice::createSwapChain() {
 
   VkSurfaceFormatKHR surfaceFormat =
       chooseSwapSurfaceFormat(swapChainSupport.formats);
+  spdlog::info("Swapchain output: format={}, colorSpace={}, hardware sRGB encoding enabled; first offered format={}",
+               static_cast<int>(surfaceFormat.format), static_cast<int>(surfaceFormat.colorSpace),
+               static_cast<int>(swapChainSupport.formats.front().format));
   VkPresentModeKHR presentMode =
       chooseSwapPresentMode(swapChainSupport.presentModes);
   VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
@@ -787,8 +795,9 @@ bool VulkanDevice::shouldRecreateSuboptimalSwapChain() const {
   VkSurfaceCapabilitiesKHR caps{};
   if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, wsiSurface, &caps) != VK_SUCCESS)
     return false; // Acquire/present handles a lost surface separately.
-  return caps.currentExtent.width != swapChainExtent.width ||
-         caps.currentExtent.height != swapChainExtent.height;
+  const auto desiredExtent = chooseSwapExtent(caps);
+  return desiredExtent.width != swapChainExtent.width ||
+         desiredExtent.height != swapChainExtent.height;
 #else
   return true;
 #endif

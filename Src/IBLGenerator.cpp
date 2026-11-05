@@ -1,4 +1,5 @@
 ﻿#include "IBLGenerator.h"
+#include "HdrImage.h"
 
 #include "Common.h"       // readFile
 #include "KtxTexture.h"   // KTX1 解析(Apple 烘焙 cube 对拍)
@@ -216,7 +217,7 @@ void validateCubeChainAgainstCpu(const VulkanDevice& device, VkImage envCube,
 
   // 1) CPU 侧 equirect
   int w = 0, h = 0, ch = 0;
-  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  float* pixels = LoadHdrImage(hdrPath.generic_string(), &w, &h, &ch);
   if (!pixels || w <= 0 || h <= 0) {
     spdlog::warn("IBL: cube-chain validation skipped, cannot reload {}", hdrPath.generic_string());
     if (pixels) stbi_image_free(pixels);
@@ -559,7 +560,7 @@ void validateEnvCubeAgainstAppleKtx(const VulkanDevice& device, VkImage envCube,
       { 0.025198626854623f, -0.020106073808714f, -0.063087948829664f},
   };
   int w = 0, h = 0, ch = 0;
-  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  float* pixels = LoadHdrImage(hdrPath.generic_string(), &w, &h, &ch);
   if (pixels) {
     // Physical and clamp-to-6 variants are diagnostics only. The application
     // uploads ComputeMetalSH9FromEquirect, which uses the RGBM source bound 256.

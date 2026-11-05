@@ -641,6 +641,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
   }
   vkBindBufferMemory(device.getLogicalDevice(), _pointLightCullingDataBuffer,
                      pointlightCullingDataBufferMemory, 0);
+  _allocations.push_back(pointlightCullingDataBufferMemory);
 
   vec4 *data;
   vkMapMemory(device.getLogicalDevice(), pointlightCullingDataBufferMemory, 0,
@@ -692,6 +693,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
     }
     vkBindBufferMemory(device.getLogicalDevice(), _xzRangeBuffer[f],
                        xzRangeBufferMemory, 0);
+    _allocations.push_back(xzRangeBufferMemory);
   }
 
   uint32_t tileXCount = (screen_width + DEFAULT_LIGHT_CULLING_TILE_SIZE - 1) /
@@ -746,6 +748,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
     }
     vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesBuffer[f],
                        lightindicesBufferMemory, 0);
+    _allocations.push_back(lightindicesBufferMemory);
 
     vkGetBufferMemoryRequirements(device.getLogicalDevice(),
                                   _lightIndicesTransparentBuffer[f],
@@ -758,6 +761,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
     }
     vkBindBufferMemory(device.getLogicalDevice(), _lightIndicesTransparentBuffer[f],
                        lightindicesTransparentBufferMemory, 0);
+    _allocations.push_back(lightindicesTransparentBufferMemory);
   }
 
   // ---------------- Spot light culling buffers ----------------
@@ -792,6 +796,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
       throw std::runtime_error("failed to allocate spot light culling data memory!");
     }
     vkBindBufferMemory(device.getLogicalDevice(), _spotLightCullingDataBuffer, mem, 0);
+    _allocations.push_back(mem);
 
     // Upload spot light culling data. Layout per AAPLSpotLightCullingData:
     //   float4 posRadius, posAndHeight, dirAndOuterAngle, color, plus
@@ -859,6 +864,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
     VkDeviceMemory mem;
     vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &mem);
     vkBindBufferMemory(device.getLogicalDevice(), _spotXZRangeBuffer[f], mem, 0);
+    _allocations.push_back(mem);
   }
 
   // spot light tile indices buffers (opaque + transparent, per frame)
@@ -887,12 +893,14 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
     VkDeviceMemory memOpaque;
     vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &memOpaque);
     vkBindBufferMemory(device.getLogicalDevice(), _spotLightIndicesBuffer[f], memOpaque, 0);
+    _allocations.push_back(memOpaque);
 
     vkGetBufferMemoryRequirements(device.getLogicalDevice(), _spotLightIndicesTransparentBuffer[f], &req);
     ai.allocationSize = req.size;
     VkDeviceMemory memTransparent;
     vkAllocateMemory(device.getLogicalDevice(), &ai, nullptr, &memTransparent);
     vkBindBufferMemory(device.getLogicalDevice(), _spotLightIndicesTransparentBuffer[f], memTransparent, 0);
+    _allocations.push_back(memTransparent);
   }
 
   VkImageCreateInfo imageInfo{};
@@ -935,6 +943,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
 
   vkBindImageMemory(device.getLogicalDevice(), _xzDebugImage,
                     textureImageMemory, 0);
+  _allocations.push_back(textureImageMemory);
 
   VkImageViewCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -999,6 +1008,7 @@ void LightCuller::InitRHI(const VulkanDevice &device, const GpuScene &gpuScene,
 
     vkBindImageMemory(device.getLogicalDevice(), _traditionalCullDebugImage,
                       textureImageMemory, 0);
+    _allocations.push_back(textureImageMemory);
 
     VkImageViewCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1395,6 +1405,7 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     vkAllocateMemory(device.getLogicalDevice(), &vpAlloc, nullptr, &_spotViewProjMemory);
     vkBindBufferMemory(device.getLogicalDevice(), _spotViewProjBuffer, _spotViewProjMemory, 0);
+    _allocations.push_back(_spotViewProjMemory);
     void *vpData;
     vkMapMemory(device.getLogicalDevice(), _spotViewProjMemory, 0, vpSize, 0, &vpData);
     memset(vpData, 0, vpSize);
@@ -1632,6 +1643,11 @@ for(uint32_t i=0;i<gpuScene.framesInFlight;++i)
                            &spotTradPCI, nullptr, &traditionalCullSpotPipeline);
   vkCreateComputePipelines(device.getLogicalDevice(), VK_NULL_HANDLE, 1,
                            &spotClearPCI, nullptr, &clearIndicesSpotPipeline);
+  for (auto module : {computeShaderModule, traditionalCullingShaderModule,
+                      clearIndicesShaderModule, clearDebugViewModule,
+                      coarseCullSpotModule, traditionalCullSpotModule,
+                      clearIndicesSpotModule})
+    vkDestroyShaderModule(device.getLogicalDevice(), module, nullptr);
 }
 
 void LightCuller::ClusterLightForScreen(VkCommandBuffer &commandBuffer,
@@ -1776,6 +1792,33 @@ void LightCuller::ClusterLightForScreen(VkCommandBuffer &commandBuffer,
                       DEFAULT_LIGHT_CULLING_TILE_SIZE,
                   1);
   }
+}
+
+void LightCuller::DestroyRHI(const VulkanDevice &device) {
+  const VkDevice dev = device.getLogicalDevice();
+  for (auto pipeline : {coarseCullPipeline, clearDebugViewPipeline,
+                        traditionalCullPipeline, clearIndicesPipeline,
+                        coarseCullSpotPipeline, traditionalCullSpotPipeline,
+                        clearIndicesSpotPipeline})
+    vkDestroyPipeline(dev, pipeline, nullptr);
+  vkDestroyPipelineLayout(dev, coarseCullPipelineLayout, nullptr);
+  vkDestroyDescriptorPool(dev, coarseCullDescriptorPool, nullptr);
+  vkDestroyDescriptorSetLayout(dev, coarseCullSetLayout, nullptr);
+  for (auto view : {_xzDebugImageView, _traditionalCullDebugImageView})
+    vkDestroyImageView(dev, view, nullptr);
+  for (auto image : {_xzDebugImage, _traditionalCullDebugImage})
+    vkDestroyImage(dev, image, nullptr);
+  for (auto buffer : {_pointLightCullingDataBuffer, _spotLightCullingDataBuffer,
+                      _spotViewProjBuffer})
+    vkDestroyBuffer(dev, buffer, nullptr);
+  for (auto* buffers : {&_xzRangeBuffer, &_lightIndicesBuffer,
+                        &_lightIndicesTransparentBuffer, &_spotXZRangeBuffer,
+                        &_spotLightIndicesBuffer, &_spotLightIndicesTransparentBuffer}) {
+    for (auto buffer : *buffers) vkDestroyBuffer(dev, buffer, nullptr);
+    buffers->clear();
+  }
+  for (auto memory : _allocations) vkFreeMemory(dev, memory, nullptr);
+  _allocations.clear();
 }
 
 LightCuller::LightCuller() {}

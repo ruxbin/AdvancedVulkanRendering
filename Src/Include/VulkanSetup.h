@@ -344,30 +344,7 @@ VkFormat depthFormat;
     return VK_PRESENT_MODE_FIFO_KHR;
   }
 
-  VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR &capabilities) {
-    // constexpr uint32_t maxuint = std::numeric_limits<uint32_t>::max();//TODO
-    // will error
-    constexpr uint32_t maxuint = 0xffffffff;
-    if (capabilities.currentExtent.width != maxuint) {
-      return capabilities.currentExtent;
-    } else {
-      // int width, height;
-      // glfwGetFramebufferSize(window, &width, &height);
-      int width = WINDOW_WIDTH;
-      int height = WINDOW_HEIGHT;
-      VkExtent2D actualExtent = {static_cast<uint32_t>(width),
-                                 static_cast<uint32_t>(height)};
-
-      actualExtent.width =
-          std::clamp(actualExtent.width, capabilities.minImageExtent.width,
-                     capabilities.maxImageExtent.width);
-      actualExtent.height =
-          std::clamp(actualExtent.height, capabilities.minImageExtent.height,
-                     capabilities.maxImageExtent.height);
-
-      return actualExtent;
-    }
-  }
+  VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR &capabilities) const;
 
   VkFormat findSupportedFormat(const std::vector<VkFormat> &candidates,
                                VkImageTiling tiling,

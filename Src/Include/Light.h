@@ -83,6 +83,8 @@ public:
                              uint32_t screen_heigt);
   void InitRHI(const VulkanDevice &, const GpuScene &gpuScene,
                uint32_t screen_width, uint32_t screen_heigt);
+  // Caller must idle the device before releasing/rebuilding culling resources.
+  void DestroyRHI(const VulkanDevice &device);
   LightCuller();
   VkImage GetXZDebugImage() { return _xzDebugImage; }
   VkImage GetTraditionalDebugImage() { return _traditionalCullDebugImage; }
@@ -101,6 +103,7 @@ public:
   VkBuffer GetSpotViewProjBuffer() const { return _spotViewProjBuffer; }
 
 private:
+  std::vector<VkDeviceMemory> _allocations;
   VkBuffer _pointLightCullingDataBuffer;
 
   std::vector<VkBuffer> _xzRangeBuffer;

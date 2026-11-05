@@ -725,9 +725,11 @@ void ScatteringVolume::destroy(const VulkanDevice& device) {
     dp(_blueNoiseTex,      vkDestroyImage);
     dp(_perlinTex,         vkDestroyImage);
     dp(_linearSampler,     vkDestroySampler);
+    dp(_nearestSampler,    vkDestroySampler);
     vkFreeMemory(dev, _scatterMem,        nullptr);
     vkFreeMemory(dev, _scatterHistoryMem, nullptr);
     vkFreeMemory(dev, _accumMem,          nullptr);
     vkFreeMemory(dev, _blueNoiseMem,      nullptr);
     vkFreeMemory(dev, _perlinMem,         nullptr);
+    *this = ScatteringVolume{};
 }

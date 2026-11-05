@@ -38,9 +38,9 @@ int main(int nargs, char **args) {
   int applicationExitCode=0;
 #ifdef __ANDROID__
   spdlog::set_default_logger(spdlog::android_logger_mt("android", "Bistro"));
-  // SDL also requests orientation at window creation; match the manifest's
-  // landscape setting instead of inferring portrait from the initial display.
-  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft");
+  // Match fullSensor in the manifest, including both reverse orientations.
+  SDL_SetHint(SDL_HINT_ORIENTATIONS,
+              "LandscapeLeft LandscapeRight Portrait PortraitUpsideDown");
 #endif
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     spdlog::error("SDL init failed");
@@ -93,8 +93,6 @@ int main(int nargs, char **args) {
     WINDOW_WIDTH = 1920;
     WINDOW_HEIGHT = 1080;
   }
-  if (WINDOW_WIDTH < WINDOW_HEIGHT)
-    std::swap(WINDOW_WIDTH, WINDOW_HEIGHT);
 
   // Initialize AAssetManager from SDL's JNI
   {
@@ -113,7 +111,7 @@ int main(int nargs, char **args) {
   SDL_Window *window = SDL_CreateWindow("AdvancedVulkanRendering",
                                         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                                         WINDOW_WIDTH, WINDOW_HEIGHT,
-                                        SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN);
+                                        SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE);
 #else
   Uint32 windowFlags = SDL_WINDOW_VULKAN;
 #ifdef ENABLE_DX12
@@ -348,8 +346,10 @@ int main(int nargs, char **args) {
 #ifdef __ANDROID__
       // Touch input: single-finger drag rotates camera
       else if (e.type == SDL_FINGERMOTION) {
-        float dx = e.tfinger.dx * WINDOW_WIDTH;
-        float dy = e.tfinger.dy * WINDOW_HEIGHT;
+        int touchWidth, touchHeight;
+        SDL_GetWindowSize(window, &touchWidth, &touchHeight);
+        float dx = e.tfinger.dx * touchWidth;
+        float dy = e.tfinger.dy * touchHeight;
         if (abs(dx) > abs(dy)) {
           currentYDegree += dx * rotateSpeed * 0.5f;
           gpuScene.GetMainCamera()->RotateY(currentYDegree);

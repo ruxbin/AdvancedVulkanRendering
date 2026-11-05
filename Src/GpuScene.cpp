@@ -6,6 +6,7 @@
 #include "AssetLoader.h"
 #include "BistroTextureFormat.h"
 #include "IBLGenerator.h"
+#include "HdrImage.h"
 #include "Light.h"
 #include "ObjLoader.h"
 #include "PbrtExporter.h"
@@ -22,6 +23,7 @@
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_vulkan.h"
 #include <SDL.h>
+#include <SDL_vulkan.h>
 #include <spdlog/spdlog.h>
 
 
@@ -2328,14 +2330,13 @@ void GpuScene::CreateDepthTexture() {
   allocInfo.memoryTypeIndex = device.findMemoryType(
       memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-  VkDeviceMemory textureImageMemory;
   if (vkAllocateMemory(device.getLogicalDevice(), &allocInfo, nullptr,
-                       &textureImageMemory) != VK_SUCCESS) {
+                       &_depthTextureMemory) != VK_SUCCESS) {
     throw std::runtime_error("failed to allocate image memory!");
   }
 
   vkBindImageMemory(device.getLogicalDevice(), _depthTexture,
-                    textureImageMemory, 0);
+                    _depthTextureMemory, 0);
 
   // TODO: change to vk_image_layout_depth_attachment_optimal
   // transition param will be specified in renderpass
@@ -4670,6 +4671,21 @@ void GpuScene::Draw() {
     framebufferResized = false;
   }
 #endif
+  // Handle SDL's rotation/resize notification before recording a frame. The
+  // surface may remain valid, so acquire need not return OUT_OF_DATE first.
+  if (framebufferResized && _sdlWindow &&
+      !(SDL_GetWindowFlags(_sdlWindow) & SDL_WINDOW_MINIMIZED)) {
+    int width, height;
+    SDL_Vulkan_GetDrawableSize(_sdlWindow, &width, &height);
+    if (width <= 0 || height <= 0) {
+      SDL_Delay(10);
+      return;
+    }
+    const auto extent = device.getSwapChainExtent();
+    if (uint32_t(width) != extent.width || uint32_t(height) != extent.height)
+      recreateSwapChain();
+    framebufferResized = false;
+  }
   buildImGuiFrame();
   if (_sdlWindow && (SDL_GetWindowFlags(_sdlWindow) & SDL_WINDOW_MINIMIZED)) {
     if (_imguiInitialized) EditorUi::RenderPlatformWindows();
@@ -4831,6 +4847,7 @@ void GpuScene::cleanupSwapChainResources() {
   // the current selection across a same-scene resize.
   destroyPicking();
   destroySelectionUiPass();
+  destroyScreenComputeResources();
 
   // 清理依赖 swapchain 尺寸的资源
   // 这些资源需要在 swapchain 重建时重新创建
@@ -4930,6 +4947,16 @@ void GpuScene::recreateSwapChainResources() {
   // or the device's newly created depth views.
   CreateGBuffers();
   CreateBasePassFrameBuffer();
+  CreateDepthTexture();
+  CreateZdepthView();
+  CreateOccluderZPassFrameBuffer();
+  createHiZResources();
+  createSAOResources();
+  if (_lightCuller) {
+    _lightCuller->InitRHI(device, *this, device.getSwapChainExtent().width,
+                         device.getSwapChainExtent().height);
+    createScatterVolume();
+  }
 
   // 重新创建 deferred/forward framebuffers
   CreateDeferredLightingFrameBuffer(device.getSwapChainImageCount());
@@ -4955,20 +4982,10 @@ void GpuScene::recreateSwapChainResources() {
       writes[i].pImageInfo = &imageInfo[i];
     }
     vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
-
-    // SAO's mip-0 copy reuses the Hi-Z pipeline but samples the device's
-    // swapchain-scoped depth view, which has just been replaced.
-    if (f < _saoCopyDescriptorSet.size()) {
-      VkDescriptorImageInfo depthInfo{};
-      depthInfo.imageView = device.getWindowDepthOnlyImageView(f);
-      depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-      VkWriteDescriptorSet depthWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      depthWrite.dstSet = _saoCopyDescriptorSet[f];
-      depthWrite.dstBinding = 0;
-      depthWrite.descriptorCount = 1;
-      depthWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      depthWrite.pImageInfo = &depthInfo;
-      vkUpdateDescriptorSets(device.getLogicalDevice(), 1, &depthWrite, 0, nullptr);
+    if (f < PointLight::drawPointLightDescriptorSets.size()) {
+      for (auto& write : writes)
+        write.dstSet = PointLight::drawPointLightDescriptorSets[f];
+      vkUpdateDescriptorSets(device.getLogicalDevice(), writes.size(), writes.data(), 0, nullptr);
     }
   }
 
@@ -5109,6 +5126,51 @@ void GpuScene::recreateSwapChain(bool recreateSurface) {
   recreateSwapChainResources();
 
   spdlog::info("Swapchain recreated successfully");
+}
+
+void GpuScene::destroyScreenComputeResources() {
+  // These passes use screen-sized images or tile lists. Releasing them before
+  // allocating the new orientation also avoids a large transient memory peak.
+  const VkDevice dev = device.getLogicalDevice();
+  auto destroy = [dev](auto& handle, auto fn) {
+    if (handle != VK_NULL_HANDLE) fn(dev, handle, nullptr);
+    handle = VK_NULL_HANDLE;
+  };
+  if (_scatterVolume.accumVolumeView() != VK_NULL_HANDLE)
+    _scatterVolume.destroy(device);
+  if (_lightCuller) _lightCuller->DestroyRHI(device);
+
+  destroy(_saoPipeline, vkDestroyPipeline);
+  destroy(_saoPipelineLayout, vkDestroyPipelineLayout);
+  destroy(_saoDescriptorPool, vkDestroyDescriptorPool);
+  destroy(_saoDepthDescriptorPool, vkDestroyDescriptorPool);
+  destroy(_saoSetLayout, vkDestroyDescriptorSetLayout);
+  for (auto& views : _saoMipViews)
+    for (auto& view : views) destroy(view, vkDestroyImageView);
+  for (auto& view : _saoDepthPyramidView) destroy(view, vkDestroyImageView);
+  for (auto& view : _aoTextureView) destroy(view, vkDestroyImageView);
+  for (auto& image : _saoDepthPyramid) destroy(image, vkDestroyImage);
+  for (auto& image : _aoTexture) destroy(image, vkDestroyImage);
+  for (auto& memory : _saoDepthPyramidMemory) destroy(memory, vkFreeMemory);
+  for (auto& memory : _aoTextureMemory) destroy(memory, vkFreeMemory);
+
+  destroy(_hizCopyPipeline, vkDestroyPipeline);
+  destroy(_hizDownsamplePipeline, vkDestroyPipeline);
+  destroy(_hizPipelineLayout, vkDestroyPipelineLayout);
+  destroy(_hizDescriptorPool, vkDestroyDescriptorPool);
+  destroy(_hizCopySetLayout, vkDestroyDescriptorSetLayout);
+  destroy(_hizDownsampleSetLayout, vkDestroyDescriptorSetLayout);
+  for (auto& view : _hizMipViews) destroy(view, vkDestroyImageView);
+  destroy(_hizTextureView, vkDestroyImageView);
+  destroy(_hizTexture, vkDestroyImage);
+  destroy(_hizMemory, vkFreeMemory);
+  destroy(_hizSampler, vkDestroySampler);
+
+  destroy(_depthFrameBuffer, vkDestroyFramebuffer);
+  destroy(_depthTextureView, vkDestroyImageView);
+  destroy(_depthTexture, vkDestroyImage);
+  destroy(_depthTextureMemory, vkFreeMemory);
+  destroy(_depthPyramidTexture, vkDestroyImage);
 }
 
 void GpuScene::createHiZResources() {
@@ -6869,7 +6931,7 @@ GpuScene::createTexture(const AAPLTextureData &texturedata) {
 // 加载 .hdr equirect 并上传为 RGBA32F 2D 纹理;失败返回 false。
 bool GpuScene::createEquirectTexture(const std::filesystem::path& hdrPath) {
   int w = 0, h = 0, ch = 0;
-  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  float* pixels = LoadHdrImage(hdrPath.generic_string(), &w, &h, &ch);
   if (!pixels || w <= 0 || h <= 0) {
     spdlog::warn("IBL: failed to load {}, IBL disabled", hdrPath.generic_string());
     return false;
@@ -7055,7 +7117,7 @@ void GpuScene::initIBL() {
   const auto hdrPath = HdrEnvPath(_rootPath);
 
   int w = 0, h = 0, ch = 0;
-  float* pixels = stbi_loadf(hdrPath.generic_string().c_str(), &w, &h, &ch, STBI_rgb_alpha);
+  float* pixels = LoadHdrImage(hdrPath.generic_string(), &w, &h, &ch);
   if (!pixels) {
     spdlog::warn("IBL: {} not found or unreadable, using black fallback", hdrPath.generic_string());
     createBlackFallbackIBL();
@@ -7874,15 +7936,14 @@ void GpuScene::createSAOResources() {
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = setsPerFrame * framesInFlight;
 
-    VkDescriptorPool saoDepthPool;
-    vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &saoDepthPool);
+    vkCreateDescriptorPool(device.getLogicalDevice(), &poolInfo, nullptr, &_saoDepthDescriptorPool);
 
     // Copy descriptor sets: depth texture → SAO pyramid mip 0
     _saoCopyDescriptorSet.resize(framesInFlight);
     for (uint32_t f = 0; f < framesInFlight; ++f) {
       VkDescriptorSetAllocateInfo allocInfo{};
       allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-      allocInfo.descriptorPool = saoDepthPool;
+      allocInfo.descriptorPool = _saoDepthDescriptorPool;
       allocInfo.descriptorSetCount = 1;
       allocInfo.pSetLayouts = &_hizCopySetLayout;
       vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoCopyDescriptorSet[f]);
@@ -7918,7 +7979,7 @@ void GpuScene::createSAOResources() {
       for (uint32_t m = 1; m < _saoMipLevels; ++m) {
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = saoDepthPool;
+        allocInfo.descriptorPool = _saoDepthDescriptorPool;
         allocInfo.descriptorSetCount = 1;
         allocInfo.pSetLayouts = &_hizDownsampleSetLayout;
         vkAllocateDescriptorSets(device.getLogicalDevice(), &allocInfo, &_saoDownsampleDescriptorSets[f][m - 1]);
@@ -9792,6 +9853,12 @@ void GpuScene::initImGui(SDL_Window *window) {
 }
 
 void GpuScene::ProcessImGuiEvent(SDL_Event *event) {
+  if (event->type == SDL_WINDOWEVENT && _sdlWindow &&
+      event->window.windowID == SDL_GetWindowID(_sdlWindow) &&
+      (event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+       event->window.event == SDL_WINDOWEVENT_RESIZED)) {
+    framebufferResized = true;
+  }
 #ifdef __ANDROID__
   if (event->type == SDL_APP_WILLENTERBACKGROUND || event->type == SDL_APP_DIDENTERBACKGROUND) {
     _androidBackgrounded = true;

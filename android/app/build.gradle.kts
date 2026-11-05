@@ -5,6 +5,7 @@ plugins {
 val generatedAssets = layout.buildDirectory.dir("generated/bistroAssets")
 val runtimeBistro = layout.buildDirectory.file("generated/bistro/bistro.astc.runtime.bin")
 val assetRoot = rootProject.projectDir.parentFile
+val environmentHdr = file("$assetRoot/textures/san_giuseppe_bridge_2k.hdr")
 val convertBistroAstc = tasks.register<Exec>("convertBistroAstc") {
     val converter = file("$assetRoot/Tools/convert_bistro_astc.py")
     val source = file("$assetRoot/bistro.astc.bin")
@@ -70,8 +71,14 @@ android {
 // Keep hand-authored extra assets, but replace the legacy generated resources.
 tasks.register<Sync>("copyAssets") {
     dependsOn(convertBistroAstc)
+    doFirst {
+        check(environmentHdr.isFile) { "Required IBL environment is missing: $environmentHdr" }
+    }
     from("src/main/assets") {
-        exclude("bistro*.bin", "debug1.bin", "scene.scene", "shaders/**")
+        exclude("bistro*.bin", "debug1.bin", "scene.scene", "shaders/**", "textures/san_giuseppe_bridge_2k.hdr")
+    }
+    from(environmentHdr) {
+        into("textures")
     }
     from("${rootProject.projectDir}/../shaders") {
         include("*.spv")

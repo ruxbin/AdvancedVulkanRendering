@@ -369,6 +369,7 @@ private:
   VkRenderPass occluderZPass;
 
   VkImage _depthTexture;
+  VkDeviceMemory _depthTextureMemory = VK_NULL_HANDLE;
   VkImage _depthPyramidTexture;
   VkImageView _depthTextureView;
   VkFramebuffer _depthFrameBuffer;
@@ -533,6 +534,7 @@ private:
   std::vector<VkDescriptorSet> _hizDownsampleDescriptorSets;
 
   void createHiZResources();
+  void destroyScreenComputeResources();
   void generateHiZPyramid(VkCommandBuffer commandBuffer);
 
   // Scalable Ambient Obscurance (SAO)
@@ -551,6 +553,7 @@ private:
 
   VkDescriptorSetLayout _saoSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool _saoDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorPool _saoDepthDescriptorPool = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> _saoDescriptorSets; // per-frame
   VkPipelineLayout _saoPipelineLayout = VK_NULL_HANDLE;
   VkPipeline _saoPipeline = VK_NULL_HANDLE;
