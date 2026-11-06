@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -15,7 +16,8 @@ public:
     // Textures are referenced by relative path.
     // Match RT metallic/roughness textures and light radiance conventions.
     // A nonzero frame skyColor exports the RT gradient as an infinite light.
-    // PBRT BSDFs and UV-derived normal frames remain approximations to RT.
+    // Preserve source tangents for normal maps; PBRT BSDFs still approximate RT.
+    // Emissive textures become constant linear average colors to bound PBRT memory.
     // Realtime point-light policy: omit emissive components enclosing
     // a point light, and resources used only by those components.
     // Known Bistro street-light glass/metal/support surfaces additionally omit
@@ -37,7 +39,8 @@ private:
                                const std::filesystem::path& outputDir,
                                const std::unordered_map<int, std::vector<uint32_t>>& filteredIndices,
                                const std::unordered_map<int, std::string>& materialAlphaTexNames,
-                               const std::unordered_map<uint32_t, std::string>& exportedEmissiveTexNames);
+                               const std::unordered_map<uint32_t, std::array<float, 3>>& emissiveColors,
+                               const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames);
     static void WriteLights(std::ofstream& out, const GpuScene& scene);
     static bool WriteEnvironment(std::ofstream& out, const GpuScene& scene,
                                  const std::filesystem::path& outputDir);

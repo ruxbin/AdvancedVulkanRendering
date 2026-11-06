@@ -4,7 +4,7 @@
 
 审查对象：当前工作区的 `Src/PbrtExporter.cpp`、`Src/PbrtExporter.h` 及相关场景、材质和 shader 代码。
 
-状态：本文前半部分保留原始审查记录；修复与验证进度见末尾的修复状态及 2026-09-26 接续复核。
+状态：本文保留历史审查记录，最新结论见末尾 **2026-11-06**。特别注意：11-04 的额外 106.856895 光照倍率结论错误，本轮已撤销；法线切线保留及无发光图片面积光也已落实。
 
 ## 结论
 
@@ -316,3 +316,46 @@ cmake --build build-msvc --config Debug --target AdvancedVulkanRendering
 - MSVC Debug 主应用构建通过，exit 0；保留既有编译警告。独立只读复核核对了本机 PBRT 的 mix 顺序、归一化、equal-area 映射和失败路径，未发现本轮新增 P1/P2。
 - **没有执行完整 PBRT 渲染对照，也没有重新导出完整 Bistro。** 上述测试证明导出内容与公式，不证明最终图像达到目标；旧 scene/贴图不会自动更新。
 - 建议先用新构建导出到新目录；固定相机、分辨率和 bounce。先用无 normalmap 的灰卡/金属球，禁用局部灯与发光，只对齐太阳或天空。比较线性 RT accumulation 与 PBRT EXR，或给两者应用完全相同的曝光与 ACES；再逐项加 normalmap、局部灯和透明材质。法线问题应作为下一轮首要修复，而非继续凭观感调整 roughness 或曝光。
+
+## 2026-11-06：修正过亮、法线切线空间与发光贴图 OOM
+
+用户实测反馈 PBRT 结果太亮、地面法线效果太弱、发光材质读贴图导致 OOM。PBRT 源码目录确认是 `D:\SourceCode\pbrt-v4`；实际结果在另一台电脑，当前无法取得，因此本轮验证范围为代码、数值与导出回归，未宣称完成最终画面对照。
+
+### 1. 亮度：纠正上轮引入的约 107 倍增益
+
+上轮只追踪了 `Light::Create` 中 `SpectrumToPhotometric` 的除法，漏掉 `film.h:PixelSensor::ToSensorRGB`。默认 CIE1931 sensor 对光谱和匹配函数直接积分，**不再除以 CIE_Y_integral**；ISO=100、shutterclose−shutteropen=1 时 imagingRatio=1，因此 Film 积分与光源归一化抵消。额外乘 `106.856895` 会把最终图像放大同样倍数，上轮审查和测试把错误预期固化了。
+
+现修改为：
+
+- 太阳/point/spot 的 scale=π，保留 RT 直射光中真实的 π 因子。
+- 面积光 scale=emissiveScale，天空 scale=1。
+- 保留线性 EXR，不用随意调暗灯光去代替曝光或 tone mapping。与 RT 屏幕比较时仍应应用相同 ACES 曲线；这与本次多余倍率是两个问题。
+- 回归明确检查 Light 归一化与 Film 积分后的增益，而不是以“单独补偿 Light”为正确预期。
+
+### 2. 法线：保留模型切线，并转换贴图轴
+
+RT 使用 `N*z - T*y + cross(T,N)*x`；PBRT normalmap 使用 `[T,cross(N,T),N]`。有原始切线时，将贴图解码向量转换为 `(-y,-x,z)`，即图像通道 `R'=1-G, G'=1-R`，Z 按 RT 的 RG 重建。没有添加人为 normal-strength 倍率。
+
+PBRT 标准 PLY 路径会丢掉 S/tangent。因此，对成功导出 normalmap 且具有源 tangent/N/UV 的网格，输出 `geometry/mesh_N.pbrt`，使用 `Shape "trianglemesh"` 和 `vector3 S` 保存原始逐顶点切线。主文件在原有 Attribute scope 内 Include，alpha 参数随 Shape 写在 include 内，材质/面积光作用域保持不变。其余网格仍为二进制 PLY。geometry 子目录避免与主输出名 `mesh_0.pbrt` 冲突。
+
+- 测试使用 UV 推导方向为 +X、实际源 T 为 +Y、非中性 RG 的平面；计算 PBRT 世界法线并与 RT 公式比较，验证方向和扰动幅度。另覆盖 16 位索引、alpha 绑定、include 写失败。
+- 此路径增加文本几何的磁盘体积和解析成本，但不会复制整张发光图到每个三角形。导出时按流写数组。
+- 无源切线的资产仍使用 UV frame，不能保证任意资产匹配。PBRT 先插值 RGB 法线再归一化与 RT 先插值 RG 再重建 Z 也有差异。地面最终视觉强弱仍需真实场景复测。
+
+### 3. 发光贴图：不再生成 image-backed AreaLightSource
+
+本机 PBRT 会把网格展开为三角形面积光，`DiffuseAreaLight::Create` 每次执行 `Image::Read`，图片按三角形重复驻留；仅复用文件名无法消除 OOM。
+
+现每个 texture hash 只计算一次 **线性 RGB 全图平均值**，作为 `AreaLightSource "diffuse" "rgb L"` 输出。使用受检 mip 解压路径，逐个 BC 块解码和累计，忽略最后一块超出实际宽高的 padding；只需要压缩 mip 加一个 4×4 float 块，不建立整张 RGBA float 图。有效黑图保持不发光，不回退到较亮 CPU 常量；缺失/损坏图仍走已存在的常量回退。
+
+新场景不会引用 `_emissive.bmp` 等发光图片，不再触发该图片重复加载路径；同一源图片若仍用于 BaseColor，则该用途保留。普通材质、几何和面积光对象自身仍需内存，不保证任意规模场景完全不会 OOM。
+
+**取舍：纹理发光变为材质均色，招牌文字等发光细节会丢失；全图均色也不是按网格 UV 面积加权的总功率匹配。** 这是当前导出器内可用的低内存近似。若要完整保留发光图案，需要在 PBRT 端共享不可变发光图像或采用其他发光表示，本轮没有修改 PBRT 仓库。
+
+### 验证记录
+
+- 三项核心回归在旧实现上复现失败；最终 CPU exporter 套件 **45/45 通过**，包含 linear 均色、padding 排除、黑图、法线世界方向、16-bit/alpha/写失败及历史用例。
+- `git diff --check` 通过。
+- 主应用首次构建被既有 Windows `max` 宏冲突阻断；对 `HdrImage.h`、`VulkanSetup.cpp` 的四处调用加括号保护，保持计算不变。MSVC Debug 主应用重新构建 **exit 0**，生成 `Bin/AdvancedVulkanRendering.exe`；保留既有第三方/链接警告。
+- 独立只读复核了 Light→Film→RGB、S 插值/正交化、NormalMap 基底、Include/alpha 作用域、均色边界及文件失败路径，未发现本轮新增明确 P1/P2。
+- 未运行完整 Bistro 导出/PBRT 渲染或实测峰值内存。必须用新构建重新导出，不能只替换 exe 后重渲旧 `.pbrt`；旧目录的无引用图片不再由新场景读取。

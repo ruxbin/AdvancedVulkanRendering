@@ -21,7 +21,7 @@ struct AAPLMeshData {
     // exercise byte-width tags 2/4; the actual Bistro asset uses 4.
     unsigned long long _vertexCount=3,_indexCount=3,_indexType=1,_meshCount=1,_materialCount=1;
     unsigned long long _opaqueMeshCount=1,_alphaMaskedMeshCount=0,_transparentMeshCount=0;
-    void *_vertexData=nullptr,*_normalData=nullptr,*_uvData=nullptr,*_indexData=nullptr,*_textureData=nullptr;
+    void *_vertexData=nullptr,*_normalData=nullptr,*_tangentData=nullptr,*_uvData=nullptr,*_indexData=nullptr,*_textureData=nullptr;
     uint64_t _textureDataLength=0;
     std::filesystem::path _textureBlobPath;
     uint64_t _textureBlobBase=0;

@@ -224,7 +224,7 @@ class ExporterTests(unittest.TestCase):
             factor=0.6+0.4*(dy*0.5+0.5)**2
             for c,color in enumerate((0.2,0.4,0.8)):
                 self.assertAlmostEqual(p[(y*w+x)*3+c],color*factor,places=6)
-        self.assertIn('"float scale" [ 106.856895 ]',scene)
+        self.assertIn('"float scale" [ 1.000000 ]',scene)
 
     def test_disabled_or_failed_sky_is_not_silently_referenced(self):
         _,scene=self.export('rough_constant')
@@ -235,8 +235,13 @@ class ExporterTests(unittest.TestCase):
         _,scene=self.export('point_positions')
         scales=re.findall(r'LightSource "(?:point|distant)".*?"float scale" \[ ([^]]+) \]',scene,re.S)
         self.assertEqual(len(scales),3)
+        # A white source is divided by integral(Y*D65) in Light::Create,
+        # then integrated by the CIE1931 Film sensor WITHOUT /CIE_Y_integral.
+        # At unit exposure these cancel, so the final gain must be RT's PI.
+        cie_integral=106.856895
         for value in scales:
-            self.assertAlmostEqual(float(value),math.pi*106.856895,places=5)
+            film_gain=(float(value)/cie_integral)*cie_integral
+            self.assertAlmostEqual(film_gain,math.pi,places=5)
 
     def test_roughness_map_decodes_srgb_before_squaring(self):
         d, scene = self.export('rough_texture')
@@ -270,12 +275,55 @@ class ExporterTests(unittest.TestCase):
         _, scene = self.export('emissive')
         self.assertRegex(scene,r'(?s)AttributeBegin.*AreaLightSource "diffuse".*Shape "plymesh".*AttributeEnd')
         self.assertIn('"rgb L" [ 1.000000 0.500000 0.250000 ]',scene)
-        self.assertIn('"float scale" [ 213.713790 ]',scene)
+        self.assertIn('"float scale" [ 2.000000 ]',scene)
 
-    def test_emissive_texture_uses_filename_not_texture_L(self):
+    def test_emissive_texture_is_reduced_without_image_backed_area_lights(self):
         d, scene = self.export('emissive_texture')
-        self.assertRegex(scene,r'AreaLightSource "diffuse"\s+"string filename" "[^"]+"')
+        self.assertRegex(scene,r'AreaLightSource "diffuse"\s+"rgb L"')
+        self.assertFalse(list(d.glob('*_emissive.*')))
+        self.assertNotRegex(scene,r'AreaLightSource "diffuse"\s+"string filename"')
         self.assertNotIn('"texture L"',scene)
+
+    def test_emission_average_is_linear_and_crops_block_padding(self):
+        _,scene=self.export('emissive_average')
+        rgb=re.search(r'AreaLightSource "diffuse"\s+"rgb L" \[ ([^]]+) \]',scene)[1]
+        # Two valid pixels: sRGB 16/31 blue, black. Padded blue pixels excluded.
+        expected=0.5*((16/31+0.055)/1.055)**2.4
+        r,g,b=map(float,rgb.split())
+        self.assertAlmostEqual(b,expected,places=6)
+        self.assertEqual((r,g),(0,0))
+
+    def test_normal_frame_preserves_source_tangent_and_world_perturbation(self):
+        d,scene=self.export('tangent_normal')
+        geom=(d/'geometry'/'mesh_0.pbrt').read_text()
+        self.assertIn('Include "geometry/mesh_0.pbrt"',scene)
+        self.assertIn('"vector3 S"',geom)
+        self.assertIn('"integer indices" [ 0 1 2 ]',geom)
+        self.assertIn('"texture alpha" "alpha_0"',geom)
+        t=list(map(float,re.search(r'"vector3 S"\s*\[([^]]+)\]',geom)[1].split()))[:3]
+        self.assertEqual(t,[0,1,0])  # deliberately different from UV's +X tangent
+        name=re.search(r'"string normalmap" "([^"]+)"',scene)[1]
+        _,_,p=read_pfm(d/name)
+        x,y,z=[2*v-1 for v in p[:3]]
+        # PBRT basis [T,cross(N,T),N] = [+Y,-X,+Z].
+        world=(-y,x,z)
+        source_x,source_y=2*204/255-1,2*153/255-1
+        expected=(source_x,-source_y,math.sqrt(1-source_x**2-source_y**2))
+        for a,b in zip(world,expected): self.assertAlmostEqual(a,b,places=6)
+        self.assertFalse((d/'mesh_0.ply').exists())
+
+    def test_tangent_geometry_accepts_16bit_indices(self):
+        d,scene=self.export('tangent_16')
+        self.assertIn('"integer indices" [ 0 1 2 ]',
+                      (d/'geometry'/'mesh_0.pbrt').read_text())
+
+    def test_black_emission_texture_does_not_fall_back_to_bright_constant(self):
+        d,scene=self.export('emissive_black')
+        self.assertNotIn('AreaLightSource',scene)
+        self.assertFalse(list(d.glob('*_emissive.*')))
+
+    def test_tangent_geometry_write_failure_fails_export(self):
+        self.export('tangent_failure',expected='failure')
 
     def test_missing_emissive_texture_falls_back_to_emissive_color(self):
         _, scene = self.export('missing_emissive')

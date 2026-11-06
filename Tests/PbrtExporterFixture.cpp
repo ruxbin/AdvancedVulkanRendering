@@ -164,6 +164,28 @@ int main(int argc,char** argv) {
         materials[0].hasNormalMap=true; materials[0].normalMapHash=1;
         if(mode=="cropped_normal") { tex._width=3; tex._height=2; }
     }
+    vec3 sourceTangents[3]={{0,1,0},{0,1,0},{0,1,0}};
+    if(mode=="tangent_normal" || mode=="tangent_failure" || mode=="tangent_16") {
+        mesh._tangentData=sourceTangents;
+        tex._pixelFormat=142; block[0]=block[1]=204; block[2]=0;
+        block[8]=block[9]=153;
+        materials[0].hasNormalMap=true; materials[0].normalMapHash=1;
+        materials[0].hasDiffuseMask=true; materials[0].hasBaseColorTexture=true;
+        materials[0].baseColorTextureHash=1;
+        if(mode=="tangent_16") { mesh._indexType=0; mesh._indexData=indices16; }
+        if(mode=="tangent_failure") std::filesystem::create_directories(dir/"geometry"/"mesh_0.pbrt");
+    }
+    if(mode=="emissive_black") {
+        block[8]=block[9]=block[10]=block[11]=0;
+        materials[0].hasEmissiveTexture=true; materials[0].emissiveTextureHash=1;
+        materials[0].emissiveColor={1,0,0,0};
+    }
+    if(mode=="emissive_average") {
+        tex._width=2; tex._height=1;
+        block[8]=16; block[9]=0; block[10]=0; block[11]=0;
+        block[12]=4; // pixel 1 black, all others blue (padding must be ignored)
+        materials[0].hasEmissiveTexture=true; materials[0].emissiveTextureHash=1;
+    }
     if(mode=="rough_texture") {
         // RGB565 green endpoints=32/63. sRGB decode then square gives ~0.04898.
         tex._pixelFormat=131; block[0]=0; block[1]=4; block[2]=0; block[3]=4;

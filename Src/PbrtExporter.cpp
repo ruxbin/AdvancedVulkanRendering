@@ -16,10 +16,9 @@ namespace {
 
 constexpr int kPrecision = 6;
 constexpr double kPi = 3.14159265358979323846;
-// PBRT-v4 divides RGB light scale by the photometric integral of the
-// normalized sRGB illuminant (CIE_Y_integral). Undo this to preserve the RT
-// shader's linear RGB radiance. Keep the exported ColorSpace explicitly sRGB.
-constexpr double kPbrtRgbRadianceScale = 106.856895;
+// PBRT's RGB light photometric normalization is canceled by the CIE1931
+// Film sensor's spectral integral at ISO 100, exposure time 1. Do NOT multiply
+// lights by CIE_Y_integral: that would make the final RGB ~107 times too bright.
 // ---- BCn decompression (BC1 / BC3 / BC5) ----
 
 // MTLPixelFormat enum subset (matching GpuScene.cpp MTLPixelFormat enum)
@@ -917,6 +916,69 @@ std::string WritePLYMesh(
     return FinishOutputFile(f) ? outName : "";
 }
 
+// PBRT's PLY reader discards tangents. Use a trianglemesh include only when
+// normal mapping needs the original vertex frame. Stream arrays to avoid a
+// second in-memory geometry copy; the caller appends the shape's alpha.
+void WriteTangentMesh(std::ostream& out, const vec3* positions, const vec3* normals,
+    const vec3* tangents, const vec2* uvs, uint32_t first, uint32_t count,
+    const void* indices, bool shortIndices, uint32_t begin, uint32_t indexCount) {
+    out << std::setprecision(std::numeric_limits<float>::max_digits10);
+    out << "Shape \"trianglemesh\"\n";
+    auto vectors = [&](const char* parameter, const vec3* data) {
+        out << '"' << parameter << "\" [\n";
+        for (uint32_t i = first; i < first + count; ++i)
+            out << data[i].x << ' ' << data[i].y << ' ' << data[i].z << '\n';
+        out << "]\n";
+    };
+    vectors("point3 P", positions);
+    vectors("normal N", normals);
+    vectors("vector3 S", tangents);
+    out << "\"point2 uv\" [\n";
+    for (uint32_t i = first; i < first + count; ++i)
+        out << uvs[i].x << ' ' << 1.0f - uvs[i].y << '\n';
+    out << "]\n\"integer indices\" [ ";
+    for (uint32_t i = begin; i < begin + indexCount; ++i) {
+        uint32_t index = shortIndices ? static_cast<const uint16_t*>(indices)[i]
+                                      : static_cast<const uint32_t*>(indices)[i];
+        out << index - first << ' ';
+        if ((i - begin + 1) % 24 == 0) out << '\n';
+    }
+    out << "]\n";
+}
+
+// Reduce emission in linear space once per texture. Only one decoded BC block
+// is resident in addition to the compressed mip; PBRT never loads this image.
+bool AverageEmission(uint32_t hash,
+    const std::unordered_map<uint32_t, size_t>& entriesByHash,
+    const std::vector<TextureStreamingEntry>& entries, const AAPLMeshData* mesh,
+    std::array<float, 3>& mean) {
+    auto it = entriesByHash.find(hash);
+    if (it == entriesByHash.end() || it->second >= entries.size()) return false;
+    const auto* tex = entries[it->second].desc;
+    if (!tex || !IsSupportedTexture(*tex)) return false;
+    const uint32_t bytes = tex->_pixelFormat == kBC1_RGBA_sRGB ? 8 : 16;
+    uint32_t bw = 0, bh = 0, w = 0, h = 0;
+    int mip = 0;
+    void* data = AcquireBCMipData(*tex, mesh, bytes, tex->_path, bw, bh, w, h, mip);
+    if (!data) return false;
+    double sum[3] = {};
+    for (uint32_t by = 0; by < bh; ++by) {
+        for (uint32_t bx = 0; bx < bw; ++bx) {
+            float pixels[64];
+            DecompressBCFloat(tex->_pixelFormat,
+                static_cast<const uint8_t*>(data) + (size_t(by) * bw + bx) * bytes,
+                1, 1, pixels);
+            for (uint32_t y = 0; y < 4 && by * 4 + y < h; ++y)
+                for (uint32_t x = 0; x < 4 && bx * 4 + x < w; ++x)
+                    for (int c = 0; c < 3; ++c)
+                        sum[c] += pixels[(y * 4 + x) * 4 + c];
+        }
+    }
+    free(data);
+    for (int c = 0; c < 3; ++c) mean[c] = static_cast<float>(sum[c] / (double(w) * h));
+    return true;
+}
+
 } // anonymous namespace
 
 // ---- PbrtExporter private helpers ----
@@ -1035,7 +1097,8 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
                                   const std::filesystem::path& outputDir,
                                   const std::unordered_map<int, std::vector<uint32_t>>& filteredIndices,
                                   const std::unordered_map<int, std::string>& materialAlphaTexNames,
-                                  const std::unordered_map<uint32_t, std::string>& exportedEmissiveTexNames) {
+                                  const std::unordered_map<uint32_t, std::array<float, 3>>& emissiveColors,
+                                  const std::unordered_map<uint32_t, std::string>& exportedNormalTexNames) {
     const AAPLMeshData* mesh = scene.applMesh;
     if (!mesh || !scene.m_SubMeshes) {
         spdlog::error("PbrtExporter: no mesh data to export");
@@ -1109,51 +1172,65 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
         }
         uint32_t rangeCount = idxMax - idxMin + 1;
 
-        std::string plyName = WritePLYMesh(outputDir, m, verts, norms, uvs,
-                                           rangeCount, idxMin, exportIndices, export16,
-                                           exportBegin, exportCount);
-        if (plyName.empty()) {
+        int matIndex = static_cast<int>(submesh.materialIndex);
+        const auto* tangents = static_cast<const vec3*>(mesh->_tangentData);
+        bool preserveTangents = tangents && norms && uvs && scene.cpuMaterials &&
+            matIndex >= 0 && matIndex < static_cast<int>(mesh->_materialCount) &&
+            scene.cpuMaterials[matIndex].hasNormalMap &&
+            exportedNormalTexNames.count(scene.cpuMaterials[matIndex].normalMapHash);
+        std::string plyName;
+        if (!preserveTangents)
+            plyName = WritePLYMesh(outputDir, m, verts, norms, uvs,
+                                  rangeCount, idxMin, exportIndices, export16,
+                                  exportBegin, exportCount);
+        if (!preserveTangents && plyName.empty()) {
             spdlog::error("PbrtExporter: failed to write PLY for submesh {}", m);
             return false;
         }
         anyWritten = true;
 
         out << '\n' << Indent(1) << "AttributeBegin\n";
-        int matIndex = static_cast<int>(submesh.materialIndex);
         const AAPLMaterial* subMat = nullptr;
         if (matIndex >= 0 && matIndex < static_cast<int>(mesh->_materialCount)) {
             out << Indent(2) << "NamedMaterial \"material_" << matIndex << "\"\n";
             if (scene.cpuMaterials)
                 subMat = &scene.cpuMaterials[matIndex];
         }
-        // Area light for emissive materials (issue 6): texture wins when it
-        // exported; otherwise the constant emissive color is the fallback.
-        // Two-sided emission is NOT enabled — pbrt's default front-face
-        // emission, matching the backface-culled realtime rendering.
+        // Constant emission avoids PBRT's per-triangle image copies. A valid
+        // black texture stays black instead of falling back to emissiveColor.
         if (subMat) {
-            bool wroteLight = false;
+            std::array<float, 3> emission = {subMat->emissiveColor.x,
+                subMat->emissiveColor.y, subMat->emissiveColor.z};
             if (subMat->hasEmissiveTexture) {
-                auto it = exportedEmissiveTexNames.find(subMat->emissiveTextureHash);
-                if (it != exportedEmissiveTexNames.end()) {
-                    out << Indent(2) << "AreaLightSource \"diffuse\"\n";
-                    out << Indent(3) << "\"string filename\" \"" << it->second << "\"\n";
-                    out << Indent(3) << "\"float scale\" [ "
-                        << scene.frameConstants.emissiveScale * kPbrtRgbRadianceScale << " ]\n";
-                    wroteLight = true;
-                }
+                auto it = emissiveColors.find(subMat->emissiveTextureHash);
+                if (it != emissiveColors.end()) emission = it->second;
             }
-            if (!wroteLight &&
-                (subMat->emissiveColor.x > 0 || subMat->emissiveColor.y > 0 ||
-                 subMat->emissiveColor.z > 0)) {
+            if (emission[0] > 0 || emission[1] > 0 || emission[2] > 0) {
                 out << Indent(2) << "AreaLightSource \"diffuse\"\n";
-                out << Indent(3) << "\"rgb L\" [ "
-                    << subMat->emissiveColor.x << ' ' << subMat->emissiveColor.y << ' '
-                    << subMat->emissiveColor.z << " ]\n";
+                out << Indent(3) << "\"rgb L\" [ " << emission[0] << ' '
+                    << emission[1] << ' ' << emission[2] << " ]\n";
                 out << Indent(3) << "\"float scale\" [ "
-                    << scene.frameConstants.emissiveScale * kPbrtRgbRadianceScale << " ]\n";
+                    << scene.frameConstants.emissiveScale << " ]\n";
             }
         }
-        out << Indent(2) << R"(Shape "plymesh" "string filename" ")" << plyName << "\"\n";
+        std::ofstream triangleFile;
+        if (preserveTangents) {
+            // A subdirectory prevents collision with a main output named mesh_0.pbrt.
+            std::filesystem::create_directories(outputDir / "geometry");
+            const auto name = "geometry/mesh_" + std::to_string(m) + ".pbrt";
+            triangleFile.open(outputDir / name);
+            if (!triangleFile.is_open()) {
+                spdlog::error("PbrtExporter: failed to open tangent mesh {}", name);
+                return false;
+            }
+            WriteTangentMesh(triangleFile, verts, norms, tangents, uvs, idxMin,
+                             rangeCount, exportIndices, export16, exportBegin, exportCount);
+            out << Indent(2) << "Include \"" << name << "\"\n";
+        } else {
+            out << Indent(2) << R"(Shape "plymesh" "string filename" ")" << plyName << "\"\n";
+        }
+        // Alpha belongs to the Shape inside the include, not after Include.
+        std::ostream& shapeOut = preserveTangents ? triangleFile : out;
         // Alpha (issue 2): an exported mask binds to the Shape by texture name;
         // without one, cutout collapses to the thresholded constant and
         // fractional opacity to a constant coverage approximation. alpha = 1
@@ -1161,14 +1238,18 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
         if (subMat && (subMat->hasDiffuseMask || subMat->opacity < 1.0f)) {
             auto it = materialAlphaTexNames.find(matIndex);
             if (it != materialAlphaTexNames.end()) {
-                out << Indent(3) << "\"texture alpha\" \"" << it->second << "\"\n";
+                shapeOut << Indent(3) << "\"texture alpha\" \"" << it->second << "\"\n";
             } else {
                 float a = subMat->hasDiffuseMask
                     ? ((subMat->opacity >= 0.1f) ? 1.0f : 0.0f)
                     : subMat->opacity;
                 if (a < 1.0f)
-                    out << Indent(3) << "\"float alpha\" [ " << a << " ]\n";
+                    shapeOut << Indent(3) << "\"float alpha\" [ " << a << " ]\n";
             }
+        }
+        if (preserveTangents && !FinishOutputFile(triangleFile)) {
+            spdlog::error("PbrtExporter: failed to write tangent mesh {}", m);
+            return false;
         }
         out << Indent(1) << "AttributeEnd\n";
     }
@@ -1181,8 +1262,8 @@ bool PbrtExporter::WriteGeometry(std::ofstream& out, const GpuScene& scene,
 
 void PbrtExporter::WriteLights(std::ofstream& out, const GpuScene& scene) {
     // RT multiplies both sun and local light colors by PI before evalBRDF.
-    // Also compensate PBRT-v4's RGB light photometric normalization.
-    constexpr double kLightScale = kPi * kPbrtRgbRadianceScale;
+    // Light normalization and the default Film sensor integral cancel out.
+    constexpr double kLightScale = kPi;
 
     const vec3& sunDir = scene.frameConstants.sunDirection;
     const vec3& sunColor = scene.frameConstants.sunColor;
@@ -1259,7 +1340,7 @@ bool PbrtExporter::WriteEnvironment(std::ofstream& out, const GpuScene& scene,
     }
     out << '\n' << Indent(1) << "LightSource \"infinite\"\n";
     out << Indent(2) << "\"string filename\" \"rt_sky.pfm\"\n";
-    out << Indent(2) << "\"float scale\" [ " << kPbrtRgbRadianceScale << " ]\n";
+    out << Indent(2) << "\"float scale\" [ " << 1.0 << " ]\n";
     return true;
 }
 
@@ -1303,7 +1384,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
         std::unordered_map<uint32_t, std::string> exportedRoughTexNames; // hash -> roughness PFM filename (linear)
         std::unordered_map<uint32_t, std::string> exportedMetalTexNames; // hash -> metallic B-channel PFM
         std::unordered_map<uint32_t, std::string> exportedNormalTexNames; // hash -> normal map PFM filename (linear)
-        std::unordered_map<uint32_t, std::string> exportedEmissiveTexNames; // hash -> emissive BMP filename
+        std::unordered_map<uint32_t, std::array<float, 3>> emissiveColors; // hash -> linear mean
         // Alpha masks are per (hash, opacity, cutout) — a shared source image
         // with different opacities must NOT share a processed mask.
         struct AlphaExport { std::string texName; std::string fileName; };
@@ -1351,25 +1432,35 @@ bool PbrtExporter::Export(const GpuScene& scene,
                         exportedMetalTexNames[hash] = name;
                 };
                 // Export normal maps as linear PFM (pbrt reads PFM as linear
-                // float; BMP would be sRGB-decoded — issue 1). Tangent-frame
-                // matching is a separate validation; PLY stores no tangents.
+                // float; BMP would be sRGB-decoded — issue 1). With source
+                // tangents, PBRT's [T,N cross T,N] requires [-G,-R,Z].
                 auto exportNormalTex = [&](uint32_t hash) {
                     if (hash == 0 || exportedNormalTexNames.count(hash)) return;
                     std::string name = ExportTextureDataLinear(hash,
                         scene.streamingEntryMap, scene.streamingEntries,
-                        scene.applMesh, outputDir, /*channel=*/-1, /*suffix=*/"_nm");
+                        scene.applMesh, outputDir, /*channel=*/-1, /*suffix=*/"_nm",
+                        [&](float* px, uint32_t) {
+                            float x = 2 * px[0] - 1, y = 2 * px[1] - 1;
+                            px[2] = 0.5f + 0.5f * std::sqrt((std::max)(0.0f, 1-x*x-y*y));
+                            if (scene.applMesh->_tangentData && scene.applMesh->_normalData &&
+                                scene.applMesh->_uvData) {
+                                px[0] = 0.5f - 0.5f * y;
+                                px[1] = 0.5f - 0.5f * x;
+                            }
+                        });
                     if (!name.empty())
                         exportedNormalTexNames[hash] = name;
                 };
-                // Export emissive textures as BMP (color semantics: pbrt's
-                // sRGB image decode is correct for them — issue 6).
+                // No image-backed area lights: PBRT copies the image for each
+                // triangle. A constant mean bounds memory, at the cost of detail.
                 auto exportEmissiveTex = [&](uint32_t hash) {
-                    if (hash == 0 || exportedEmissiveTexNames.count(hash)) return;
-                    std::string name = ExportTextureData(hash,
-                        scene.streamingEntryMap, scene.streamingEntries,
-                        scene.applMesh, outputDir, /*channel=*/-1, /*suffix=*/"_emissive");
-                    if (!name.empty())
-                        exportedEmissiveTexNames[hash] = name;
+                    if (hash == 0 || emissiveColors.count(hash)) return;
+                    std::array<float, 3> mean{};
+                    if (AverageEmission(hash, scene.streamingEntryMap, scene.streamingEntries,
+                                        scene.applMesh, mean))
+                        emissiveColors[hash] = mean;
+                    else
+                        spdlog::warn("PbrtExporter: emission texture {} unavailable; using constant", hash);
                 };
                 if (mat.hasBaseColorTexture)        exportTex(mat.baseColorTextureHash);
                 if (mat.hasMetallicRoughnessTexture) {
@@ -1488,7 +1579,7 @@ bool PbrtExporter::Export(const GpuScene& scene,
 
         WriteMaterials(out, scene, usedMaterials, exportedColorTexNames, exportedRoughTexNames,
                        exportedMetalTexNames, exportedNormalTexNames);
-        if (!WriteGeometry(out, scene, outputDir, filteredIndices, materialAlphaTexNames, exportedEmissiveTexNames))
+        if (!WriteGeometry(out, scene, outputDir, filteredIndices, materialAlphaTexNames, emissiveColors, exportedNormalTexNames))
             return false;
         WriteLights(out, scene);
         if (!WriteEnvironment(out, scene, outputDir)) return false;

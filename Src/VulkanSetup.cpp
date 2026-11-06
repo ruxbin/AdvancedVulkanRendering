@@ -481,7 +481,7 @@ VkSurfaceFormatKHR VulkanDevice::chooseSwapSurfaceFormat(
 
 VkExtent2D VulkanDevice::chooseSwapExtent(const VkSurfaceCapabilitiesKHR &caps) const {
 #ifndef __ANDROID__
-  if (caps.currentExtent.width != std::numeric_limits<uint32_t>::max())
+  if (caps.currentExtent.width != (std::numeric_limits<uint32_t>::max)())
     return caps.currentExtent;
 #endif
   // Android allows an extent different from currentExtent. During rotation,
@@ -492,8 +492,8 @@ VkExtent2D VulkanDevice::chooseSwapExtent(const VkSurfaceCapabilitiesKHR &caps) 
   if (presentationWindow)
     SDL_Vulkan_GetDrawableSize(presentationWindow, &width, &height);
   return {
-      std::clamp(uint32_t(std::max(width, 1)), caps.minImageExtent.width, caps.maxImageExtent.width),
-      std::clamp(uint32_t(std::max(height, 1)), caps.minImageExtent.height, caps.maxImageExtent.height)};
+      std::clamp(uint32_t((std::max)(width, 1)), caps.minImageExtent.width, caps.maxImageExtent.width),
+      std::clamp(uint32_t((std::max)(height, 1)), caps.minImageExtent.height, caps.maxImageExtent.height)};
 }
 
 void VulkanDevice::createSwapChain() {

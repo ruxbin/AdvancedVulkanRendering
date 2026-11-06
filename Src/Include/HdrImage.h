@@ -14,7 +14,7 @@ inline float* LoadHdrImage(const std::string& path, int* width, int* height, int
   } catch (const std::runtime_error&) {
     return nullptr; // Preserve the existing missing-environment fallback.
   }
-  if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+  if (bytes.empty() || bytes.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
     return nullptr;
   return stbi_loadf_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                                 width, height, channels, STBI_rgb_alpha);
